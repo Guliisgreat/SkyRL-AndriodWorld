@@ -12,13 +12,13 @@ from skyrl_agent.tasks.android.android_task import AndroidTask
 
 class TestInitializeRuntime:
     """Test AndroidTask.initialize_runtime()."""
-    
+
     @pytest.mark.asyncio
     async def test_initialize_runtime(self, tmp_path):
         """Test initialize_runtime creates pool and clients."""
-        from unittest.mock import patch, Mock, AsyncMock
-        from skyrl_agent.runtime.android.container_manager import ContainerInstance
-        
+        import sys
+        from unittest.mock import patch, Mock, MagicMock
+
         env_config = {
             "pool_size": 3,
             "docker_image": "androidworld:test",
@@ -26,71 +26,54 @@ class TestInitializeRuntime:
             "temp_path": str(tmp_path),
             "lock_file": str(tmp_path / "test.lck"),
         }
-        
-        # Mock ContainerManager and RuntimeClient
-        mock_containers = []
-        for i in range(3):
-            mock_container_obj = Mock()
-            container_instance = ContainerInstance(
-                container_id=f"test-{i}",
-                container=mock_container_obj,
-                server_port=5000 + 2 * i,
-                emulator_port=5554 + 2 * i,
-                grpc_port=8554 + 2 * i,
-                env_id=i,
-                state="ready"
-            )
-            mock_containers.append(container_instance)
-        
-        with patch('skyrl_agent.runtime.androidworld.container_manager.docker') as mock_docker, \
-             patch('psutil.net_connections', return_value=[]), \
-             patch('requests.get') as mock_get, \
-             patch('skyrl_agent.runtime.androidworld.runtime_client.RuntimeClient') as mock_client_cls:
-            
-            # Setup docker mock
-            mock_docker.from_env = Mock(return_value=Mock())
-            mock_get.return_value.status_code = 200
-            
-            # Mock ContainerManager.create_pool
-            with patch.object(AndroidTask, 'initialize_runtime', wraps=AndroidTask.initialize_runtime):
-                # Actually create containers using the real ContainerManager but with mocked docker
-                mock_client_instances = [Mock() for _ in range(3)]
-                mock_client_cls.side_effect = mock_client_instances
-                
-                clients = await AndroidTask.initialize_runtime(env_config)
-                
-                assert len(clients) == 3
-                assert all(c is not None for c in clients)
-    
+
+        # Create mock AndroidWorldHostEnv class
+        mock_env_instances = [Mock() for _ in range(3)]
+        mock_env_class = Mock(side_effect=mock_env_instances)
+
+        # Mock the verl module and AndroidWorldHostEnv
+        mock_verl = MagicMock()
+        mock_verl.trainer.androidworld_env.AndroidWorldHostEnv = mock_env_class
+
+        with patch.dict(sys.modules, {'verl': mock_verl, 'verl.trainer': mock_verl.trainer,
+                                       'verl.trainer.androidworld_env': mock_verl.trainer.androidworld_env}):
+            clients = await AndroidTask.initialize_runtime(env_config)
+
+            assert len(clients) == 3
+            assert mock_env_class.call_count == 3
+
     @pytest.mark.asyncio
     async def test_initialize_runtime_default_config(self, tmp_path):
         """Test initialize_runtime with default config."""
-        from unittest.mock import patch, Mock
-        from skyrl_agent.runtime.android.container_manager import ContainerInstance
-        
+        import sys
+        from unittest.mock import patch, Mock, MagicMock
+
         env_config = {
             "docker_image": "androidworld:test",
             "temp_path": str(tmp_path),
             "lock_file": str(tmp_path / "test.lck"),
         }
-        
-        with patch('skyrl_agent.runtime.android.container_manager.docker') as mock_docker, \
-             patch('psutil.net_connections', return_value=[]), \
-             patch('requests.get') as mock_get:
-            
-            mock_docker.from_env = Mock(return_value=Mock())
-            mock_get.return_value.status_code = 200
-            
-            # This will use default pool_size=8
+
+        # Create mock AndroidWorldHostEnv class for 8 instances (default pool_size)
+        mock_env_instances = [Mock() for _ in range(8)]
+        mock_env_class = Mock(side_effect=mock_env_instances)
+
+        # Mock the verl module
+        mock_verl = MagicMock()
+        mock_verl.trainer.androidworld_env.AndroidWorldHostEnv = mock_env_class
+
+        with patch.dict(sys.modules, {'verl': mock_verl, 'verl.trainer': mock_verl.trainer,
+                                       'verl.trainer.androidworld_env': mock_verl.trainer.androidworld_env}):
             clients = await AndroidTask.initialize_runtime(env_config)
-            
+
             assert len(clients) == 8  # Default pool_size
-    
+
     @pytest.mark.asyncio
     async def test_initialize_runtime_custom_config(self, tmp_path):
         """Test initialize_runtime with custom config."""
-        from unittest.mock import patch, Mock
-        
+        import sys
+        from unittest.mock import patch, Mock, MagicMock
+
         env_config = {
             "pool_size": 5,
             "docker_image": "androidworld:custom",
@@ -102,16 +85,19 @@ class TestInitializeRuntime:
             "base_env_id": 10,
             "lock_file": str(tmp_path / "test.lck"),
         }
-        
-        with patch('skyrl_agent.runtime.android.container_manager.docker') as mock_docker, \
-             patch('psutil.net_connections', return_value=[]), \
-             patch('requests.get') as mock_get:
-            
-            mock_docker.from_env = Mock(return_value=Mock())
-            mock_get.return_value.status_code = 200
-            
+
+        # Create mock AndroidWorldHostEnv class for 5 instances
+        mock_env_instances = [Mock() for _ in range(5)]
+        mock_env_class = Mock(side_effect=mock_env_instances)
+
+        # Mock the verl module
+        mock_verl = MagicMock()
+        mock_verl.trainer.androidworld_env.AndroidWorldHostEnv = mock_env_class
+
+        with patch.dict(sys.modules, {'verl': mock_verl, 'verl.trainer': mock_verl.trainer,
+                                       'verl.trainer.androidworld_env': mock_verl.trainer.androidworld_env}):
             clients = await AndroidTask.initialize_runtime(env_config)
-            
+
             assert len(clients) == 5
 
 
@@ -252,43 +238,22 @@ class TestEvaluateResult:
         assert reward == 0.0
     
     @pytest.mark.asyncio
-    async def test_evaluate_result_gemini(self):
-        """Test evaluate_result with gemini provider."""
+    async def test_evaluate_result_gemini_not_implemented(self):
+        """Test evaluate_result with gemini provider returns 0.0 (not yet implemented)."""
         instance = {"task": "Test task"}
         history_images = [np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)]
         history_messages = [{"role": "user", "content": "test"}]
-        
-        with patch('verl.trainer.gemini_evaluator.GeminiEvaluator') as mock_eval_cls:
-            mock_evaluator = Mock()
-            mock_evaluator.evaluate = Mock(return_value=1.0)
-            mock_eval_cls.return_value = mock_evaluator
-            
-            reward = await AndroidTask.evaluate_result(
-                None,
-                instance,
-                history_images=history_images,
-                history_messages=history_messages,
-                reward_provider="gemini"
-            )
-            
-            assert reward == 1.0
-            mock_evaluator.evaluate.assert_called_once()
-    
-    @pytest.mark.asyncio
-    async def test_evaluate_result_gemini_exception(self):
-        """Test evaluate_result with gemini provider handles exceptions."""
-        instance = {"task": "Test task"}
-        
-        with patch('verl.trainer.gemini_evaluator.GeminiEvaluator') as mock_eval_cls:
-            mock_eval_cls.side_effect = ImportError("Gemini not available")
-            
-            reward = await AndroidTask.evaluate_result(
-                None,
-                instance,
-                reward_provider="gemini"
-            )
-            
-            assert reward == 0.0
+
+        # Gemini provider is not implemented yet, so it returns 0.0
+        reward = await AndroidTask.evaluate_result(
+            None,
+            instance,
+            history_images=history_images,
+            history_messages=history_messages,
+            reward_provider="gemini"
+        )
+
+        assert reward == 0.0
     
     @pytest.mark.asyncio
     async def test_evaluate_result_unknown_provider(self):
