@@ -400,59 +400,26 @@ class ContainerManager:
     def _get_used_ports(self) -> Set[int]:
         """
         Get all currently used ports (both system and Docker).
-        
+
         Reused from AndroidWorldHostEnv._get_used_ports()
         """
-        # #region agent log
-        import json
-        try:
-            with open('/home/ligu/projects/aw_g/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"container_manager.py:356","message":"_get_used_ports: Getting psutil.net_connections","data":{"type":str(type(psutil.net_connections))},"timestamp":int(time.time()*1000)}) + "\n")
-        except: pass
-        # #endregion
-        
         try:
             net_conns = psutil.net_connections()
-            # #region agent log
-            try:
-                with open('/home/ligu/projects/aw_g/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"container_manager.py:361","message":"_get_used_ports: Got net_connections result","data":{"type":str(type(net_conns)),"is_iterable":hasattr(net_conns,'__iter__')},"timestamp":int(time.time()*1000)}) + "\n")
-            except: pass
-            # #endregion
-            
+
             # Handle Mock objects in tests - if it's a Mock, return empty set
             if hasattr(net_conns, '_mock_name'):  # It's a Mock
                 system_ports = set()
             else:
                 system_ports = set(conn.laddr.port for conn in net_conns)
-        except Exception as e:
-            # #region agent log
-            try:
-                with open('/home/ligu/projects/aw_g/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"container_manager.py:370","message":"_get_used_ports: Exception getting system ports","data":{"error":str(e),"error_type":type(e).__name__},"timestamp":int(time.time()*1000)}) + "\n")
-            except: pass
-            # #endregion
+        except Exception:
             system_ports = set()
-        
+
         docker_ports = set()
-        
+
         for attempt in range(3):  # Retry up to 3 times
             try:
-                # #region agent log
-                try:
-                    with open('/home/ligu/projects/aw_g/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"container_manager.py:378","message":"_get_used_ports: Getting docker containers","data":{"attempt":attempt},"timestamp":int(time.time()*1000)}) + "\n")
-                except: pass
-                # #endregion
-                
                 containers_list = self.client.containers.list()
-                # #region agent log
-                try:
-                    with open('/home/ligu/projects/aw_g/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"container_manager.py:385","message":"_get_used_ports: Got containers list","data":{"type":str(type(containers_list)),"is_iterable":hasattr(containers_list,'__iter__'),"len":len(containers_list) if hasattr(containers_list,'__len__') else "N/A"},"timestamp":int(time.time()*1000)}) + "\n")
-                except: pass
-                # #endregion
-                
+
                 for container in containers_list:
                     ports = container.attrs['NetworkSettings']['Ports']
                     if ports:
@@ -462,22 +429,9 @@ class ContainerManager:
                 break  # Exit retry loop if successful
             except docker.errors.NotFound:
                 time.sleep(1)  # Wait before retrying
-            except Exception as e:
-                # #region agent log
-                try:
-                    with open('/home/ligu/projects/aw_g/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"container_manager.py:400","message":"_get_used_ports: Exception getting docker ports","data":{"error":str(e),"error_type":type(e).__name__},"timestamp":int(time.time()*1000)}) + "\n")
-                except: pass
-                # #endregion
+            except Exception:
                 break  # Exit on other errors
-        
-        # #region agent log
-        try:
-            with open('/home/ligu/projects/aw_g/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A,B","location":"container_manager.py:405","message":"_get_used_ports: Returning ports","data":{"system_ports_count":len(system_ports),"docker_ports_count":len(docker_ports)},"timestamp":int(time.time()*1000)}) + "\n")
-        except: pass
-        # #endregion
-        
+
         return system_ports | docker_ports
     
     async def _wait_for_container_ready(self, server_port: int, env_id: int):
