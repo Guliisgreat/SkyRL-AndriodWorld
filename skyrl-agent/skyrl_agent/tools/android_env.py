@@ -5,6 +5,7 @@ Adapted from verl/trainer/mobile_agent.py step() method.
 This tool provides a thin wrapper around env_handle.step() for the AndroidAgent.
 """
 
+import asyncio
 from typing import Union, Dict, Any
 from .base import BaseTool, register_tool
 
@@ -109,9 +110,30 @@ class AndroidEnvTool(BaseTool):
         }
         
         # Execute step via environment handle
+        # Note: env_handle.step() is async, so we need to run it properly
         try:
-            observation, reward, terminated, truncated, info = env_handle.step(payload)
+            step_coro = env_handle.step(payload)
+            # Check if step returns a coroutine (async method)
+            if asyncio.iscoroutine(step_coro):
+                # Run async step in a new event loop (we're in a thread pool)
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # We're in an async context, use run_coroutine_threadsafe
+                        import concurrent.futures
+                        future = asyncio.run_coroutine_threadsafe(step_coro, loop)
+                        observation, reward, terminated, truncated, info = future.result(timeout=300)
+                    else:
+                        observation, reward, terminated, truncated, info = loop.run_until_complete(step_coro)
+                except RuntimeError:
+                    # No event loop exists, create a new one
+                    observation, reward, terminated, truncated, info = asyncio.run(step_coro)
+            else:
+                # Sync method (step_coro is already the result tuple)
+                observation, reward, terminated, truncated, info = step_coro
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return {
                 "error": f"Environment step failed: {e}",
                 "image": None,

@@ -1,10 +1,22 @@
+"""
+SkyAgent Loop Manager for verl 0.6.1.
+
+This module provides the integration between skyrl-agent and verl 0.6.1's
+new replica-based architecture. Key changes from verl 0.5.x:
+- Uses vLLMReplica/SGLangReplica for server lifecycle management
+- No longer uses AsyncvLLMServerRegular (removed in 0.6.1)
+- Keeps asyncio-based parallelism (does NOT use AgentLoopWorker)
+- VLM-aware postprocessing for Qwen2-VL models (pixel_values, image_grid_thw)
+"""
+
 import asyncio
-from typing import Any, Dict, Optional
+from importlib import import_module
+from typing import Any, Dict, List, Optional, Type
 
 import numpy as np
 import ray
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 
 from verl.protocol import DataProto
@@ -12,147 +24,153 @@ from verl.single_controller.ray.base import RayWorkerGroup
 from verl.utils import hf_tokenizer
 from verl.utils.fs import copy_to_local
 from verl.experimental.agent_loop.agent_loop import AsyncLLMServerManager
-from verl.workers.rollout.async_server import AsyncServerBase
+from verl.workers.rollout.replica import get_rollout_replica_class, RolloutReplica
 
 
-from verl.experimental.agent_loop.agent_loop import AgentLoopManager
 
-from skyrl_agent import AutoAgentRunner
+def _import_object(path: str):
+    """Import a class or function from a module path."""
+    module_path, class_name = path.rsplit(".", 1)
+    return getattr(import_module(module_path), class_name)
 
 
-def async_server_class(
-    rollout_backend: str, rollout_backend_module: Optional[str] = None, rollout_backend_class: Optional[str] = None
-) -> type[AsyncServerBase]:
-    """Get async server class.
-
-    Args:
-        rollout_backend: str, rollout backend type (alias), should be "vllm" or "sglang".
-        rollout_backend_module: Optional[str], import path of the rollout backend.
-        rollout_backend_class: Optional[str], class name of the rollout backend.
-
-    Returns:
-        Type[AsyncServerBase]: async server class.
+class SkyAgentLoopManager:
     """
-    if rollout_backend_class is None and rollout_backend_module is None:
-        # If both are None, use the default backend class
-        # Do not change the original import behavior
-        # importlib.import_module and from ... import ... have subtle differences in ray
+    Agent loop manager that manages LLM servers and skyrl-agent trajectories.
+    
+    This implementation:
+    - Uses verl 0.6.1's RolloutReplica abstraction for server lifecycle
+    - Maintains asyncio-based parallelism via skyrl-agent's dispatchers
+    - Does NOT use verl's AgentLoopWorker (which uses Ray-based parallelism)
+    - VLM-aware postprocessing for Qwen2-VL models
+    """
 
-        if rollout_backend == "vllm":
-            from .skyagent_async_vllm_server import SkyAgentAsyncvLLMServer
-
-            return SkyAgentAsyncvLLMServer
-        elif rollout_backend == "sglang":
-
-            raise NotImplementedError("Sglang backend for verl with skyagent is not implemented right now")
-
-        else:
-            raise NotImplementedError(f"rollout backend {rollout_backend} is not supported")
-
-    if rollout_backend_module is None or rollout_backend_class is None:
-        raise ValueError("rollout_backend_module and rollout_backend_class must be both provided for customization")
-
-    from verl.utils.import_utils import load_extern_type
-
-    return load_extern_type(rollout_backend_module, rollout_backend_class)
-
-
-class SkyAgentLoopManager(AgentLoopManager):
-    """Agent loop manager that manages a group of agent loop workers."""
-
-    def __init__(self, config: DictConfig, worker_group: RayWorkerGroup):
-        """Initialize agent loop manager.
-
-        Args:
-            config (DictConfig): trainer config.
-            worker_group (RayWorkerGroup): ActorRolloutRef worker group.
-        """
+    def __init__(
+        self, 
+        config: DictConfig, 
+        worker_group: RayWorkerGroup,
+        rollout_resource_pool=None,
+    ):
+        """Initialize agent loop manager."""
         self.config = config
         self.worker_group = worker_group
+        self.rollout_resource_pool = rollout_resource_pool
 
-        self._initialize_llm_servers()
-        # self._init_agent_loop_workers()
+        # Get the replica class based on backend (vllm or sglang)
+        self.rollout_replica_class = get_rollout_replica_class(
+            self.config.actor_rollout_ref.rollout.name
+        )
 
-        # init tokenizer
+        # Initialize tokenizer
         model_path = config.actor_rollout_ref.model.path
         self.model_name = "/".join(model_path.split("/")[-2:])
         local_path = copy_to_local(config.actor_rollout_ref.model.path)
         self.tokenizer = hf_tokenizer(local_path, trust_remote_code=True)
 
-        # init generator
-        self.server_manager = AsyncLLMServerManager(config, self.async_llm_servers)
-        self.skyagent_generator = AutoAgentRunner.from_task(
-            task_yaml=config.skyrl_agent.task_yaml, infer_engine=self.server_manager, tokenizer=self.tokenizer
+        # VLM processor for position_ids computation (lazy-loaded)
+        self._vlm_processor = None
+
+        # Initialize LLM servers using replica abstraction
+        self._initialize_llm_servers()
+
+        # Initialize AsyncLLMServerManager for load balancing
+        self.server_manager = AsyncLLMServerManager(config, self.server_handles)
+
+        # Initialize skyrl-agent generator using registry-based creation
+        self.skyagent_generator = self._create_agent_runner(config)
+
+        # Initially we're in sleep mode if configured
+        if self.config.actor_rollout_ref.rollout.free_cache_engine:
+            self.sleep()
+
+    def _create_agent_runner(self, config: DictConfig):
+        """Create agent runner with merged config for vision model support."""
+        # Lazy imports to avoid circular dependency
+        from skyrl_agent.agents import AgentRunner
+        from skyrl_agent.agents.mapping import AGENT_GENERATOR_REGISTRY
+        
+        task_yaml = config.skyrl_agent.task_yaml
+        task_cfg = OmegaConf.load(task_yaml)
+
+        runner_path = AGENT_GENERATOR_REGISTRY.get(task_cfg.agent_cls, None)
+        if not runner_path:
+            raise ValueError(
+                f"AgentRunner class for agent {task_cfg.agent_cls} is not specified. "
+                f"Please ensure that the agent is present in the registry"
+            )
+        runner_cls: Type[AgentRunner] = _import_object(runner_path)
+
+        merged_cfg = OmegaConf.merge(
+            task_cfg,
+            {"actor_rollout_ref": config.actor_rollout_ref}
+        )
+        return runner_cls(merged_cfg, self.server_manager, self.tokenizer)
+
+    def _initialize_llm_servers(self):
+        """Initialize LLM servers using verl 0.6.1's RolloutReplica abstraction."""
+        rollout_config = self.config.actor_rollout_ref.rollout
+        model_config = self.config.actor_rollout_ref.model
+
+        rollout_world_size = (
+            rollout_config.tensor_model_parallel_size
+            * rollout_config.get("data_parallel_size", 1)
+            * rollout_config.get("pipeline_model_parallel_size", 1)
+        )
+        world_size = (
+            self.worker_group.world_size
+            if self.worker_group
+            else self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes
+        )
+        num_replicas = world_size // rollout_world_size
+
+        self.rollout_replicas: List[RolloutReplica] = []
+        for replica_rank in range(num_replicas):
+            replica = self.rollout_replica_class(
+                replica_rank=replica_rank,
+                config=rollout_config,
+                model_config=model_config,
+                gpus_per_node=self.config.trainer.n_gpus_per_node,
+            )
+            self.rollout_replicas.append(replica)
+
+        if self.worker_group:
+            self._run_all([
+                replica.init_hybrid(self.worker_group) 
+                for replica in self.rollout_replicas
+            ])
+        else:
+            self._run_all([
+                replica.init_standalone() 
+                for replica in self.rollout_replicas
+            ])
+
+        self.server_handles = [replica._server_handle for replica in self.rollout_replicas]
+        self.server_addresses = [replica._server_address for replica in self.rollout_replicas]
+
+        print(f"SkyAgentLoopManager: Initialized {len(self.rollout_replicas)} replicas")
+        print(f"SkyAgentLoopManager: Server addresses: {self.server_addresses}")
+
+    def _run_all(self, tasks: List[asyncio.Task]):
+        """Run all async tasks and wait for completion."""
+        async def run_all():
+            await asyncio.gather(*tasks)
+        asyncio.run(run_all())
+
+    def _postprocess(self, inputs: Dict[str, List[Any]]) -> DataProto:
+        """Postprocess skyrl-agent outputs to verl's DataProto format."""
+        has_vlm_tensors = (
+            "pixel_values" in inputs
+            and inputs["pixel_values"]
+            and any(pv is not None for pv in inputs["pixel_values"])
         )
 
-        # Initially we're in sleep mode.
-        self.sleep()
-
-    # initialize here with the custom `async_server_class` implementation
-    def _initialize_llm_servers(self):
-        self.rollout_tp_size = self.config.actor_rollout_ref.rollout.tensor_model_parallel_size
-        self.rollout_dp_size = self.worker_group.world_size // self.rollout_tp_size
-
-        register_center = ray.get_actor(f"{self.worker_group.name_prefix}_register_center")
-        workers_info = ray.get(register_center.get_worker_info.remote())
-        assert len(workers_info) == self.worker_group.world_size
-
-        self.async_llm_servers = [None] * self.rollout_dp_size
-        self.server_addresses = [None] * self.rollout_dp_size
-
-        if self.config.actor_rollout_ref.rollout.agent.custom_async_server:
-            server_class = async_server_class(
-                rollout_backend=self.config.actor_rollout_ref.rollout.name,
-                rollout_backend_module=self.config.actor_rollout_ref.rollout.agent.custom_async_server.path,
-                rollout_backend_class=self.config.actor_rollout_ref.rollout.agent.custom_async_server.name,
-            )
-        else:
-            server_class = async_server_class(rollout_backend=self.config.actor_rollout_ref.rollout.name)
-
-        # Start all server instances, restart if address already in use.
-        unready_dp_ranks = set(range(self.rollout_dp_size))
-        while len(unready_dp_ranks) > 0:
-            servers = {
-                rollout_dp_rank: server_class.options(
-                    # make sure AsyncvLLMServer colocates with its corresponding workers
-                    scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
-                        node_id=workers_info[rollout_dp_rank * self.rollout_tp_size],
-                        soft=False,
-                    ),
-                    name=f"async_llm_server_{rollout_dp_rank}",
-                ).remote(self.config, self.rollout_dp_size, rollout_dp_rank, self.worker_group.name_prefix)
-                for rollout_dp_rank in unready_dp_ranks
-            }
-
-            for rollout_dp_rank, server in servers.items():
-                try:
-                    address = ray.get(server.get_server_address.remote())
-                    self.server_addresses[rollout_dp_rank] = address
-                    self.async_llm_servers[rollout_dp_rank] = server
-                    unready_dp_ranks.remove(rollout_dp_rank)
-                except Exception:
-                    ray.kill(server)
-                    print(f"rollout server {rollout_dp_rank} failed, maybe address already in use, restarting...")
-
-        # All server instances are ready, init AsyncLLM engine.
-        ray.get([server.init_engine.remote() for server in self.async_llm_servers])
-
-    def _postprocess(self, inputs: Dict[str, list[Any]]) -> DataProto:
-        # NOTE: consistent with batch version of generate_sequences in vllm_rollout_spmd.py
-        # prompts: left pad
-        # responses: right pad
-        # input_ids: prompt + response
-        # attention_mask: [0,0,0,0,1,1,1,1, | 1,1,1,0,0,0,0,0]
-        # position_ids:   [0,0,0,0,0,1,2,3, | 4,5,6,7,8,9,10,11]
-
-        # inputs
         self.tokenizer.padding_side = "left"
         max_prompt_length = max(
-            max([len(input_ids) for input_ids in inputs["prompt_token_ids"]]),
+            max([len(ids) for ids in inputs["prompt_token_ids"]]),
             self.config.actor_rollout_ref.rollout.prompt_length,
         )
         outputs = self.tokenizer.pad(
-            [{"input_ids": input_ids} for input_ids in inputs["prompt_token_ids"]],
+            [{"input_ids": ids} for ids in inputs["prompt_token_ids"]],
             padding="max_length",
             max_length=max_prompt_length,
             return_tensors="pt",
@@ -160,14 +178,13 @@ class SkyAgentLoopManager(AgentLoopManager):
         )
         prompt_ids, prompt_attention_mask = outputs["input_ids"], outputs["attention_mask"]
 
-        # responses
         self.tokenizer.padding_side = "right"
         max_response_length = max(
-            max([len(response) for response in inputs["response_ids"]]),
+            max([len(r) for r in inputs["response_ids"]]),
             self.config.actor_rollout_ref.rollout.response_length,
         )
         outputs = self.tokenizer.pad(
-            [{"input_ids": response_ids} for response_ids in inputs["response_ids"]],
+            [{"input_ids": ids} for ids in inputs["response_ids"]],
             padding="max_length",
             max_length=max_response_length,
             return_tensors="pt",
@@ -175,61 +192,105 @@ class SkyAgentLoopManager(AgentLoopManager):
         )
         response_ids, response_attention_mask = outputs["input_ids"], outputs["attention_mask"]
 
-        # response_mask
         response_length = response_ids.shape[1]
-        loss_masks = [loss_mask + [0] * (response_length - len(loss_mask)) for loss_mask in inputs["loss_masks"]]
-        response_mask = torch.tensor(loss_masks, dtype=torch.long)
-        assert (
-            response_ids.shape == response_mask.shape
-        ), f"mismatch in response_ids and response_mask shape: {response_ids.shape} vs {response_mask.shape}"
-        response_mask = response_mask * response_attention_mask
+        loss_masks = [m + [0] * (response_length - len(m)) for m in inputs["loss_masks"]]
+        response_mask = torch.tensor(loss_masks, dtype=torch.long) * response_attention_mask
 
         input_ids = torch.cat([prompt_ids, response_ids], dim=1)
         attention_mask = torch.cat([prompt_attention_mask, response_attention_mask], dim=1)
-        position_ids = (attention_mask.cumsum(dim=1) - 1) * attention_mask
 
-        batch = TensorDict(
-            {
-                "prompts": prompt_ids,  # [bsz, prompt_length]
-                "responses": response_ids,  # [bsz, response_length]
-                "response_mask": response_mask,  # [bsz, response_length]
-                "input_ids": input_ids,  # [bsz, prompt_length + response_length]
-                "attention_mask": attention_mask,  # [bsz, prompt_length + response_length]
-                "position_ids": position_ids,  # [bsz, prompt_length + response_length]
-            },
-            batch_size=len(input_ids),
-        )
+        non_tensor_batch = {"rewards": np.array(inputs["rewards"])}
+
+        if has_vlm_tensors:
+            multi_modal_inputs = []
+            for pv, igt in zip(inputs["pixel_values"], inputs["image_grid_thw"]):
+                if pv is not None and igt is not None:
+                    multi_modal_inputs.append({"pixel_values": pv, "image_grid_thw": igt})
+                else:
+                    multi_modal_inputs.append({})
+            non_tensor_batch["multi_modal_inputs"] = np.array(multi_modal_inputs, dtype=object)
+
+            try:
+                from verl.models.transformers.qwen2_vl import get_rope_index
+                from verl.utils import hf_processor
+
+                if self._vlm_processor is None:
+                    local_path = copy_to_local(self.config.actor_rollout_ref.model.path)
+                    self._vlm_processor = hf_processor(local_path, trust_remote_code=True, use_fast=True)
+
+                position_ids_list = []
+                for i in range(len(input_ids)):
+                    sample_ids = input_ids[i:i+1]
+                    sample_mask = attention_mask[i:i+1]
+                    sample_igt = inputs["image_grid_thw"][i]
+
+                    if sample_igt is not None:
+                        if sample_igt.dim() == 2:
+                            sample_igt = sample_igt.unsqueeze(0)
+                        pos_ids = get_rope_index(
+                            self._vlm_processor,
+                            input_ids=sample_ids,
+                            image_grid_thw=sample_igt,
+                            attention_mask=sample_mask,
+                        )
+                    else:
+                        pos_ids = (sample_mask.cumsum(dim=1) - 1) * sample_mask
+                    position_ids_list.append(pos_ids)
+
+                if position_ids_list:
+                    if position_ids_list[0].dim() == 3:
+                        position_ids = torch.cat(position_ids_list, dim=1)
+                    else:
+                        position_ids = torch.cat(position_ids_list, dim=0)
+                else:
+                    position_ids = (attention_mask.cumsum(dim=1) - 1) * attention_mask
+            except Exception as e:
+                print(f"Warning: Error computing VLM position_ids: {e}")
+                position_ids = (attention_mask.cumsum(dim=1) - 1) * attention_mask
+        else:
+            position_ids = (attention_mask.cumsum(dim=1) - 1) * attention_mask
+
+        batch = TensorDict({
+            "prompts": prompt_ids,
+            "responses": response_ids,
+            "response_mask": response_mask,
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "position_ids": position_ids,
+        }, batch_size=len(input_ids))
 
         return DataProto(
             batch=batch,
-            non_tensor_batch={"rewards": np.array(inputs["rewards"])},
+            non_tensor_batch=non_tensor_batch,
             meta_info={"rollout_metrics": inputs["rollout_metrics"], "timing": {}},
         )
 
     def generate_sequences(self, prompts: DataProto) -> DataProto:
-        """Split input batch and dispatch to agent loop workers.
-
-        Args:
-            prompts (DataProto): Input batch.
-
-        Returns:
-            DataProto: Output batch.
-        """
+        """Generate sequences using skyrl-agent's asyncio-based dispatcher."""
         if self.config.actor_rollout_ref.rollout.free_cache_engine:
             self.wake_up()
+
         skyagent_output = asyncio.run(
-            self.skyagent_generator.run(prompts, val_mode=prompts.meta_info.get("val_mode", False))
+            self.skyagent_generator.run(
+                prompts, 
+                val_mode=prompts.meta_info.get("val_mode", False)
+            )
         )
         output = self._postprocess(skyagent_output)
+
         if self.config.actor_rollout_ref.rollout.free_cache_engine:
             self.sleep()
 
         return output
 
     def wake_up(self):
-        """Wake up all rollout server instances."""
-        ray.get([server.wake_up.remote() for server in self.async_llm_servers])
+        """Wake up all rollout replica instances."""
+        self._run_all([replica.wake_up() for replica in self.rollout_replicas])
 
     def sleep(self):
-        """Sleep all rollout server instances."""
-        ray.get([server.sleep.remote() for server in self.async_llm_servers])
+        """Sleep all rollout replica instances."""
+        self._run_all([replica.sleep() for replica in self.rollout_replicas])
+
+    def clear_kv_cache(self):
+        """Clear all rollout KV cache without sleeping."""
+        self._run_all([replica.clear_kv_cache() for replica in self.rollout_replicas])

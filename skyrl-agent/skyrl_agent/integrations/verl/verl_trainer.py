@@ -14,8 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-FSDP PPO Trainer with Ray-based single controller.
-This trainer supports model-agonistic model initialization with huggingface
+FSDP PPO Trainer with Ray-based single controller for verl 0.6.1.
+This trainer supports model-agonistic model initialization with huggingface.
 """
 
 import os
@@ -50,7 +50,7 @@ from verl.utils.debug import marked_timer
 from verl.utils.metric import (
     reduce_metrics,
 )
-from verl.trainer.ppo.ray_trainer import Role, compute_advantage, RayPPOTrainer
+from verl.trainer.ppo.ray_trainer import Role, compute_advantage, RayPPOTrainer, apply_kl_penalty, compute_response_mask, ResourcePoolManager
 
 from .upload_utils import upload_to_remote_background
 
@@ -64,11 +64,16 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
     This trainer orchestrates distributed PPO training across multiple nodes and GPUs,
     managing actor rollouts, critic training, and reward computation with Ray backend.
     Supports various model architectures including FSDP, Megatron, and vLLM integration.
+    
+    Updated for verl 0.6.1 compatibility.
     """
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._upload_refs = None
+        # Initialize global_steps for inference mode (parent may not set it)
+        if not hasattr(self, 'global_steps'):
+            self.global_steps = 0
 
     def init_workers(self):
         """Initialize distributed training workers using Ray backend.
@@ -84,11 +89,13 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
         # create actor and rollout
         if self.hybrid_engine:
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.ActorRollout)
+            # Handle optional npu_profile config
+            profile_option = OmegaConf.select(self.config.trainer, "npu_profile.options", default=None)
             actor_rollout_cls = RayClassWithInitArgs(
                 cls=self.role_worker_mapping[Role.ActorRollout],
                 config=self.config.actor_rollout_ref,
                 role="actor_rollout",
-                profile_option=self.config.trainer.npu_profile.options,
+                profile_option=profile_option,
             )
             self.resource_pool_to_cls[resource_pool]["actor_rollout"] = actor_rollout_cls
         else:
@@ -166,6 +173,7 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
         # create async rollout manager and request scheduler
         self.async_rollout_mode = False
         if self.config.actor_rollout_ref.rollout.mode == "async":
+            # Import from verl_0.6.1 integration
             from .verl_async_manager import SkyAgentLoopManager
 
             self.async_rollout_mode = True
@@ -202,19 +210,41 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
             if self.config.reward_model.enable and test_batch[0].non_tensor_batch["reward_model"]["style"] == "model":
                 return {}
 
-            # Store original inputs
-            input_ids = test_batch.batch["input_ids"]
-            # TODO: Can we keep special tokens except for padding tokens?
-            input_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in input_ids]
+            # Store original inputs (will be matched to outputs after generation)
+            # For agent-mode datasets (like AndroidWorld), batch may be None - use raw_prompt instead
+            if test_batch.batch is not None and "input_ids" in test_batch.batch:
+                input_ids = test_batch.batch["input_ids"]
+                # TODO: Can we keep special tokens except for padding tokens?
+                batch_input_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in input_ids]
+            elif "raw_prompt" in test_batch.non_tensor_batch:
+                # For agent-mode: extract text from raw_prompt messages
+                raw_prompts = test_batch.non_tensor_batch["raw_prompt"]
+                batch_input_texts = []
+                for prompt in raw_prompts:
+                    if isinstance(prompt, list) and len(prompt) > 0:
+                        # Extract content from the first user message
+                        batch_input_texts.append(prompt[0].get("content", str(prompt)))
+                    else:
+                        batch_input_texts.append(str(prompt))
+            else:
+                # Fallback: use instance task description
+                instances = test_batch.non_tensor_batch.get("instance", [])
+                batch_input_texts = [inst.get("task", "") if isinstance(inst, dict) else str(inst) for inst in instances]
+            
+            # Note: Don't expand by val_num_trajectories here - will be matched to outputs later
 
-            input_texts = sum([[input_text] * val_num_trajectories for input_text in input_texts], [])
-            sample_inputs.extend(input_texts)
-
-            batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
+            # Only pop batch keys that actually exist (agent-mode datasets may not have them)
+            batch_keys_to_pop = []
+            if test_batch.batch is not None:
+                for key in ["input_ids", "attention_mask", "position_ids"]:
+                    if key in test_batch.batch:
+                        batch_keys_to_pop.append(key)
             # non_tensor_batch_keys_to_pop = ["raw_prompt_ids", "instance", "data_source"]
             # Dacheng: a hack now to pop 'instance' if it exists (for swe); TODO: make this a config option
             # TODO: A unified pr on data format
-            non_tensor_batch_keys_to_pop = ["raw_prompt_ids", "data_source"]
+            non_tensor_batch_keys_to_pop = []
+            if "raw_prompt_ids" in test_batch.non_tensor_batch:
+                non_tensor_batch_keys_to_pop.append("raw_prompt_ids")
             if "instance" in test_batch.non_tensor_batch:
                 non_tensor_batch_keys_to_pop.append("instance")
             else:
@@ -243,29 +273,21 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
                 "validate": True,
             }
 
-            # pad to be divisible by dp_size
-            size_divisor = (
-                self.actor_rollout_wg.world_size
-                if not self.async_rollout_mode
-                else self.config.actor_rollout_ref.rollout.agent.num_workers
-            )
-            test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, size_divisor)  # [B+ P, S]
-            # pass val mode for skyrl-agent
-            test_gen_batch_padded.meta_info["val_mode"] = True
-
             if not self.async_rollout_mode:
+                # Sync mode: pad to be divisible by world_size for FSDP distribution
+                size_divisor = self.actor_rollout_wg.world_size
+                test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, size_divisor)
                 test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
+                # Unpad after generation
+                test_output_gen_batch = unpad_dataproto(
+                    test_output_gen_batch_padded, pad_size=pad_size * val_num_trajectories
+                )
             else:
-                test_output_gen_batch_padded = self.async_rollout_manager.generate_sequences(
-                    test_gen_batch_padded
-                )  # [(B+P)*NT, S]
-
-            # unpad
-            # SkyRL-Agent will repeat trajectories by `val_num_trajectories` internally
-            test_output_gen_batch = unpad_dataproto(
-                test_output_gen_batch_padded, pad_size=pad_size * val_num_trajectories
-            )  # [B*NT, S]
-            num_val_samples = test_output_gen_batch.batch["responses"].shape[0]
+                # Async mode (SkyRL-Agent): NO padding/unpadding needed
+                # SkyRL-Agent handles its own batching via instance_id deduplication
+                # and manages parallelism through env_pool_size, not num_workers
+                test_gen_batch.meta_info["val_mode"] = True
+                test_output_gen_batch = self.async_rollout_manager.generate_sequences(test_gen_batch)
 
             print("validation generation end")
 
@@ -273,11 +295,34 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
             output_ids = test_output_gen_batch.batch["responses"]
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
             sample_outputs.extend(output_texts)
+            
+            # Match inputs to actual output count (agent may deduplicate instances)
+            num_outputs = len(output_texts)
+            if len(batch_input_texts) == 1:
+                # Single input, repeat to match outputs
+                matched_inputs = batch_input_texts * num_outputs
+            else:
+                # Multiple inputs, take first num_outputs
+                matched_inputs = batch_input_texts[:num_outputs]
+            sample_inputs.extend(matched_inputs)
 
             # repeat
             test_batch = test_batch.repeat(repeat_times=val_num_trajectories, interleave=True)  # [B*NT, S]
-            # union
-            test_batch = test_batch.union(test_output_gen_batch)  # [B*NT, S]
+            # union - handle None batch case for agent-mode datasets
+            if test_batch.batch is None:
+                # For agent-mode: just take the output batch since input has no tensor batch
+                test_batch.batch = test_output_gen_batch.batch
+            else:
+                test_batch = test_batch.union(test_output_gen_batch)  # [B*NT, S]
+            # Always union non_tensor_batch and meta_info
+            from verl.protocol import union_numpy_dict
+            from verl.utils.py_functional import union_two_dict
+            test_batch.non_tensor_batch = union_numpy_dict(
+                test_batch.non_tensor_batch, test_output_gen_batch.non_tensor_batch
+            )
+            test_batch.meta_info = union_two_dict(
+                test_batch.meta_info, test_output_gen_batch.meta_info
+            )
 
             test_batch.meta_info["validate"] = True
 
@@ -297,21 +342,30 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
             if "__num_turns__" in test_batch.non_tensor_batch:
                 sample_turns.append(test_batch.non_tensor_batch["__num_turns__"])
 
-            if "data_source" in test_gen_batch.non_tensor_batch:
-                data_source_lst.append(test_gen_batch.non_tensor_batch["data_source"].copy())
+            if "data_source" in test_batch.non_tensor_batch:
+                # Match data_source to actual output count
+                ds = test_batch.non_tensor_batch["data_source"]
+                if len(ds) != num_outputs:
+                    # Take only what matches the outputs
+                    ds = ds[:num_outputs] if len(ds) > num_outputs else np.repeat(ds, num_outputs // max(len(ds), 1) + 1)[:num_outputs]
+                data_source_lst.append(ds.copy() if hasattr(ds, 'copy') else np.array(ds))
 
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
-        # dump generations
+        # dump generations - ensure all lists have the same length
         val_data_dir = self.config.trainer.get("validation_data_dir", None)
-        if val_data_dir:
-            self._dump_generations(
-                inputs=sample_inputs,
-                outputs=sample_outputs,
-                scores=sample_scores,
-                reward_extra_infos_dict=reward_extra_infos_dict,
-                dump_path=val_data_dir,
-            )
+        if val_data_dir and len(sample_outputs) > 0:
+            # Use the minimum length to avoid IndexError
+            min_len = min(len(sample_inputs), len(sample_outputs), len(sample_scores))
+            if min_len > 0:
+                self._dump_generations(
+                    inputs=sample_inputs[:min_len],
+                    outputs=sample_outputs[:min_len],
+                    gts=[""] * min_len,  # No ground truth in validation mode
+                    scores=sample_scores[:min_len],
+                    reward_extra_infos_dict={k: v[:min_len] if len(v) >= min_len else v for k, v in reward_extra_infos_dict.items()},
+                    dump_path=val_data_dir,
+                )
 
         for key_info, lst in reward_extra_infos_dict.items():
             assert len(lst) == 0 or len(lst) == len(sample_scores), f"{key_info}: {len(lst)=}, {len(sample_scores)=}"
@@ -444,7 +498,7 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
                 batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
                 # Dacheng: a hack now to pop 'instance' if it exists (for swe); TODO: make this a config option
                 # TODO: A unified pr on data format
-                non_tensor_batch_keys_to_pop = ["raw_prompt_ids", "data_source"]
+                non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
                 if "instance" in batch.non_tensor_batch:
                     non_tensor_batch_keys_to_pop.append("instance")
                 else:
@@ -624,12 +678,15 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
                             "norm_adv_by_std_in_grpo", True
                         )  # GRPO adv normalization factor
 
+                        # num_repeat should match the number of trajectories per sample
+                        # This is used for consistency with parent RayPPOTrainer (though
+                        # the actual grouping in GRPO is done via the 'uid' index)
                         batch = compute_advantage(
                             batch,
                             adv_estimator=self.config.algorithm.adv_estimator,
                             gamma=self.config.algorithm.gamma,
                             lam=self.config.algorithm.lam,
-                            num_repeat=1,
+                            num_repeat=self.config.skyrl_agent.num_trajectories,
                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                             config=self.config.algorithm,
                         )
