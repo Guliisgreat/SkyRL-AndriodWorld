@@ -107,6 +107,7 @@ class ContainerManager:
         snapshot: str = "clean",
         train_task_family: str = "android_world",
         val_task_family: str = "android_world",
+        initial_wait: float = 45.0,
     ) -> List[ContainerInstance]:
         """
         Create pool of N containers.
@@ -118,6 +119,7 @@ class ContainerManager:
             snapshot: Emulator snapshot name
             train_task_family: Training task family name
             val_task_family: Validation task family name
+            initial_wait: Initial wait time for emulator boot (seconds)
         
         Returns:
             List of ContainerInstance objects
@@ -128,6 +130,7 @@ class ContainerManager:
             "snapshot": snapshot,
             "train_task_family": train_task_family,
             "val_task_family": val_task_family,
+            "initial_wait": initial_wait,
         }
         
         self.available_queue = asyncio.Queue()
@@ -149,6 +152,7 @@ class ContainerManager:
                 snapshot=snapshot,
                 train_task_family=train_task_family,
                 val_task_family=val_task_family,
+                initial_wait=initial_wait,
             )
             container_elapsed = time.time() - container_start_time
             
@@ -165,6 +169,322 @@ class ContainerManager:
             f"[ContainerManager] ✓ Pool creation complete: {pool_size} containers in {pool_elapsed:.1f}s"
         )
         return self.containers
+
+    async def create_pool_parallel(
+        self,
+        pool_size: int,
+        base_env_id: int = 0,
+        max_concurrent: int = 4,
+        initial_wait: float = 30.0,
+        max_retries: int = 2,
+        sample_mode: str = "sequential",
+        snapshot: str = "clean",
+        train_task_family: str = "android_world",
+        val_task_family: str = "android_world",
+        buffer_size: int = 0,
+    ) -> List[ContainerInstance]:
+        """
+        Create pool of N containers with bounded parallel creation.
+        
+        This is faster than sequential creation for large pools.
+        Uses semaphore to limit concurrent container creations.
+        
+        Args:
+            pool_size: Number of containers to create
+            base_env_id: Starting environment ID
+            max_concurrent: Maximum concurrent container creations
+            initial_wait: Initial wait time for emulator boot (seconds)
+            max_retries: Max retries per container creation
+            sample_mode: Task sampling mode ("random" or "sequential")
+            snapshot: Emulator snapshot name
+            train_task_family: Training task family name
+            val_task_family: Validation task family name
+            buffer_size: Number of additional buffer containers (hot standby)
+        
+        Returns:
+            List of ContainerInstance objects (pool_size main + buffer_size backup)
+        """
+        # Store pool config for restart
+        self._pool_config = {
+            "sample_mode": sample_mode,
+            "snapshot": snapshot,
+            "train_task_family": train_task_family,
+            "val_task_family": val_task_family,
+            "initial_wait": initial_wait,
+        }
+        
+        self.available_queue = asyncio.Queue()
+        
+        total_containers = pool_size + buffer_size
+        logger.info(f"[ContainerManager] Starting parallel pool creation: {pool_size} main + {buffer_size} buffer containers")
+        logger.info(f"[ContainerManager] Config: max_concurrent={max_concurrent}, initial_wait={initial_wait}s")
+        
+        pool_start_time = time.time()
+        
+        # Pre-allocate all ports atomically (with lock)
+        port_tuples = self._preallocate_ports(pool_size=total_containers, base_env_id=base_env_id)
+        
+        # Create semaphore for bounded concurrency
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def create_with_semaphore(idx: int, env_id: int, ports: Tuple[int, int, int]) -> ContainerInstance:
+            async with semaphore:
+                for attempt in range(max_retries + 1):
+                    try:
+                        container = await self._create_container_with_ports(
+                            env_id=env_id,
+                            ports=ports,
+                            sample_mode=sample_mode,
+                            snapshot=snapshot,
+                            train_task_family=train_task_family,
+                            val_task_family=val_task_family,
+                            initial_wait=initial_wait,
+                        )
+                        logger.info(
+                            f"[ContainerManager] ✓ Container {idx + 1}/{total_containers} ready "
+                            f"(env{env_id}, port={ports[0]})"
+                        )
+                        return container
+                    except Exception as e:
+                        if attempt < max_retries:
+                            logger.warning(
+                                f"[ContainerManager] Container {idx + 1} creation failed (attempt {attempt + 1}): {e}"
+                            )
+                            await asyncio.sleep(2.0)
+                        else:
+                            raise
+        
+        # Create all containers in parallel (bounded by semaphore)
+        tasks = []
+        for i in range(total_containers):
+            env_id = base_env_id + i
+            ports = port_tuples[i]
+            tasks.append(create_with_semaphore(i, env_id, ports))
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Separate successful containers and handle failures
+        main_containers = []
+        backup_containers = []
+        
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"[ContainerManager] Container {i} failed: {result}")
+            else:
+                if i < pool_size:
+                    main_containers.append(result)
+                    await self.available_queue.put(result)
+                else:
+                    backup_containers.append(result)
+        
+        self.containers = main_containers
+        self._backup_containers = backup_containers
+        
+        pool_elapsed = time.time() - pool_start_time
+        logger.info(
+            f"[ContainerManager] ✓ Parallel pool creation complete: "
+            f"{len(main_containers)} main + {len(backup_containers)} backup in {pool_elapsed:.1f}s"
+        )
+        
+        return main_containers
+
+    def _preallocate_ports(
+        self,
+        pool_size: int,
+        base_env_id: int = 0,
+    ) -> List[Tuple[int, int, int]]:
+        """
+        Pre-allocate ports for all containers atomically.
+        
+        This prevents port conflicts during parallel container creation.
+        
+        Args:
+            pool_size: Number of containers to allocate ports for
+            base_env_id: Starting environment ID
+        
+        Returns:
+            List of (server_port, emulator_port, grpc_port) tuples
+        """
+        lock = FileLock(str(self.lock_file))
+        
+        port_tuples = []
+        allocated_ports: Set[int] = set()
+        
+        with lock:
+            used_ports = self._get_used_ports()
+            
+            for i in range(pool_size):
+                env_id = base_env_id + i
+                
+                # Find available server port
+                server_port = 5000 + 2 * env_id
+                while server_port in used_ports or server_port in allocated_ports:
+                    server_port += 1
+                allocated_ports.add(server_port)
+                
+                # Find available emulator port
+                emulator_port = 5574 + 2 * env_id
+                while emulator_port in used_ports or emulator_port in allocated_ports:
+                    emulator_port += 1
+                allocated_ports.add(emulator_port)
+                
+                # Find available grpc port
+                grpc_port = emulator_port + 3000
+                while grpc_port in used_ports or grpc_port in allocated_ports:
+                    grpc_port += 1
+                allocated_ports.add(grpc_port)
+                
+                port_tuples.append((server_port, emulator_port, grpc_port))
+                logger.debug(
+                    f"[ContainerManager] Pre-allocated ports for env{env_id}: "
+                    f"server={server_port}, emulator={emulator_port}, grpc={grpc_port}"
+                )
+        
+        return port_tuples
+
+    async def _create_container_with_ports(
+        self,
+        env_id: int,
+        ports: Tuple[int, int, int],
+        sample_mode: str,
+        snapshot: str,
+        train_task_family: str,
+        val_task_family: str,
+        initial_wait: float = 30.0,
+    ) -> ContainerInstance:
+        """
+        Create a container with pre-allocated ports.
+        
+        Used by create_pool_parallel() for parallel container creation.
+        
+        Args:
+            env_id: Environment ID
+            ports: Tuple of (server_port, emulator_port, grpc_port)
+            sample_mode: Task sampling mode
+            snapshot: Emulator snapshot name
+            train_task_family: Training task family
+            val_task_family: Validation task family
+            initial_wait: Initial wait time for emulator boot
+        
+        Returns:
+            ContainerInstance
+        """
+        server_port, emulator_port, grpc_port = ports
+        
+        # Build environment variables
+        environment = {
+            "ENV_SAMPLE_MODE": sample_mode,
+            "ENV_SAVE_IMAGES": "False",
+            "ENV_ID": str(env_id),
+            "ENV_SNAPSHOT": snapshot,
+            "ENV_TASK_FAMILY": train_task_family,
+            "SERVER_PORT": str(server_port),
+            "EMULATOR_PORT": str(emulator_port),
+            "GRPC_PORT": str(grpc_port),
+        }
+        
+        logger.info(
+            f"[ContainerManager] env{env_id}: Starting Docker container "
+            f"(server={server_port}, emulator={emulator_port}, grpc={grpc_port})"
+        )
+        
+        # Build volumes
+        log_dir = Path(self.temp_path) / f"env{env_id}"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        
+        volumes = {
+            str(log_dir): {"bind": "/tmp/android_logs", "mode": "rw"}
+        }
+        
+        # Create container
+        # Note: Android emulator uses KVM for hardware acceleration, not GPU passthrough.
+        # GPU device_requests were causing nvidia-container-runtime-hook failures.
+        container = self.client.containers.run(
+            self.docker_image,
+            name=f"env{env_id}",
+            detach=True,
+            remove=True,
+            privileged=True,
+            environment=environment,
+            ports={
+                f"{server_port}/tcp": server_port,
+                f"{emulator_port}/tcp": emulator_port,
+                f"{grpc_port}/tcp": grpc_port,
+            },
+            volumes=volumes,
+            devices=["/dev/kvm"] if os.path.exists("/dev/kvm") else None,
+        )
+        
+        logger.info(f"[ContainerManager] env{env_id}: Container started, waiting for server...")
+        
+        # Wait for server to be ready
+        await asyncio.sleep(initial_wait)
+        await self._wait_for_container_ready(server_port, env_id)
+        
+        instance = ContainerInstance(
+            container_id=container.id,
+            container=container,
+            server_port=server_port,
+            emulator_port=emulator_port,
+            grpc_port=grpc_port,
+            env_id=env_id,
+            state="ready",
+            last_health_check=time.time(),
+            is_healthy=True,
+        )
+        
+        return instance
+
+    async def get_backup_container(self) -> Optional[int]:
+        """
+        Get a backup container from the hot standby pool.
+        
+        Returns:
+            env_id of the backup container, or None if no backup available
+        """
+        if not hasattr(self, '_backup_containers') or not self._backup_containers:
+            return None
+        
+        backup = self._backup_containers.pop(0)
+        self.containers.append(backup)
+        await self.available_queue.put(backup)
+        
+        logger.info(f"[ContainerManager] Activated backup container env{backup.env_id}")
+        return backup.env_id
+
+    async def quick_ping(self, env_id: int) -> bool:
+        """
+        Quick health check for a container.
+        
+        Returns:
+            True if container is healthy, False otherwise
+        """
+        container = next((c for c in self.containers if c.env_id == env_id), None)
+        if container is None:
+            return False
+        
+        return self._is_container_healthy(container)
+
+    async def mark_container_unhealthy_async(self, env_id: int) -> None:
+        """
+        Mark a container as unhealthy for background restart.
+        
+        Args:
+            env_id: Environment ID of the container to mark
+        """
+        container = next((c for c in self.containers if c.env_id == env_id), None)
+        if container:
+            container.is_healthy = False
+            logger.warning(f"[ContainerManager] Container env{env_id} marked as unhealthy")
+
+    def set_recovery_callback(self, callback) -> None:
+        """
+        Set callback to be called when a container is recovered.
+        
+        Args:
+            callback: Async function to call with (env_id) when container is recovered
+        """
+        self._recovery_callback = callback
     
     async def _create_container(
         self,
@@ -173,11 +493,20 @@ class ContainerManager:
         snapshot: str,
         train_task_family: str,
         val_task_family: str,
+        initial_wait: float = 45.0,
     ) -> ContainerInstance:
         """
         Create a single container instance.
         
         Adapted from AndroidWorldHostEnv.docker_init()
+        
+        Args:
+            env_id: Environment ID for this container
+            sample_mode: Task sampling mode
+            snapshot: Emulator snapshot name
+            train_task_family: Training task family
+            val_task_family: Validation task family
+            initial_wait: Initial wait time for emulator boot (seconds)
         """
         # Build environment variables
         environment = {
@@ -235,6 +564,9 @@ class ContainerManager:
                 )
             
             logger.info(f"[ContainerManager] env{env_id}: Docker container started, waiting for emulator...")
+            
+            # Initial wait for emulator boot
+            await asyncio.sleep(initial_wait)
             
             # Wait for container to be ready
             await self._wait_for_container_ready(server_port, env_id)
@@ -668,6 +1000,7 @@ class ContainerManager:
                 snapshot=self._pool_config["snapshot"],
                 train_task_family=self._pool_config["train_task_family"],
                 val_task_family=self._pool_config["val_task_family"],
+                initial_wait=self._pool_config.get("initial_wait", 45.0),
             )
             
             # Update the existing ContainerInstance in place
