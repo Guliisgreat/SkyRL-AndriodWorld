@@ -122,6 +122,19 @@ def mock_tokenizer():
     # Mock decode for any string output needs
     tokenizer.decode = Mock(return_value="decoded text")
     
+    # Mock convert_tokens_to_ids for get_rope_index (vision token IDs)
+    # These token IDs are used by Qwen2-VL for vision processing
+    def convert_tokens_to_ids_fn(token):
+        token_map = {
+            "<|vision_start|>": 151652,
+            "<|vision_end|>": 151653,
+            "<|vision_pad|>": 151654,
+            "<|image_pad|>": 151655,
+        }
+        return token_map.get(token, 0)
+    
+    tokenizer.convert_tokens_to_ids = Mock(side_effect=convert_tokens_to_ids_fn)
+    
     return tokenizer
 
 
@@ -151,6 +164,24 @@ def mock_processor():
     
     processor.side_effect = process_fn
     processor.return_value = process_fn(None, ["test"], return_tensors="pt")
+    
+    # Mock processor.tokenizer for get_rope_index (Qwen2-VL vision tokens)
+    def convert_tokens_to_ids_fn(token):
+        token_map = {
+            "<|vision_start|>": 151652,
+            "<|vision_end|>": 151653,
+            "<|vision_pad|>": 151654,
+            "<|image_pad|>": 151655,
+            "<|video_pad|>": 151656,
+        }
+        return token_map.get(token, 0)
+    
+    processor.tokenizer = Mock()
+    processor.tokenizer.convert_tokens_to_ids = Mock(side_effect=convert_tokens_to_ids_fn)
+    
+    # Mock processor.image_processor for merge_size
+    processor.image_processor = Mock()
+    processor.image_processor.merge_size = 2
     
     return processor
 

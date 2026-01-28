@@ -278,13 +278,22 @@ class TestDispatcherIntegration:
         mock_task = AsyncMock()
         runner.task = mock_task
         
+        # Create mock trajectories (since _initialize_trajectories is mocked)
+        mock_trajectories = [[Mock() for _ in range(mock_runner_cfg.generator.num_trajectories)] 
+                              for _ in range(len(mock_input_batch))]
+        
         with patch('skyrl_agent.agents.android.android_runner.build_generator_input') as mock_build_input:
             mock_build_input.return_value = Mock(input_batch=mock_input_batch)
             
             with patch('skyrl_agent.agents.android.android_runner.build_generator_output') as mock_build_output:
                 mock_build_output.return_value = Mock(result={})
                 
-                with patch.object(runner, '_initialize_trajectories'):
+                with patch.object(runner, '_initialize_trajectories') as mock_init_traj:
+                    # Set trajectories when _initialize_trajectories is called
+                    def set_trajectories(*args, **kwargs):
+                        runner.trajectories = mock_trajectories
+                    mock_init_traj.side_effect = set_trajectories
+                    
                     with patch('skyrl_agent.agents.android.android_runner.DISPATCHER_REGISTRY') as mock_registry:
                         mock_dispatcher = AsyncMock()
                         mock_registry.get = Mock(return_value=mock_dispatcher)
@@ -293,7 +302,7 @@ class TestDispatcherIntegration:
                             await runner.run(mock_input_batch)
         
         # Verify dispatcher was called
-        mock_registry.get.assert_called_with("async_fix_pool")
+        mock_registry.get.assert_called_with("async_fix_pool_retry")
         mock_dispatcher.assert_called_once()
         
         # Verify dispatcher config
@@ -320,7 +329,7 @@ class TestDispatcherIntegration:
                 with patch('skyrl_agent.agents.android.android_runner.DISPATCHER_REGISTRY') as mock_registry:
                     mock_registry.get = Mock(return_value=None)
                     
-                    with pytest.raises(ValueError, match="async_fix_pool dispatcher not found"):
+                    with pytest.raises(ValueError, match="async_fix_pool_retry dispatcher not found"):
                         await runner.run(mock_input_batch)
 
 

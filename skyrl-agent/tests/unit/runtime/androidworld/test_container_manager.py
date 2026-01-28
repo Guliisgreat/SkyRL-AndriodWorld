@@ -491,6 +491,187 @@ class TestCleanup:
             for container in containers:
                 container.container.stop.assert_called()
         print("[TEST] ✓ test_cleanup passed")
+
+
+class TestPortPreallocation:
+    """Test port pre-allocation functionality."""
+    
+    def test_preallocate_ports(self, mock_docker_client, tmp_path):
+        """Test port pre-allocation for multiple containers."""
+        print("\n[TEST] Running: test_preallocate_ports")
+        logger.info("Testing port pre-allocation for multiple containers...")
+        
+        with patch('skyrl_agent.runtime.android.container_manager.psutil.net_connections', return_value=[]):
+            lock_file = tmp_path / "docker_port_allocation.lck"
+            manager = ContainerManager(
+                docker_image="androidworld:v8",
+                temp_path=str(tmp_path),
+                lock_file=lock_file,
+            )
+            manager.client = mock_docker_client
+            
+            print("[TEST]   Pre-allocating ports for 3 containers...")
+            port_tuples = manager._preallocate_ports(pool_size=3, base_env_id=0)
+            
+            assert len(port_tuples) == 3
+            # Verify each tuple has (server, emulator, grpc) ports
+            for i, (server, emulator, grpc) in enumerate(port_tuples):
+                print(f"[TEST]   Container {i}: server={server}, emulator={emulator}, grpc={grpc}")
+                assert server > 0
+                assert emulator > 0
+                assert grpc > 0
+        print("[TEST] ✓ test_preallocate_ports passed")
+    
+    def test_preallocate_ports_unique(self, mock_docker_client, tmp_path):
+        """Test pre-allocated ports are unique."""
+        print("\n[TEST] Running: test_preallocate_ports_unique")
+        logger.info("Testing pre-allocated ports are unique...")
+        
+        with patch('skyrl_agent.runtime.android.container_manager.psutil.net_connections', return_value=[]):
+            lock_file = tmp_path / "docker_port_allocation.lck"
+            manager = ContainerManager(
+                docker_image="androidworld:v8",
+                temp_path=str(tmp_path),
+                lock_file=lock_file,
+            )
+            manager.client = mock_docker_client
+            
+            print("[TEST]   Pre-allocating ports for 4 containers...")
+            port_tuples = manager._preallocate_ports(pool_size=4, base_env_id=0)
+            
+            # Collect all ports
+            all_ports = []
+            for server, emulator, grpc in port_tuples:
+                all_ports.extend([server, emulator, grpc])
+            
+            # Verify all ports are unique
+            print(f"[TEST]   Verifying {len(all_ports)} ports are unique...")
+            assert len(all_ports) == len(set(all_ports))
+        print("[TEST] ✓ test_preallocate_ports_unique passed")
+
+
+class TestParallelPoolCreation:
+    """Test parallel pool creation functionality."""
+    
+    @pytest.mark.asyncio
+    async def test_create_container_with_ports(self, mock_docker_client, tmp_path):
+        """Test creating container with pre-allocated ports."""
+        print("\n[TEST] Running: test_create_container_with_ports")
+        logger.info("Testing creating container with pre-allocated ports...")
+        
+        with patch('skyrl_agent.runtime.android.container_manager.psutil.net_connections', return_value=[]), \
+             patch('skyrl_agent.runtime.android.container_manager.requests.get') as mock_get, \
+             patch('skyrl_agent.runtime.android.container_manager.asyncio.sleep', new_callable=AsyncMock):
+            
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_get.return_value = mock_response
+            
+            lock_file = tmp_path / "docker_port_allocation.lck"
+            manager = ContainerManager(
+                docker_image="androidworld:v8",
+                temp_path=str(tmp_path),
+                lock_file=lock_file,
+            )
+            manager.client = mock_docker_client
+            
+            # Pre-defined ports
+            ports = (5000, 5574, 8574)
+            
+            print("[TEST]   Creating container with pre-allocated ports...")
+            container = await manager._create_container_with_ports(
+                env_id=0,
+                ports=ports,
+                sample_mode="random",
+                snapshot="clean",
+                train_task_family="android_world",
+                val_task_family="android_world",
+                initial_wait=1.0,  # Short wait for test
+            )
+            
+            assert isinstance(container, ContainerInstance)
+            assert container.server_port == 5000
+            assert container.emulator_port == 5574
+            assert container.grpc_port == 8574
+            assert container.state == "ready"
+        print("[TEST] ✓ test_create_container_with_ports passed")
+    
+    @pytest.mark.asyncio
+    async def test_create_pool_parallel(self, mock_docker_client, tmp_path):
+        """Test parallel pool creation."""
+        print("\n[TEST] Running: test_create_pool_parallel")
+        logger.info("Testing parallel pool creation...")
+        
+        with patch('skyrl_agent.runtime.android.container_manager.psutil.net_connections', return_value=[]), \
+             patch('skyrl_agent.runtime.android.container_manager.requests.get') as mock_get, \
+             patch('skyrl_agent.runtime.android.container_manager.asyncio.sleep', new_callable=AsyncMock):
+            
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_get.return_value = mock_response
+            
+            lock_file = tmp_path / "docker_port_allocation.lck"
+            manager = ContainerManager(
+                docker_image="androidworld:v8",
+                temp_path=str(tmp_path),
+                lock_file=lock_file,
+            )
+            manager.client = mock_docker_client
+            
+            print("[TEST]   Creating parallel pool of 3 containers (max_concurrent=2)...")
+            containers = await manager.create_pool_parallel(
+                pool_size=3,
+                base_env_id=0,
+                max_concurrent=2,
+                initial_wait=1.0,  # Short wait for test
+            )
+            
+            assert len(containers) == 3
+            assert manager.available_queue is not None
+            assert manager.available_queue.qsize() == 3
+            
+            # Verify pool config is stored
+            assert manager._pool_config is not None
+            assert manager._pool_config["initial_wait"] == 1.0
+        print("[TEST] ✓ test_create_pool_parallel passed")
+    
+    @pytest.mark.asyncio
+    async def test_create_pool_with_initial_wait(self, mock_docker_client, tmp_path):
+        """Test pool creation with custom initial_wait."""
+        print("\n[TEST] Running: test_create_pool_with_initial_wait")
+        logger.info("Testing pool creation with custom initial_wait...")
+        
+        with patch('skyrl_agent.runtime.android.container_manager.psutil.net_connections', return_value=[]), \
+             patch('skyrl_agent.runtime.android.container_manager.requests.get') as mock_get, \
+             patch('skyrl_agent.runtime.android.container_manager.asyncio.sleep', new_callable=AsyncMock) as mock_sleep:
+            
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_get.return_value = mock_response
+            
+            lock_file = tmp_path / "docker_port_allocation.lck"
+            manager = ContainerManager(
+                docker_image="androidworld:v8",
+                temp_path=str(tmp_path),
+                lock_file=lock_file,
+            )
+            manager.client = mock_docker_client
+            
+            print("[TEST]   Creating pool with initial_wait=30...")
+            await manager.create_pool(
+                pool_size=1,
+                base_env_id=0,
+                initial_wait=30.0,
+            )
+            
+            # Verify initial_wait is stored in config
+            assert manager._pool_config["initial_wait"] == 30.0
+            
+            # Verify asyncio.sleep was called with the correct value
+            # The first call should be the initial wait
+            sleep_calls = [call.args[0] for call in mock_sleep.call_args_list]
+            assert 30.0 in sleep_calls
+        print("[TEST] ✓ test_create_pool_with_initial_wait passed")
         print("\n" + "="*50)
         print("[TEST] All ContainerManager tests completed!")
         print("="*50)
