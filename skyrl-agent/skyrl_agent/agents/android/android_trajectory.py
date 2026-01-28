@@ -41,41 +41,36 @@ class AndroidTrajectory(BaseTrajectory):
         self.agent: Optional[AndroidAgent] = None
         
         # Stored during initialize for generate
-        self.initial_instruction = None
+        self.template_messages = None
         self.initial_observation = None
     
     async def initialize_trajectory(self):
         """
         Reset environment and get initial observation.
         
-        Builds initial instruction by combining:
-        1. Template messages from Task.get_instruction(instance)
-        2. Observation messages from Task.format_observation(observation)
+        Stores raw observation - agent will handle its own prompt formatting.
         """
-        # 1. Get template from task (no observation needed)
-        template_messages = self.task.get_instruction(self.data["instance"])
+        # 1. Get template from task (system prompt only)
+        self.template_messages = self.task.get_instruction(self.data["instance"])
         
         # 2. Reset environment and get observation
         payload = self._build_reset_payload()
         observation, info = await self.env_handle.reset(payload)
         self.initial_observation = observation
         
-        # 3. Format observation via task
-        observation_messages = self.task.format_observation(observation)
-        
-        # 4. Combine: template + observation
-        self.initial_instruction = template_messages + observation_messages
-        
-        # Store initial image in history if available
-        if observation and observation.get("image") is not None:
-            # Will be properly tracked by agent
-            pass
+        # Note: Observation formatting is delegated to the Agent
+        # Each agent type (UITARS, etc.) has its own prompt template
     
     async def generate_trajectory(self):
         """
         Create agent, run trajectory, and retrieve state via getters.
         """
         # Create agent (agent will own all state)
+        if self.processor is None:
+            print(f"[AndroidTrajectory WARNING] processor is None for instance={self.cfg.instance_id} traj={self.cfg.trajectory_id}")
+        else:
+            print(f"[AndroidTrajectory] processor loaded: {type(self.processor).__name__} for instance={self.cfg.instance_id} traj={self.cfg.trajectory_id}")
+
         self.agent = AndroidAgent(
             traj_config=self.cfg,
             infer_engine=self.infer_engine,
@@ -84,8 +79,15 @@ class AndroidTrajectory(BaseTrajectory):
             env_handle=self.env_handle,
         )
         
+        # Let agent format observation with its own prompt template
+        initial_instruction = self.agent.format_initial_instruction(
+            template_messages=self.template_messages,
+            observation=self.initial_observation,
+            task=self.task,
+        )
+        
         # Run agent with formatted instruction
-        finish_reason, result = await self.agent.run(self.initial_instruction)
+        finish_reason, result = await self.agent.run(initial_instruction)
         
         # Retrieve state from agent (single get_state() call)
         state = self.agent.get_state()
