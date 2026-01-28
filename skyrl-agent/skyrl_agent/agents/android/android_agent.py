@@ -166,6 +166,40 @@ class AndroidAgent:
             tool = TOOL_REGISTRY[name]()
             self.tools[tool.name] = tool
     
+    # === AGENT-SPECIFIC PROMPT FORMATTING ===
+    
+    def format_initial_instruction(
+        self,
+        template_messages: List[Dict],
+        observation: Dict,
+        task,
+    ) -> List[Dict]:
+        """
+        Format initial instruction with agent-specific prompt template.
+        
+        This method allows each agent type to apply its own prompt formatting.
+        AndroidAgent uses UITARS_USR_PROMPT_THOUGHT template.
+        
+        Args:
+            template_messages: System prompt from Task.get_instruction()
+            observation: Raw observation from env.reset()
+            task: Task instance for format_observation helper
+        
+        Returns:
+            Complete initial instruction messages
+        """
+        def prompt_formatter(task_instruction: str) -> str:
+            return UITARS_USR_PROMPT_THOUGHT.format(instruction=task_instruction)
+        
+        observation_messages = task.format_observation(
+            observation,
+            prompt_formatter=prompt_formatter,
+            min_pixels=self.min_pixels,
+            max_pixels=self.max_pixels,
+        )
+        
+        return template_messages + observation_messages
+    
     # === MESSAGE TRANSFORMATION (explicit returns) ===
     
     def append_assistant(self, messages: List[Dict], response: str) -> List[Dict]:
@@ -538,16 +572,60 @@ class AndroidAgent:
                 attention_mask=self.state.attention_mask,
             )
             
-            input_ids, attention_mask, position_ids, labels = VF.postprocess_data(
-                input_ids=self.state.input_ids,
-                attention_mask=self.state.attention_mask,
-                position_ids=position_ids,
+            # Postprocess input_ids and attention_mask (padding/truncation)
+            # VF.postprocess_data expects 2D tensors [batch, seq]
+            input_ids_2d = self.state.input_ids.unsqueeze(0) if self.state.input_ids.dim() == 1 else self.state.input_ids
+            attention_mask_2d = self.state.attention_mask.unsqueeze(0) if self.state.attention_mask.dim() == 1 else self.state.attention_mask
+            
+            input_ids_2d, attention_mask_2d = VF.postprocess_data(
+                input_ids=input_ids_2d,
+                attention_mask=attention_mask_2d,
                 max_length=self.max_prompt_length,
                 pad_token_id=self.tokenizer.pad_token_id,
                 left_pad=True,
                 truncation='right',
-                labels=self.state.labels,
             )
+            
+            # Squeeze back to 1D
+            input_ids = input_ids_2d.squeeze(0)
+            attention_mask = attention_mask_2d.squeeze(0)
+            
+            # Handle position_ids and labels separately with same padding
+            seq_len = input_ids.shape[0]
+            orig_len = position_ids.shape[1] if position_ids.dim() > 1 else position_ids.shape[0]
+            
+            if seq_len > orig_len:
+                # Pad position_ids (left pad with 0s)
+                pad_len = seq_len - orig_len
+                if position_ids.dim() > 1:
+                    position_ids = torch.cat([
+                        torch.zeros((position_ids.shape[0], pad_len), dtype=position_ids.dtype),
+                        position_ids
+                    ], dim=1)
+                else:
+                    position_ids = torch.cat([
+                        torch.zeros(pad_len, dtype=position_ids.dtype),
+                        position_ids
+                    ])
+            elif seq_len < orig_len:
+                # Truncate from right
+                if position_ids.dim() > 1:
+                    position_ids = position_ids[:, :seq_len]
+                else:
+                    position_ids = position_ids[:seq_len]
+            
+            # Handle labels similarly
+            labels = self.state.labels
+            if labels is not None:
+                orig_label_len = labels.shape[0]
+                if seq_len > orig_label_len:
+                    pad_len = seq_len - orig_label_len
+                    labels = torch.cat([
+                        torch.full((pad_len,), -100, dtype=labels.dtype),
+                        labels
+                    ])
+                elif seq_len < orig_label_len:
+                    labels = labels[:seq_len]
             
             data = {
                 'input_ids': input_ids,
