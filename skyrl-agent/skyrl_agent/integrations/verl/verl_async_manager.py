@@ -200,6 +200,14 @@ class SkyAgentLoopManager:
         attention_mask = torch.cat([prompt_attention_mask, response_attention_mask], dim=1)
 
         non_tensor_batch = {"rewards": np.array(inputs["rewards"])}
+        
+        # Track position_ids computation for metrics
+        position_ids_metrics = {
+            "vlm_samples_total": 0,
+            "vlm_samples_computed": 0,
+            "vlm_samples_fallback": 0,
+            "used_text_only_fallback": False,
+        }
 
         if has_vlm_tensors:
             multi_modal_inputs = []
@@ -210,45 +218,41 @@ class SkyAgentLoopManager:
                     multi_modal_inputs.append({})
             non_tensor_batch["multi_modal_inputs"] = np.array(multi_modal_inputs, dtype=object)
 
-            try:
-                from verl.models.transformers.qwen2_vl import get_rope_index
-                from verl.utils import hf_processor
-
-                if self._vlm_processor is None:
-                    local_path = copy_to_local(self.config.actor_rollout_ref.model.path)
-                    self._vlm_processor = hf_processor(local_path, trust_remote_code=True, use_fast=True)
-
-                position_ids_list = []
-                for i in range(len(input_ids)):
-                    sample_ids = input_ids[i:i+1]
-                    sample_mask = attention_mask[i:i+1]
-                    sample_igt = inputs["image_grid_thw"][i]
-
-                    if sample_igt is not None:
-                        if sample_igt.dim() == 2:
-                            sample_igt = sample_igt.unsqueeze(0)
-                        pos_ids = get_rope_index(
-                            self._vlm_processor,
-                            input_ids=sample_ids,
-                            image_grid_thw=sample_igt,
-                            attention_mask=sample_mask,
-                        )
-                    else:
-                        pos_ids = (sample_mask.cumsum(dim=1) - 1) * sample_mask
-                    position_ids_list.append(pos_ids)
-
-                if position_ids_list:
-                    if position_ids_list[0].dim() == 3:
-                        position_ids = torch.cat(position_ids_list, dim=1)
-                    else:
-                        position_ids = torch.cat(position_ids_list, dim=0)
-                else:
-                    position_ids = (attention_mask.cumsum(dim=1) - 1) * attention_mask
-            except Exception as e:
-                print(f"Warning: Error computing VLM position_ids: {e}")
-                position_ids = (attention_mask.cumsum(dim=1) - 1) * attention_mask
+            position_ids, position_ids_metrics = self._compute_vlm_position_ids(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                image_grid_thw_list=inputs["image_grid_thw"],
+            )
+            
+            # FAIL-FAST: If VLM position_ids computation completely failed,
+            # training would use incorrect 1D position_ids instead of 3D M-RoPE.
+            # This would cause the model to lose image spatial information.
+            # Better to fail loudly than train a broken model silently.
+            if position_ids_metrics["used_text_only_fallback"]:
+                raise RuntimeError(
+                    "CRITICAL: VLM position_ids computation failed for entire batch.\n"
+                    f"  - Batch size: {len(input_ids)}\n"
+                    f"  - Samples with images: {sum(1 for igt in inputs['image_grid_thw'] if igt is not None)}\n"
+                    f"  - Fallback count: {position_ids_metrics['vlm_samples_fallback']}\n"
+                    "\n"
+                    "Training with 1D position_ids would cause incorrect VLM behavior:\n"
+                    "  - Model cannot understand image spatial layout\n"
+                    "  - Cross-attention between text and image will be wrong\n"
+                    "  - Training would produce a broken model\n"
+                    "\n"
+                    "To fix this issue:\n"
+                    "  1. Check if verl.models.transformers.qwen2_vl is importable\n"
+                    "  2. Verify the model path has a valid processor\n"
+                    "  3. Check image_grid_thw tensors are correctly formatted\n"
+                    "  4. See logs above for specific error details"
+                )
         else:
             position_ids = (attention_mask.cumsum(dim=1) - 1) * attention_mask
+        
+        # Add position_ids metrics to rollout_metrics
+        rollout_metrics = inputs.get("rollout_metrics", {})
+        for key, value in position_ids_metrics.items():
+            rollout_metrics[f"position_ids/{key}"] = value
 
         batch = TensorDict({
             "prompts": prompt_ids,
@@ -262,8 +266,191 @@ class SkyAgentLoopManager:
         return DataProto(
             batch=batch,
             non_tensor_batch=non_tensor_batch,
-            meta_info={"rollout_metrics": inputs["rollout_metrics"], "timing": {}},
+            meta_info={"rollout_metrics": rollout_metrics, "timing": {}},
         )
+
+    def _compute_vlm_position_ids(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        image_grid_thw_list: List[Any],
+    ) -> tuple:
+        """
+        Compute VLM-aware position_ids for Qwen2-VL models.
+        
+        For VLM models, position_ids have 3D structure [batch, 3, seq_len]:
+        - Dimension 0: text position
+        - Dimension 1: height position for image tokens
+        - Dimension 2: width position for image tokens
+        
+        This function tracks success/failure metrics and provides detailed
+        error logging to help diagnose issues.
+        
+        Args:
+            input_ids: Padded input token IDs [batch, seq_len]
+            attention_mask: Attention mask [batch, seq_len]
+            image_grid_thw_list: List of image_grid_thw tensors per sample
+        
+        Returns:
+            Tuple of (position_ids tensor, metrics dict)
+        """
+        import traceback
+        
+        metrics = {
+            "vlm_samples_total": len(input_ids),
+            "vlm_samples_computed": 0,
+            "vlm_samples_fallback": 0,
+            "used_text_only_fallback": False,
+        }
+        
+        # Try to import VLM utilities
+        try:
+            from verl.models.transformers.qwen2_vl import get_rope_index
+            from verl.utils import hf_processor
+        except ImportError as e:
+            print(
+                f"[position_ids] ERROR: Cannot import VLM utilities: {e}\n"
+                f"This will cause incorrect training for Qwen2-VL models.\n"
+                f"Falling back to text-only position_ids."
+            )
+            metrics["used_text_only_fallback"] = True
+            metrics["vlm_samples_fallback"] = len(input_ids)
+            return (attention_mask.cumsum(dim=1) - 1) * attention_mask, metrics
+        
+        # Initialize processor if needed
+        if self._vlm_processor is None:
+            try:
+                local_path = copy_to_local(self.config.actor_rollout_ref.model.path)
+                self._vlm_processor = hf_processor(local_path, trust_remote_code=True, use_fast=True)
+                print(f"[position_ids] Loaded VLM processor from {local_path}")
+            except Exception as e:
+                print(
+                    f"[position_ids] ERROR: Cannot load VLM processor: {e}\n"
+                    f"Falling back to text-only position_ids."
+                )
+                metrics["used_text_only_fallback"] = True
+                metrics["vlm_samples_fallback"] = len(input_ids)
+                return (attention_mask.cumsum(dim=1) - 1) * attention_mask, metrics
+        
+        # Compute position_ids for each sample
+        position_ids_list = []
+        per_sample_errors = []
+        
+        for i in range(len(input_ids)):
+            sample_ids = input_ids[i:i+1]
+            sample_mask = attention_mask[i:i+1]
+            sample_igt = image_grid_thw_list[i]
+            
+            try:
+                if sample_igt is not None:
+                    # Ensure correct shape for image_grid_thw
+                    if sample_igt.dim() == 2:
+                        sample_igt = sample_igt.unsqueeze(0)
+                    
+                    pos_ids = get_rope_index(
+                        self._vlm_processor,
+                        input_ids=sample_ids,
+                        image_grid_thw=sample_igt,
+                        attention_mask=sample_mask,
+                    )
+                    metrics["vlm_samples_computed"] += 1
+                else:
+                    # No image for this sample - use text-only position_ids
+                    pos_ids = (sample_mask.cumsum(dim=1) - 1) * sample_mask
+                    metrics["vlm_samples_fallback"] += 1
+                
+                position_ids_list.append(pos_ids)
+                
+            except Exception as e:
+                # Log per-sample error with context
+                error_info = {
+                    "sample_idx": i,
+                    "error": str(e),
+                    "image_grid_thw_shape": sample_igt.shape if sample_igt is not None else None,
+                    "input_ids_shape": sample_ids.shape,
+                }
+                per_sample_errors.append(error_info)
+                
+                # Use text-only fallback for this sample
+                pos_ids = (sample_mask.cumsum(dim=1) - 1) * sample_mask
+                position_ids_list.append(pos_ids)
+                metrics["vlm_samples_fallback"] += 1
+        
+        # Log errors if any occurred
+        if per_sample_errors:
+            print(
+                f"[position_ids] WARNING: {len(per_sample_errors)}/{len(input_ids)} samples "
+                f"failed VLM position_ids computation. Using text-only fallback for these.\n"
+                f"First error: {per_sample_errors[0]}"
+            )
+            if len(per_sample_errors) > 1:
+                print(f"[position_ids] Additional errors: {per_sample_errors[1:3]}...")
+        
+        # Concatenate position_ids
+        if not position_ids_list:
+            print("[position_ids] WARNING: No position_ids computed, using text-only fallback")
+            metrics["used_text_only_fallback"] = True
+            return (attention_mask.cumsum(dim=1) - 1) * attention_mask, metrics
+        
+        # Handle mixed dimensionality (some 3D VLM, some 2D text-only)
+        try:
+            # Check if we have mixed dimensions
+            dims = [p.dim() for p in position_ids_list]
+            if len(set(dims)) > 1:
+                # Mixed dimensions - need to expand 2D to 3D for consistency
+                print(
+                    f"[position_ids] INFO: Mixed dimensions detected: {dims}. "
+                    f"Expanding 2D tensors to 3D for consistency."
+                )
+                expanded_list = []
+                for pos_ids in position_ids_list:
+                    if pos_ids.dim() == 2:
+                        # Expand [1, seq_len] to [1, 3, seq_len] for VLM compatibility
+                        # Use same position for all 3 dimensions (text-only behavior)
+                        pos_ids = pos_ids.unsqueeze(1).expand(-1, 3, -1)
+                    expanded_list.append(pos_ids)
+                position_ids_list = expanded_list
+            
+            # Now concatenate
+            if position_ids_list[0].dim() == 3:
+                # VLM format: [1, 3, seq_len] -> [batch, 3, seq_len]
+                position_ids = torch.cat(position_ids_list, dim=0)
+            else:
+                # Text-only format: [1, seq_len] -> [batch, seq_len]
+                position_ids = torch.cat(position_ids_list, dim=0)
+            
+            # Validate shape
+            expected_batch = len(input_ids)
+            actual_batch = position_ids.shape[0]
+            if actual_batch != expected_batch:
+                print(
+                    f"[position_ids] ERROR: Shape mismatch after concat. "
+                    f"Expected batch={expected_batch}, got {actual_batch}. "
+                    f"Input shapes: {[p.shape for p in position_ids_list[:3]]}"
+                )
+                # This is a critical error - raise to prevent silent training issues
+                raise ValueError(
+                    f"position_ids batch size mismatch: {actual_batch} vs {expected_batch}"
+                )
+            
+            print(
+                f"[position_ids] Computed successfully: shape={position_ids.shape}, "
+                f"vlm_computed={metrics['vlm_samples_computed']}, "
+                f"fallback={metrics['vlm_samples_fallback']}"
+            )
+            
+        except Exception as e:
+            print(
+                f"[position_ids] ERROR: Failed to concatenate position_ids: {e}\n"
+                f"Traceback: {traceback.format_exc()}\n"
+                f"Falling back to text-only position_ids for entire batch."
+            )
+            metrics["used_text_only_fallback"] = True
+            metrics["vlm_samples_fallback"] = len(input_ids)
+            metrics["vlm_samples_computed"] = 0
+            return (attention_mask.cumsum(dim=1) - 1) * attention_mask, metrics
+        
+        return position_ids, metrics
 
     def generate_sequences(self, prompts: DataProto) -> DataProto:
         """Generate sequences using skyrl-agent's asyncio-based dispatcher."""
