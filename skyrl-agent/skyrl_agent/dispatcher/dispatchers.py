@@ -19,17 +19,26 @@ QUEUE_DRAIN_TIMEOUT = 1.0
 
 # === Error Classification for Fast-Fail ===
 
-# Patterns that indicate the container is dead (not recoverable on same container)
-DEAD_CONTAINER_PATTERNS: List[str] = [
+# Patterns that DEFINITELY indicate the container is dead (fast-fail immediately)
+# These are unambiguous - no point retrying on same container
+DEFINITELY_DEAD_PATTERNS: List[str] = [
+    "connection refused",          # Server process not running
+    "no route to host",            # Network configuration broken
+    "network is unreachable",      # Interface down
+]
+
+# Patterns that POSSIBLY indicate container is dead (need confirmation)
+# These can be transient - require 2+ consecutive failures before switching
+POSSIBLY_DEAD_PATTERNS: List[str] = [
     "cannot connect",
-    "connection refused",
     "server disconnected",
     "connection reset by peer",
-    "no route to host",
-    "network is unreachable",
-    "connection timed out",
+    "connection timed out",        # Could be slow, not dead
     "failed to establish a new connection",
 ]
+
+# Combined for backward compatibility
+DEAD_CONTAINER_PATTERNS: List[str] = DEFINITELY_DEAD_PATTERNS + POSSIBLY_DEAD_PATTERNS
 
 # Patterns that indicate context length exceeded (not recoverable by retry or switch)
 CONTEXT_LENGTH_PATTERNS: List[str] = [
@@ -42,21 +51,41 @@ CONTEXT_LENGTH_PATTERNS: List[str] = [
 ]
 
 
-def is_container_dead_error(error: Exception) -> bool:
+def is_container_dead_error(error: Exception, consecutive_failures: int = 1) -> bool:
     """
     Check if an error indicates the container is dead/unreachable.
     
-    These errors mean retrying on the same container is pointless.
-    Fast-fail to container switch instead.
+    Uses a two-tier approach to balance reliability vs responsiveness:
+    - DEFINITELY_DEAD patterns: Fast-fail immediately (no retries will help)
+    - POSSIBLY_DEAD patterns: Require 2+ consecutive failures before declaring dead
+    
+    This prevents unnecessary container switches from transient issues like:
+    - Momentary network hiccups
+    - Container under heavy load (slow response)
+    - Brief connection timeouts
+    
+    Trade-off: 1-2 extra seconds of retry << 45-120 seconds of container restart
     
     Args:
         error: The exception that was raised
+        consecutive_failures: Number of consecutive failures on this container (default: 1)
     
     Returns:
         True if this is a dead container error, False otherwise
     """
     error_str = str(error).lower()
-    return any(pattern in error_str for pattern in DEAD_CONTAINER_PATTERNS)
+    
+    # Definitely dead - no second chances, these are unambiguous
+    if any(pattern in error_str for pattern in DEFINITELY_DEAD_PATTERNS):
+        return True
+    
+    # Possibly dead - require confirmation via consecutive failures
+    # This prevents false positives from transient issues
+    if consecutive_failures >= 2:
+        if any(pattern in error_str for pattern in POSSIBLY_DEAD_PATTERNS):
+            return True
+    
+    return False
 
 
 def is_context_length_error(error: Exception) -> bool:
@@ -346,6 +375,14 @@ async def _execute_with_retries(
     """
     Execute trajectory with retries on the current container.
     
+    Uses robust error detection to avoid unnecessary container switches:
+    - DEFINITELY_DEAD patterns: Fast-fail immediately
+    - POSSIBLY_DEAD patterns: Require 2+ consecutive failures
+    - Other errors: Retry up to max_retries times
+    
+    Trade-off: A few extra seconds of retry is much cheaper than
+    container switch (5-10s) + restart trajectory from beginning.
+    
     Args:
         ctx: The trajectory context
         retry_cfg: Retry configuration
@@ -358,6 +395,7 @@ async def _execute_with_retries(
     """
     container_dead = False
     context_error = False
+    consecutive_connection_failures = 0  # Track for robust dead detection
     
     for attempt in range(retry_cfg.max_retries + 1):
         try:
@@ -368,7 +406,16 @@ async def _execute_with_retries(
             return True, False, False
             
         except Exception as e:
-            is_dead = is_container_dead_error(e)
+            # Track consecutive connection-related failures for robust detection
+            error_str = str(e).lower()
+            if any(p in error_str for p in DEAD_CONTAINER_PATTERNS):
+                consecutive_connection_failures += 1
+            else:
+                consecutive_connection_failures = 0  # Reset on different error type
+            
+            # Use consecutive failures for robust dead container detection
+            # This prevents false positives from transient network issues
+            is_dead = is_container_dead_error(e, consecutive_connection_failures)
             is_context = is_context_length_error(e)
             ctx.record_failure(attempt + 1, e, is_dead, is_context)
             
@@ -380,11 +427,12 @@ async def _execute_with_retries(
                 )
                 return False, False, True
             
-            # FAST-FAIL: If container is dead, skip remaining retries
+            # FAST-FAIL: If container is confirmed dead (unambiguous or 2+ consecutive failures)
             if is_dead:
                 logger.warning(
                     f"Trajectory ({ctx.batch_idx}, {ctx.trajectory_id}) detected dead container "
-                    f"env{ctx.current_env_id}: {e}. Fast-failing to container switch..."
+                    f"env{ctx.current_env_id} after {consecutive_connection_failures} consecutive "
+                    f"connection failures: {e}. Switching container..."
                 )
                 return False, True, False
             
