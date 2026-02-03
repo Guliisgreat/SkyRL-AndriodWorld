@@ -234,7 +234,7 @@ async def _pre_check_container(
             await retry_cfg.mark_container_unhealthy(ctx.current_env_id)
         
         # DON'T put unhealthy container back in queue!
-        # Try backup pool first (instant), then fall back to regular queue
+        # Try backup pool first (instant), then fall back to regular queue with timeout
         backup_env_id = None
         if retry_cfg.get_backup_container:
             backup_env_id = await retry_cfg.get_backup_container()
@@ -245,8 +245,17 @@ async def _pre_check_container(
                 f"Trajectory ({ctx.batch_idx}, {ctx.trajectory_id}) using backup env{backup_env_id}"
             )
         else:
-            new_env_id = await env_queue.get()
-            ctx.switch_to_container(new_env_id)
+            # Use timeout to prevent deadlock - if no container available, 
+            # break out and let main execution loop handle the failure
+            try:
+                new_env_id = await asyncio.wait_for(env_queue.get(), timeout=30.0)
+                ctx.switch_to_container(new_env_id)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Trajectory ({ctx.batch_idx}, {ctx.trajectory_id}) timed out waiting "
+                    f"for container in pre-check, proceeding with current env{ctx.current_env_id}"
+                )
+                break  # Exit pre-check loop, let main loop handle
     
     # If we exhausted all pre-check attempts, log a warning but proceed
     # The main execution loop will handle failures
@@ -918,4 +927,178 @@ async def async_fix_pool_retry_dispatcher(cfg, init_fn, run_fn, eval_fn):
                 f"All test instances must have results.\n{error_summary}"
             )
 
+    await dispatcher()
+
+
+# =============================================================================
+# Async FixedEnv Pool Dispatcher for AndroidWorld (using ContainerManager)
+# =============================================================================
+
+@register_dispatcher("async_fix_pool_android")
+async def async_fix_pool_android_dispatcher(cfg, init_fn, run_fn, eval_fn):
+    """
+    AndroidWorld dispatcher using ContainerManager's allocate/release pattern.
+    
+    This dispatcher delegates all container health management, failover, and
+    replacement to ContainerManager. It does NOT implement retry logic itself -
+    ContainerManager handles:
+    - Health checks before allocation
+    - Unhealthy container detection on release
+    - Automatic container replacement via backup pool
+    - Background health monitoring
+    
+    Config parameters:
+        container_manager: ContainerManager instance (required)
+        num_instances: Number of task instances
+        num_trajectories: Number of trajectories per instance
+        num_workers: Number of parallel workers (default: pool size)
+        on_trajectory_complete: Optional callback(batch_idx, traj_id, success, error)
+        val_mode: Boolean indicating evaluation mode (default: False)
+        max_container_retries: Max retries per trajectory on container failure (default: 3)
+    
+    Note: This dispatcher passes ContainerInstance directly to init_fn/run_fn/eval_fn
+    instead of just env_id. This simplifies the design by avoiding mappings.
+    
+    Error handling:
+        - ContainerDeadError: 
+            - Evaluation mode: Re-queue trajectory for retry (up to max_container_retries)
+            - Training mode: Mark as failed, continue (throughput > completeness)
+        - Other exceptions: Release with success=False, error logged (no retry)
+    """
+    from skyrl_agent.runtime.android.exceptions import ContainerDeadError
+    from collections import defaultdict
+    
+    async def dispatcher():
+        container_manager = cfg["container_manager"]
+        num_instances = cfg["num_instances"]
+        num_trajectories = cfg["num_trajectories"]
+        num_workers = cfg.get("num_workers", len(container_manager.containers))
+        on_trajectory_complete = cfg.get("on_trajectory_complete")
+        
+        # Mode detection: evaluation vs training
+        # In evaluation mode, we retry failed trajectories to ensure complete metrics
+        # In training mode, we skip failed trajectories to maximize throughput
+        val_mode = cfg.get("val_mode", False)
+        max_container_retries = cfg.get("max_container_retries", 3)
+        
+        total_trajectories = num_instances * num_trajectories
+        
+        # Track retry counts per trajectory (only used in val_mode)
+        trajectory_retries: dict[tuple[int, int], int] = defaultdict(int)
+        
+        # Queue of all pending (batch_idx, trajectory_id)
+        work_queue = asyncio.Queue()
+        for trajectory_id in range(num_trajectories):
+            for batch_idx in range(num_instances):
+                await work_queue.put((batch_idx, trajectory_id))
+        
+        mode_str = "EVALUATION (retry on container failure)" if val_mode else "TRAINING (skip on container failure)"
+        logger.info(
+            f"[async_fix_pool_android] Starting dispatch: "
+            f"{num_instances} instances x {num_trajectories} trajectories = {total_trajectories} total, "
+            f"{num_workers} workers, {len(container_manager.containers)} containers, "
+            f"mode={mode_str}"
+        )
+        
+        async def worker():
+            while True:
+                batch_idx, trajectory_id = await work_queue.get()
+                container = None
+                success = False
+                error_msg = None
+                should_requeue = False
+                
+                try:
+                    # Acquire container (blocks until healthy container available)
+                    container = await container_manager.allocate_container(batch_idx, trajectory_id)
+                    
+                    # Pass container directly to trajectory functions
+                    # Runner creates RuntimeClient from container in init_fn
+                    await init_fn(batch_idx, trajectory_id, container)
+                    await run_fn(batch_idx, trajectory_id, container)
+                    await eval_fn(batch_idx, trajectory_id, container)
+                    
+                    success = True
+                    # Clear retry count on success
+                    if (batch_idx, trajectory_id) in trajectory_retries:
+                        del trajectory_retries[(batch_idx, trajectory_id)]
+                    
+                except ContainerDeadError as e:
+                    # Container is dead - this is an INFRA error, not task error
+                    error_msg = f"container_dead: {e}"
+                    retry_count = trajectory_retries[(batch_idx, trajectory_id)]
+                    
+                    if val_mode:
+                        # EVALUATION MODE: Re-queue for retry (completeness matters)
+                        if retry_count < max_container_retries:
+                            trajectory_retries[(batch_idx, trajectory_id)] += 1
+                            should_requeue = True
+                            logger.warning(
+                                f"[async_fix_pool_android] Container dead for trajectory "
+                                f"({batch_idx}, {trajectory_id}), retry {retry_count + 1}/{max_container_retries}: {e}"
+                            )
+                        else:
+                            logger.error(
+                                f"[async_fix_pool_android] Trajectory ({batch_idx}, {trajectory_id}) "
+                                f"FAILED after {max_container_retries} container retries: {e}"
+                            )
+                    else:
+                        # TRAINING MODE: Skip and continue (throughput matters)
+                        logger.warning(
+                            f"[async_fix_pool_android] Container dead for trajectory "
+                            f"({batch_idx}, {trajectory_id}), skipping (training mode): {e}"
+                        )
+                    
+                except Exception as e:
+                    # APPLICATION ERROR - don't retry, this is a task-level bug
+                    error_msg = str(e)
+                    logger.exception(
+                        f"[async_fix_pool_android] Application error in trajectory "
+                        f"({batch_idx}, {trajectory_id}): {e}"
+                    )
+                    
+                finally:
+                    # Release container first (if we acquired one)
+                    if container is not None:
+                        await container_manager.release_container(
+                            container, 
+                            success=success, 
+                            error=error_msg
+                        )
+                    
+                    # Re-queue BEFORE task_done() if needed (val_mode retry)
+                    if should_requeue:
+                        await work_queue.put((batch_idx, trajectory_id))
+                    
+                    # Notify completion callback (only if not re-queuing)
+                    if not should_requeue and on_trajectory_complete:
+                        try:
+                            result = on_trajectory_complete(batch_idx, trajectory_id, success, error_msg)
+                            if asyncio.iscoroutine(result):
+                                await result
+                        except Exception as cb_error:
+                            logger.warning(f"on_trajectory_complete callback error: {cb_error}")
+                    
+                    work_queue.task_done()
+        
+        # Launch workers
+        workers = [asyncio.create_task(worker()) for _ in range(num_workers)]
+        
+        logger.info("[async_fix_pool_android] Waiting for all work to complete...")
+        await work_queue.join()
+        
+        # Cancel all workers
+        for worker_task in workers:
+            worker_task.cancel()
+        
+        # Log final status with retry info
+        status = container_manager.get_pool_status()
+        total_retries = sum(trajectory_retries.values())
+        logger.info(
+            f"[async_fix_pool_android] Dispatch complete. "
+            f"Pool status: {status['healthy']} healthy, {status['unhealthy']} unhealthy, "
+            f"{status['failed_trajectories']} failed trajectories, "
+            f"container retries: {total_retries}"
+        )
+    
     await dispatcher()

@@ -1,8 +1,12 @@
 """
-AndroidAgentRunner - Runner for Android agents using async_fix_pool_retry dispatcher.
+AndroidAgentRunner - Runner for Android agents using async_fix_pool_android dispatcher.
 
 Same interface as AgentRunner, with persistent env_pool created via
 Task.initialize_runtime() on first run().
+
+Uses async_fix_pool_android dispatcher which delegates container health management,
+failover, and replacement to ContainerManager. No retry logic in the dispatcher -
+ContainerManager handles all container lifecycle concerns.
 """
 
 from typing import Any, Dict, List, Optional
@@ -19,10 +23,11 @@ from loguru import logger
 
 class AndroidAgentRunner(AgentRunner):
     """
-    Runner for Android agents using async_fix_pool_retry dispatcher.
+    Runner for Android agents using async_fix_pool_android dispatcher.
     
     Same interface as AgentRunner, persistent env_pool.
-    Uses async_fix_pool_retry dispatcher with built-in retry logic for robust execution.
+    Uses async_fix_pool_android dispatcher which delegates all container health
+    management to ContainerManager (no retry logic in dispatcher).
     """
     
     def __init__(self, cfg: Dict[str, Any], infer_engine: Any, tokenizer: Any) -> None:
@@ -158,137 +163,81 @@ class AndroidAgentRunner(AgentRunner):
         else:
             num_trajectories = self.cfg.generator.num_trajectories
         
-        # 3. Create wrapper functions for async_fix_pool_retry
-        async def init_fn(batch_idx: int, trajectory_id: int, env_id: int):
+        # 3. Create wrapper functions for async_fix_pool_android
+        # Note: These receive ContainerInstance directly (not just env_id)
+        from skyrl_agent.runtime.android import RuntimeClient
+        
+        async def init_fn(batch_idx: int, trajectory_id: int, container):
             """Wrapper for trajectory initialization with env assignment."""
             instance_ids = list(self.trajectories.keys())
             instance_id = instance_ids[batch_idx]
             traj = self.trajectories[instance_id][trajectory_id]
-            traj.env_id = env_id
-            traj.env_handle = self.env_pool[env_id]
+            traj.env_id = container.env_id
+            # Create RuntimeClient directly from container (simple, explicit)
+            traj.env_handle = RuntimeClient(container)
             await traj.initialize_trajectory()
         
-        async def run_fn(batch_idx: int, trajectory_id: int, env_id: int):
+        async def run_fn(batch_idx: int, trajectory_id: int, container):
             """Wrapper for trajectory generation."""
             instance_ids = list(self.trajectories.keys())
             instance_id = instance_ids[batch_idx]
             await self.trajectories[instance_id][trajectory_id].generate_trajectory()
         
-        async def eval_fn(batch_idx: int, trajectory_id: int, env_id: int):
+        async def eval_fn(batch_idx: int, trajectory_id: int, container):
             """Wrapper for trajectory evaluation."""
             instance_ids = list(self.trajectories.keys())
             instance_id = instance_ids[batch_idx]
             await self.trajectories[instance_id][trajectory_id].evaluate_trajectory()
         
-        async def on_retry_success(batch_idx: int, trajectory_id: int, retry_count: int, failure_history: list):
-            """Called when a trajectory succeeds after retries. Store retry info on trajectory."""
-            instance_ids = list(self.trajectories.keys())
-            instance_id = instance_ids[batch_idx]
-            traj = self.trajectories[instance_id][trajectory_id]
-            # Store retry metadata on trajectory result
-            if traj.result is not None:
-                traj.result["retry_count"] = retry_count
-                traj.result["failure_history"] = failure_history
-                logger.info(
-                    f"Trajectory {instance_id}/{trajectory_id} succeeded after {retry_count} retries"
-                )
+        # 4. Dispatch with async_fix_pool_android
+        # Uses ContainerManager's allocate/release pattern for simplified error handling
+        # Container health, failover, and replacement are handled by ContainerManager
         
-        async def on_retry_failure(batch_idx: int, trajectory_id: int, retry_count: int, 
-                                   failure_history: list, final_error: dict):
-            """Called when all retries are exhausted. Store error info on trajectory."""
-            instance_ids = list(self.trajectories.keys())
-            instance_id = instance_ids[batch_idx]
-            traj = self.trajectories[instance_id][trajectory_id]
-            # Set trajectory result to error object
-            traj.result = {
-                "instance_id": instance_id,
-                "trajectory_id": trajectory_id,
-                "error": True,
-                "retry_count": retry_count,
-                "failure_history": failure_history,
-                "final_error": final_error,
-                "messages": [],
-                "reward": 0.0,
-                "format_reward": 0.0,
-            }
-            logger.error(
-                f"Trajectory {instance_id}/{trajectory_id} failed after {retry_count} attempts: "
-                f"{final_error['error_message'] if final_error else 'Unknown'}"
-            )
-        
-        # 4. Dispatch with async_fix_pool_retry
-        # Use len(self.trajectories) instead of len(self.batch) because
-        # batch items may share the same instance_id and get deduplicated
-        # 
-        # Two-level recovery strategy:
-        # - Level 1: Retry on same container (max_retries times)
-        # - Level 2: Switch to different container and restart from beginning
-        
-        # Get container manager for health callbacks
+        # Get container manager
         container_manager = getattr(self.task, '_container_manager', None)
+        if container_manager is None:
+            raise RuntimeError("ContainerManager not initialized. Call task.initialize_runtime() first.")
         
-        # Create quick_ping callback for pre-check
-        async def quick_ping(env_id: int) -> bool:
-            """Quick health check before assigning container."""
-            if container_manager is None:
-                return True  # No container manager, assume healthy
-            return await container_manager.quick_ping(env_id)
-        
-        # Create mark_container_unhealthy callback
-        async def mark_unhealthy(env_id: int) -> None:
-            """Mark container as unhealthy for background restart."""
-            if container_manager is not None:
-                await container_manager.mark_container_unhealthy_async(env_id)
-        
-        # Create recovery callback registration function
-        # This is called by the dispatcher to register the add_to_queue callback
-        def on_container_recovered(add_to_queue_callback):
-            """Register the add_to_queue callback with the container manager."""
-            if container_manager is not None:
-                container_manager.set_recovery_callback(add_to_queue_callback)
-        
-        # Create backup container callback (instant failover)
-        async def get_backup_container() -> int:
-            """Get a hot standby container from backup pool."""
-            if container_manager is None:
-                return None
-            return await container_manager.get_backup_container()
-        
-        # Get dispatcher retry config from yaml (with sensible defaults)
-        disp_cfg = getattr(self.cfg, 'dispatcher', None) or {}
-        if hasattr(disp_cfg, '__iter__') and not isinstance(disp_cfg, dict):
-            disp_cfg = dict(disp_cfg) if hasattr(disp_cfg, 'items') else {}
+        # Callback for trajectory completion (optional, for logging/tracking)
+        async def on_trajectory_complete(batch_idx: int, trajectory_id: int, success: bool, error: str):
+            """Called when a trajectory completes (success or failure)."""
+            instance_ids = list(self.trajectories.keys())
+            instance_id = instance_ids[batch_idx]
+            traj = self.trajectories[instance_id][trajectory_id]
+            
+            if not success and traj.result is None:
+                # Trajectory failed before producing a result
+                traj.result = {
+                    "instance_id": instance_id,
+                    "trajectory_id": trajectory_id,
+                    "error": True,
+                    "error_message": error or "Unknown error",
+                    "messages": [],
+                    "reward": 0.0,
+                    "format_reward": 0.0,
+                }
+                logger.error(f"Trajectory {instance_id}/{trajectory_id} failed: {error}")
         
         dispatcher_cfg = {
-            "envs": self.env_pool,
+            "container_manager": container_manager,
             "num_instances": len(self.trajectories),
             "num_trajectories": num_trajectories,
-            # Level 1: Retries per container (read from yaml config)
-            "max_retries": getattr(disp_cfg, 'max_retries', None) or disp_cfg.get('max_retries', 5),
-            "retry_base_delay": getattr(disp_cfg, 'retry_base_delay', None) or disp_cfg.get('retry_base_delay', 2.0),
-            # Level 2: Container switching (read from yaml config)
-            "max_container_switches": getattr(disp_cfg, 'max_container_switches', None) or disp_cfg.get('max_container_switches', 10),
-            "container_switch_delay": getattr(disp_cfg, 'container_switch_delay', None) or disp_cfg.get('container_switch_delay', 5.0),
-            # Callbacks
-            "on_retry_success": on_retry_success,
-            "on_retry_failure": on_retry_failure,
-            "quick_ping": quick_ping,  # Pre-check before using container
-            "mark_container_unhealthy": mark_unhealthy,  # Mark dead containers
-            "on_container_recovered": on_container_recovered,  # Add recovered containers back to queue
-            "get_backup_container": get_backup_container,  # Instant failover to backup
+            "num_workers": len(container_manager.containers),
+            "on_trajectory_complete": on_trajectory_complete,
+            # Pass val_mode to dispatcher for retry behavior:
+            # - Evaluation: retry on container failure (completeness matters)
+            # - Training: skip on container failure (throughput matters)
+            "val_mode": val_mode,
         }
         
-        dispatcher = DISPATCHER_REGISTRY.get("async_fix_pool_retry")
+        dispatcher = DISPATCHER_REGISTRY.get("async_fix_pool_android")
         if dispatcher is None:
-            raise ValueError("async_fix_pool_retry dispatcher not found in registry")
+            raise ValueError("async_fix_pool_android dispatcher not found in registry")
         
         logger.info(
-            f"Starting async_fix_pool_retry dispatch: "
-            f"{len(self.batch)} instances x {num_trajectories} trajectories "
-            f"with {len(self.env_pool)} envs, "
-            f"max_retries={dispatcher_cfg['max_retries']}, "
-            f"max_container_switches={dispatcher_cfg['max_container_switches']}, "
-            f"pre_check={'enabled' if container_manager else 'disabled'}"
+            f"Starting async_fix_pool_android dispatch: "
+            f"{len(self.trajectories)} instances x {num_trajectories} trajectories "
+            f"with {len(container_manager.containers)} containers"
         )
         await dispatcher(dispatcher_cfg, init_fn, run_fn, eval_fn)
         
