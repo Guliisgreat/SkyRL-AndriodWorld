@@ -15,6 +15,7 @@ import aiohttp
 from enum import Enum
 from typing import Dict, Any, Tuple, Optional
 from .container_manager import ContainerInstance
+from .exceptions import ContainerDeadError
 
 logger = logging.getLogger(__name__)
 
@@ -282,8 +283,11 @@ class RuntimeClient:
                         f"Reset request to {self.base_url} failed after {self.STEP_MAX_RETRIES+1} attempts: {e}"
                     )
         
-        # All retries exhausted - raise to trigger trajectory-level retry
-        raise Exception(f"Reset failed after {self.STEP_MAX_RETRIES+1} attempts on {self.base_url}: {last_error}")
+        # All retries exhausted - raise ContainerDeadError to trigger container replacement
+        raise ContainerDeadError(
+            self.container.env_id,
+            f"Reset failed after {self.STEP_MAX_RETRIES+1} attempts: {last_error}"
+        )
     
     async def step(self, payload: Dict) -> Tuple[Dict, float, bool, bool, Dict]:
         """
@@ -350,8 +354,11 @@ class RuntimeClient:
                         f"Step request to {self.base_url} failed after {self.STEP_MAX_RETRIES+1} attempts: {e}"
                     )
         
-        # All retries exhausted - raise to trigger trajectory-level retry
-        raise Exception(f"Step failed after {self.STEP_MAX_RETRIES+1} attempts on {self.base_url}: {last_error}")
+        # All retries exhausted - raise ContainerDeadError to trigger container replacement
+        raise ContainerDeadError(
+            self.container.env_id,
+            f"Step failed after {self.STEP_MAX_RETRIES+1} attempts: {last_error}"
+        )
     
     def _deserialize_observation(self, obs_dict: Dict) -> Dict:
         """

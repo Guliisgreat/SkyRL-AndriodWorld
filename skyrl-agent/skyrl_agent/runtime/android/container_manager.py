@@ -4,8 +4,29 @@ ContainerManager - Manages pool of Docker containers for AndroidWorld environmen
 This module contains all components for container management:
 - PortAllocator: Thread-safe port allocation
 - ContainerFactory: Container creation and initialization  
-- HealthMonitor: Background health monitoring
+- HealthMonitor: Background health monitoring with instant failover
 - ContainerManager: Main facade class
+
+Failover Flow
+-------------
+When a container becomes unhealthy, the system handles it based on container state:
+
+1. **Idle Container** (state="ready"):
+   - Destroy the unhealthy container (NOT restart with same env_id)
+   - If backup available: activate backup (buffer → pool, instant <1s)
+   - Create NEW container with NEW env_id → buffer
+   - If no backup was available: immediately activate the new container (buffer → pool)
+   - Consistent flow: new containers always go to buffer first, then activate to pool
+
+2. **In-Use Container** (state="in_use"):
+   - Cannot do instant failover (trajectory would be lost)
+   - Mark as unhealthy, let dispatcher handle retry with different container
+
+Container Replacement Flow:
+   - Failed container is stopped and removed (NEVER restarted in-place)
+   - NEW container is created with fresh env_id and ports
+   - New container is added to backup pool (not main pool)
+   - Invariant: len(pool) + len(buffer) = pool_size + buffer_size (constant)
 
 Extracted and adapted from verl/trainer/androidworld_env.py
 """
@@ -15,7 +36,7 @@ import time
 import platform
 import asyncio
 from pathlib import Path
-from typing import List, Set, Optional, Any, Tuple, Dict, Callable
+from typing import List, Set, Optional, Any, Tuple, Dict, Callable, Protocol, runtime_checkable
 from dataclasses import dataclass, field
 
 import docker
@@ -31,6 +52,7 @@ from loguru import logger
 
 RETRY_INTERVAL = 10  # seconds between health check retries
 SERVER_TIMEOUT = 600  # max seconds to wait for server to be ready
+ALLOCATE_TIMEOUT = float(os.getenv("CONTAINER_ALLOCATE_TIMEOUT", "300"))  # seconds to wait for pool allocation
 
 
 # =============================================================================
@@ -73,8 +95,74 @@ class ContainerInstance:
     # Health tracking fields
     last_health_check: float = field(default=0.0)
     is_healthy: bool = field(default=True)
-    restart_count: int = field(default=0)
+    restart_count: int = field(default=0)  # Legacy: kept for backward compatibility; unused with replace-not-restart design
     current_trajectory: Optional[Tuple[int, int]] = field(default=None)  # (batch_idx, traj_id)
+
+
+# =============================================================================
+# Callback Protocols (for HealthMonitor)
+# =============================================================================
+
+@runtime_checkable
+class SyncRestartCallback(Protocol):
+    """
+    Callback for synchronous container replacement (blocking).
+    
+    Called when no backup is available. Creates a NEW container with NEW env_id,
+    adds it to the pool, and destroys the unhealthy one (no in-place restart).
+    Blocks the health monitor until replacement completes (~60s).
+    """
+    def __call__(self, container: ContainerInstance) -> Any:
+        """Replace the container with a new one, returning awaitable or None."""
+        ...
+
+
+@runtime_checkable  
+class ActivateBackupCallback(Protocol):
+    """
+    Callback to activate a backup container for instant failover.
+    
+    Called when an idle container becomes unhealthy. Should:
+    1. Pop a container from the backup pool
+    2. Add it to the main pool and available queue
+    3. Return the new container's env_id
+    
+    Returns:
+        env_id of activated backup, or None if no backup available
+    """
+    def __call__(self) -> Any:
+        """Activate and return backup env_id, or None."""
+        ...
+
+
+@runtime_checkable
+class CreateReplacementCallback(Protocol):
+    """
+    Callback to create a replacement container for the backup pool.
+    
+    Called in background after instant failover to replenish the backup pool.
+    Should:
+    1. Stop and remove the failed container
+    2. Create a NEW container with fresh env_id and ports
+    3. Add new container to backup pool (not main pool)
+    
+    Args:
+        failed_container: The container that failed (to be replaced)
+        
+    Returns:
+        New ContainerInstance added to backup pool, or None on failure
+    """
+    def __call__(self, failed_container: ContainerInstance) -> Any:
+        """Create replacement backup, returning awaitable or ContainerInstance."""
+        ...
+
+
+@runtime_checkable
+class StatusLogCallback(Protocol):
+    """Callback to log current pool status."""
+    def __call__(self) -> None:
+        """Log the current pool status."""
+        ...
 
 
 # =============================================================================
@@ -261,11 +349,30 @@ class ContainerFactory:
             devices=["/dev/kvm"] if os.path.exists("/dev/kvm") else None,
         )
     
-    def _remove_existing_container(self, container_name: str) -> None:
+    def _remove_existing_container(self, container_name: str, wait_for_removal: bool = True) -> None:
+        """
+        Remove existing container by name, optionally waiting for removal to complete.
+        
+        Args:
+            container_name: Name of container to remove
+            wait_for_removal: If True, wait until container is fully removed (default: True)
+        """
         try:
             existing = self.docker_client.containers.get(container_name)
             logger.warning(f"[ContainerFactory] Removing existing container: {container_name}")
             existing.remove(force=True)
+            
+            if wait_for_removal:
+                # Wait for container to be fully removed (avoid race condition)
+                for attempt in range(30):  # 30 attempts x 0.5s = 15s max
+                    try:
+                        self.docker_client.containers.get(container_name)
+                        time.sleep(0.5)
+                    except docker.errors.NotFound:
+                        logger.debug(f"[ContainerFactory] Container {container_name} removed after {attempt * 0.5:.1f}s")
+                        break
+                else:
+                    logger.warning(f"[ContainerFactory] Timeout waiting for {container_name} removal")
         except docker.errors.NotFound:
             pass
         except Exception as e:
@@ -303,18 +410,67 @@ class ContainerFactory:
 # =============================================================================
 
 class HealthMonitor:
-    """Background health monitoring for Docker containers."""
+    """
+    Background health monitoring for Docker containers with instant failover support.
+    
+    Monitors containers periodically and handles unhealthy containers:
+    - Idle containers: Try instant failover with backup, or sync replacement
+    - In-use containers: Mark unhealthy, let dispatcher handle retry
+    
+    Callbacks:
+        on_sync_restart: Blocking replacement when no backup available (~60s); creates NEW container
+        on_activate_backup: Activate backup for instant failover (<1s)
+        on_create_replacement: Create new container for backup pool (background)
+        on_status_log: Log pool status after each check cycle
+    """
     
     def __init__(
-        self, containers: List[ContainerInstance],
-        on_restart_needed: Optional[Callable[[ContainerInstance], Any]] = None,
-        on_status_log: Optional[Callable[[], None]] = None,
+        self,
+        containers: List[ContainerInstance],
+        *,  # Force keyword arguments for clarity
+        on_sync_restart: Optional[SyncRestartCallback] = None,
+        on_activate_backup: Optional[ActivateBackupCallback] = None,
+        on_create_replacement: Optional[CreateReplacementCallback] = None,
+        on_status_log: Optional[StatusLogCallback] = None,
     ):
+        """
+        Initialize HealthMonitor.
+        
+        Args:
+            containers: List of containers to monitor
+            on_sync_restart: Called for blocking replacement (no backup available)
+            on_activate_backup: Called to get backup for instant failover
+            on_create_replacement: Called to create replacement for backup pool
+            on_status_log: Called to log pool status
+        """
         self.containers = containers
-        self.on_restart_needed = on_restart_needed
-        self.on_status_log = on_status_log
+        
+        # Callbacks (see Protocol definitions for contracts)
+        self._on_sync_restart = on_sync_restart
+        self._on_activate_backup = on_activate_backup
+        self._on_create_replacement = on_create_replacement
+        self._on_status_log = on_status_log
+        
+        # Internal state
         self._monitor_task: Optional[asyncio.Task] = None
         self._running: bool = False
+        self._replacement_tasks: List[asyncio.Task] = []  # Track background replacements
+
+    def _track_replacement_task(self, task: asyncio.Task, context: str) -> None:
+        """Track a background replacement task and log failures."""
+        self._replacement_tasks.append(task)
+
+        def _on_done(done_task: asyncio.Task) -> None:
+            try:
+                done_task.result()
+            except Exception as e:
+                logger.error(f"[HealthMonitor] Replacement task failed ({context}): {e}")
+            try:
+                self._replacement_tasks.remove(done_task)
+            except ValueError:
+                pass
+
+        task.add_done_callback(_on_done)
     
     @property
     def is_running(self) -> bool:
@@ -363,47 +519,167 @@ class HealthMonitor:
             return False
         return True
     
-    def _check_http_health(self, container: ContainerInstance) -> bool:
-        try:
-            response = requests.get(f"http://localhost:{container.server_port}/health", timeout=(5, 5))
-            if response.status_code != 200:
-                logger.warning(f"[HealthMonitor] Container env{container.env_id} unhealthy: HTTP {response.status_code}")
-                container.is_healthy = False
-                return False
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"[HealthMonitor] Container env{container.env_id} unhealthy: {e}")
-            container.is_healthy = False
-            return False
-        return True
+    def _check_http_health(
+        self, 
+        container: ContainerInstance,
+        max_retries: int = 2,
+        timeout: Tuple[int, int] = (3, 5),  # 3s connect, 5s read (with retry)
+    ) -> bool:
+        """
+        Check HTTP health endpoint with retry logic.
+        
+        Uses longer timeout and retries to avoid false positives from
+        slow but healthy containers under heavy load.
+        
+        Args:
+            container: Container to check
+            max_retries: Number of retries before marking unhealthy (default: 2)
+            timeout: (connect_timeout, read_timeout) in seconds
+        """
+        env_id = container.env_id
+        
+        for attempt in range(max_retries + 1):
+            try:
+                response = requests.get(
+                    f"http://localhost:{container.server_port}/health",
+                    timeout=timeout,
+                )
+                if response.status_code == 200:
+                    return True
+                elif response.status_code == 503:
+                    # Server busy - retry
+                    logger.debug(f"[HealthMonitor] Container env{env_id} busy (503), attempt {attempt + 1}")
+                else:
+                    # Real error
+                    logger.warning(f"[HealthMonitor] Container env{env_id} unhealthy: HTTP {response.status_code}")
+                    container.is_healthy = False
+                    return False
+                    
+            except requests.exceptions.ConnectTimeout:
+                # Can't connect at all - likely dead
+                logger.warning(f"[HealthMonitor] Container env{env_id} connect timeout (attempt {attempt + 1})")
+                
+            except requests.exceptions.ReadTimeout:
+                # Connected but slow - may just be busy, retry
+                logger.debug(f"[HealthMonitor] Container env{env_id} read timeout (attempt {attempt + 1})")
+                
+            except requests.exceptions.ConnectionError:
+                # Connection refused - container not responding
+                logger.warning(f"[HealthMonitor] Container env{env_id} connection error (attempt {attempt + 1})")
+                
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"[HealthMonitor] Container env{env_id} request error: {e}")
+            
+            # Wait before retry (except on last attempt)
+            if attempt < max_retries:
+                time.sleep(2.0)
+        
+        # All retries exhausted
+        logger.warning(f"[HealthMonitor] Container env{env_id} unhealthy after {max_retries + 1} attempts")
+        container.is_healthy = False
+        return False
     
     async def _monitor_loop(self, interval: float) -> None:
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 for container in self.containers:
-                    if not self._running: break
+                    if not self._running:
+                        break
                     is_healthy = self.check_health(container)
                     if not is_healthy:
                         await self._handle_unhealthy_container(container)
-                if self.on_status_log: self.on_status_log()
-            except asyncio.CancelledError: break
-            except Exception as e: logger.error(f"[HealthMonitor] Error in monitor loop: {e}")
+                if self._on_status_log:
+                    self._on_status_log()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[HealthMonitor] Error in monitor loop: {e}")
     
     async def _handle_unhealthy_container(self, container: ContainerInstance) -> None:
-        if container.state == "in_use":
+        """
+        Handle unhealthy container with instant failover support.
+        
+        Strategy:
+        1. If backup available: activate backup instantly, create replacement in background
+        2. If no backup: fall back to synchronous replacement (blocking)
+        """
+        env_id = container.env_id
+        was_in_use = container.state == "in_use"
+        
+        if was_in_use:
             traj_info = container.current_trajectory
             if traj_info:
-                logger.error(f"[HealthMonitor] Container env{container.env_id} FAILED while running trajectory")
+                logger.error(f"[HealthMonitor] Container env{env_id} FAILED while running trajectory")
             else:
-                logger.error(f"[HealthMonitor] Container env{container.env_id} FAILED while in_use")
-        else:
-            logger.info(f"[HealthMonitor] Container env{container.env_id} unhealthy (idle), requesting restart...")
-            if self.on_restart_needed:
-                try:
-                    result = self.on_restart_needed(container)
-                    if asyncio.iscoroutine(result): await result
-                except Exception as e:
-                    logger.error(f"[HealthMonitor] Restart callback failed for env{container.env_id}: {e}")
+                logger.error(f"[HealthMonitor] Container env{env_id} FAILED while in_use")
+            # For in_use containers, we can't do instant failover (trajectory is lost)
+            # Just mark as unhealthy, dispatcher will handle retry
+            return
+        
+        # Idle container - try instant failover with backup
+        logger.info(f"[HealthMonitor] Container env{env_id} unhealthy (idle)")
+        
+        # Try to activate a backup container for instant failover
+        if self._on_activate_backup:
+            try:
+                result = self._on_activate_backup()
+                if asyncio.iscoroutine(result):
+                    backup_env_id = await result
+                else:
+                    backup_env_id = result
+                
+                if backup_env_id is not None:
+                    logger.info(
+                        f"[HealthMonitor] ✓ Instant failover: env{env_id} → backup env{backup_env_id}"
+                    )
+                    
+                    # Schedule background replacement to replenish backup pool
+                    if self._on_create_replacement:
+                        task = asyncio.create_task(
+                            self._create_replacement_async(container)
+                        )
+                        self._track_replacement_task(task, f"env{env_id}")
+                    return  # Instant failover successful
+                else:
+                    logger.warning(f"[HealthMonitor] No backup available for instant failover")
+            except Exception as e:
+                logger.error(f"[HealthMonitor] Instant failover failed: {e}")
+        
+        # Fall back to synchronous replacement (blocking)
+        logger.info(f"[HealthMonitor] Falling back to synchronous replacement for env{env_id}...")
+        if self._on_sync_restart:
+            try:
+                result = self._on_sync_restart(container)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:
+                logger.error(f"[HealthMonitor] Sync restart failed for env{env_id}: {e}")
+    
+    async def _create_replacement_async(self, failed_container: ContainerInstance) -> None:
+        """
+        Create a replacement container in the background to replenish backup pool.
+        
+        Args:
+            failed_container: The container that failed and needs replacement
+        """
+        env_id = failed_container.env_id
+        logger.info(f"[HealthMonitor] Creating replacement for failed env{env_id}...")
+        
+        try:
+            if self._on_create_replacement:
+                result = self._on_create_replacement(failed_container)
+                if asyncio.iscoroutine(result):
+                    new_container = await result
+                else:
+                    new_container = result
+                
+                if new_container:
+                    logger.info(f"[HealthMonitor] ✓ Replacement created for env{env_id}")
+                else:
+                    logger.warning(f"[HealthMonitor] Replacement creation returned None for env{env_id}")
+        except Exception as e:
+            logger.error(f"[HealthMonitor] Failed to create replacement for env{env_id}: {e}")
 
 
 # =============================================================================
@@ -416,7 +692,7 @@ class ContainerManager:
     
     Features:
     - Background health monitoring
-    - Automatic container restart for idle unhealthy containers
+    - Automatic container replacement for idle unhealthy containers
     - Fail-fast handling for in-use container failures
     - Status tracking and reporting
     
@@ -475,10 +751,13 @@ class ContainerManager:
             docker_client=self.client,
         )
         
-        # Container pool
-        self.containers: List[ContainerInstance] = []
-        self._backup_containers: List[ContainerInstance] = []
+        # Container pools
+        self.containers: List[ContainerInstance] = []       # Main pool (active)
+        self.backup_containers: List[ContainerInstance] = []  # Hot standby pool
         self.available_queue: Optional[asyncio.Queue] = None
+        
+        # Lock for modifying pool lists (avoids race with HealthMonitor and concurrent replacements)
+        self._containers_lock = asyncio.Lock()
         
         # Pool configuration (stored for restart)
         self._pool_config: Optional[Dict[str, Any]] = None
@@ -488,11 +767,15 @@ class ContainerManager:
         self._health_monitor_task: Optional[asyncio.Task] = None
         self._health_monitor_running: bool = False
         
-        # Recovery callback
-        self._recovery_callback = None
+        # Recovery callback: called with (new_env_id) when a replacement container is ready
+        self._recovery_callback: Optional[Callable[..., Any]] = None
         
         # Failed trajectory tracking
         self.failed_trajectories: List[Tuple[int, int, str]] = []  # (batch_idx, traj_id, error_msg)
+        
+        # Atomic env_id counter for background restarts (avoids race conditions)
+        self._next_env_id: int = 0
+        self._env_id_lock = asyncio.Lock()
         
         os.makedirs(temp_path, exist_ok=True)
     
@@ -507,100 +790,107 @@ class ContainerManager:
     # Pool Creation
     # =========================================================================
     
-    async def create_pool(
-        self,
-        pool_size: int,
-        base_env_id: int = 0,
-        sample_mode: str = "sequential",
-        snapshot: str = "clean",
-        train_task_family: str = "android_world",
-        val_task_family: str = "android_world",
-        initial_wait: float = 45.0,
-    ) -> List[ContainerInstance]:
-        """
-        Create pool of N containers sequentially.
+    # async def create_pool(
+    #     self,
+    #     pool_size: int,
+    #     base_env_id: int = 0,
+    #     sample_mode: str = "sequential",
+    #     snapshot: str = "clean",
+    #     train_task_family: str = "android_world",
+    #     val_task_family: str = "android_world",
+    #     initial_wait: float = 45.0,
+    # ) -> List[ContainerInstance]:
+    #     """
+    #     Create pool of N containers sequentially.
         
-        Args:
-            pool_size: Number of containers to create
-            base_env_id: Starting environment ID (containers will use base_env_id, base_env_id+1, ...)
-            sample_mode: Task sampling mode ("random" or "sequential")
-            snapshot: Emulator snapshot name
-            train_task_family: Training task family name
-            val_task_family: Validation task family name
-            initial_wait: Initial wait time for emulator boot (seconds)
+    #     Args:
+    #         pool_size: Number of containers to create
+    #         base_env_id: Starting environment ID (containers will use base_env_id, base_env_id+1, ...)
+    #         sample_mode: Task sampling mode ("random" or "sequential")
+    #         snapshot: Emulator snapshot name
+    #         train_task_family: Training task family name
+    #         val_task_family: Validation task family name
+    #         initial_wait: Initial wait time for emulator boot (seconds)
         
-        Returns:
-            List of ContainerInstance objects
-        """
-        # Store pool config for restart
-        self._pool_config = {
-            "sample_mode": sample_mode,
-            "snapshot": snapshot,
-            "train_task_family": train_task_family,
-            "val_task_family": val_task_family,
-            "initial_wait": initial_wait,
-        }
+    #     Returns:
+    #         List of ContainerInstance objects
+    #     """
+    #     # Store pool config for restart
+    #     self._pool_config = {
+    #         "sample_mode": sample_mode,
+    #         "snapshot": snapshot,
+    #         "train_task_family": train_task_family,
+    #         "val_task_family": val_task_family,
+    #         "initial_wait": initial_wait,
+    #         "use_host_network": True,
+    #     }
         
-        self.available_queue = asyncio.Queue()
+    #     self.available_queue = asyncio.Queue()
+
+    #     async with self._containers_lock:
+    #         self.containers[:] = []
+    #         self.backup_containers[:] = []
         
-        logger.info(f"[ContainerManager] Starting pool creation: {pool_size} containers")
-        logger.info(f"[ContainerManager] Config: image={self.docker_image}, snapshot={snapshot}, sample_mode={sample_mode}")
+    #     logger.info(f"[ContainerManager] Starting pool creation: {pool_size} containers")
+    #     logger.info(f"[ContainerManager] Config: image={self.docker_image}, snapshot={snapshot}, sample_mode={sample_mode}")
         
-        pool_start_time = time.time()
-        config = ContainerConfig(
-            sample_mode=sample_mode,
-            snapshot=snapshot,
-            train_task_family=train_task_family,
-            val_task_family=val_task_family,
-            initial_wait=initial_wait,
-        )
+    #     pool_start_time = time.time()
+    #     config = ContainerConfig(
+    #         sample_mode=sample_mode,
+    #         snapshot=snapshot,
+    #         train_task_family=train_task_family,
+    #         val_task_family=val_task_family,
+    #         initial_wait=initial_wait,
+    #     )
         
-        # Create containers sequentially
-        for i in range(pool_size):
-            env_id = base_env_id + i
-            logger.info(f"[ContainerManager] Creating container {i + 1}/{pool_size} (env{env_id})...")
+    #     # Create containers sequentially
+    #     for i in range(pool_size):
+    #         env_id = base_env_id + i
+    #         logger.info(f"[ContainerManager] Creating container {i + 1}/{pool_size} (env{env_id})...")
             
-            container_start_time = time.time()
+    #         container_start_time = time.time()
             
-            # Allocate ports with lock
-            ports = self._port_allocator.preallocate_ports(pool_size=1, base_env_id=env_id)[0]
+    #         # Allocate ports with lock
+    #         ports = self._port_allocator.preallocate_ports(pool_size=1, base_env_id=env_id)[0]
             
-            # Create container
-            factory_instance = await self._factory.create(
-                env_id=env_id,
-                ports=ports,
-                config=config,
-                use_host_network=True,
-            )
+    #         # Create container
+    #         factory_instance = await self._factory.create(
+    #             env_id=env_id,
+    #             ports=ports,
+    #             config=config,
+    #             use_host_network=True,
+    #         )
             
-            # Convert to ContainerInstance (our dataclass)
-            container = ContainerInstance(
-                container_id=factory_instance.container_id,
-                container=factory_instance.container,
-                server_port=factory_instance.server_port,
-                emulator_port=factory_instance.emulator_port,
-                grpc_port=factory_instance.grpc_port,
-                env_id=factory_instance.env_id,
-                state=factory_instance.state,
-                last_health_check=factory_instance.last_health_check,
-                is_healthy=factory_instance.is_healthy,
-            )
+    #         # Convert to ContainerInstance (our dataclass)
+    #         container = ContainerInstance(
+    #             container_id=factory_instance.container_id,
+    #             container=factory_instance.container,
+    #             server_port=factory_instance.server_port,
+    #             emulator_port=factory_instance.emulator_port,
+    #             grpc_port=factory_instance.grpc_port,
+    #             env_id=factory_instance.env_id,
+    #             state=factory_instance.state,
+    #             last_health_check=factory_instance.last_health_check,
+    #             is_healthy=factory_instance.is_healthy,
+    #         )
             
-            container_elapsed = time.time() - container_start_time
+    #         container_elapsed = time.time() - container_start_time
             
-            self.containers.append(container)
-            await self.available_queue.put(container)
+    #         self.containers.append(container)
+    #         await self.available_queue.put(container)
             
-            logger.info(
-                f"[ContainerManager] ✓ Container {i + 1}/{pool_size} ready "
-                f"(env{env_id}, port={container.server_port}, took {container_elapsed:.1f}s)"
-            )
+    #         logger.info(
+    #             f"[ContainerManager] ✓ Container {i + 1}/{pool_size} ready "
+    #             f"(env{env_id}, port={container.server_port}, took {container_elapsed:.1f}s)"
+    #         )
         
-        pool_elapsed = time.time() - pool_start_time
-        logger.info(
-            f"[ContainerManager] ✓ Pool creation complete: {pool_size} containers in {pool_elapsed:.1f}s"
-        )
-        return self.containers
+    #     pool_elapsed = time.time() - pool_start_time
+    #     # Initialize env_id counter for future replacements (avoids collisions)
+    #     self._next_env_id = base_env_id + pool_size
+    #     logger.info(
+    #         f"[ContainerManager] ✓ Pool creation complete: {pool_size} containers in {pool_elapsed:.1f}s"
+    #     )
+    #     return self.containers
 
     async def create_pool_parallel(
         self,
@@ -643,9 +933,14 @@ class ContainerManager:
             "train_task_family": train_task_family,
             "val_task_family": val_task_family,
             "initial_wait": initial_wait,
+            "use_host_network": False,
         }
         
         self.available_queue = asyncio.Queue()
+
+        async with self._containers_lock:
+            self.containers[:] = []
+            self.backup_containers[:] = []
         
         total_containers = pool_size + buffer_size
         logger.info(f"[ContainerManager] Starting parallel pool creation: {pool_size} main + {buffer_size} buffer containers")
@@ -731,8 +1026,38 @@ class ContainerManager:
                 else:
                     backup_containers.append(result)
         
-        self.containers = main_containers
-        self._backup_containers = backup_containers
+        # Initialize atomic counter for future env_ids (beyond current pool)
+        all_containers = main_containers + backup_containers
+        self._next_env_id = max(c.env_id for c in all_containers) + 1 if all_containers else 0
+
+        # If some creations failed, backfill with new containers to preserve pool+buffer counts
+        missing_main = pool_size - len(main_containers)
+        missing_backup = buffer_size - len(backup_containers)
+        if missing_main > 0 or missing_backup > 0:
+            logger.warning(
+                f"[ContainerManager] Pool creation incomplete: "
+                f"missing_main={missing_main}, missing_backup={missing_backup}. "
+                f"Creating replacements with fresh env_ids..."
+            )
+
+            for _ in range(missing_main):
+                try:
+                    replacement = await self._create_container_internal(env_id=None)
+                    main_containers.append(replacement)
+                    await self.available_queue.put(replacement)
+                except Exception as e:
+                    logger.error(f"[ContainerManager] Failed to create main replacement: {e}")
+
+            for _ in range(missing_backup):
+                try:
+                    replacement = await self._create_container_internal(env_id=None)
+                    backup_containers.append(replacement)
+                except Exception as e:
+                    logger.error(f"[ContainerManager] Failed to create backup replacement: {e}")
+
+        async with self._containers_lock:
+            self.containers[:] = main_containers
+            self.backup_containers[:] = backup_containers
         
         pool_elapsed = time.time() - pool_start_time
         logger.info(
@@ -753,7 +1078,8 @@ class ContainerManager:
         """
         Allocate an available container from the pool.
         
-        Skips unhealthy containers and puts them back in the queue for restart.
+        When an unhealthy container is encountered, it triggers immediate replacement
+        (instead of putting it back in the queue where it would be picked up repeatedly).
         
         Args:
             batch_idx: Batch index for the trajectory (optional, for tracking)
@@ -763,7 +1089,7 @@ class ContainerManager:
             ContainerInstance from available pool
         
         Raises:
-            RuntimeError: If pool not initialized or no healthy containers available
+            RuntimeError: If pool not initialized, no healthy containers, or timeout
         """
         if self.available_queue is None:
             raise RuntimeError("Container pool not initialized. Call create_pool() first.")
@@ -772,7 +1098,15 @@ class ContainerManager:
         attempts = 0
         
         while attempts < max_attempts:
-            container = await self.available_queue.get()
+            try:
+                container = await asyncio.wait_for(
+                    self.available_queue.get(),
+                    timeout=ALLOCATE_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    f"Timed out after {ALLOCATE_TIMEOUT:.0f}s waiting for available container"
+                )
             attempts += 1
             
             # Check health before allocating (works with or without health monitor)
@@ -783,11 +1117,16 @@ class ContainerManager:
             
             if not is_healthy:
                 logger.warning(
-                    f"[ContainerManager] Skipping unhealthy container env{container.env_id} "
-                    f"during allocation"
+                    f"[ContainerManager] Unhealthy container env{container.env_id} "
+                    f"detected during allocation, triggering replacement"
                 )
-                # Put back in queue - will be skipped until healthy or restarted
-                await self.available_queue.put(container)
+                # Don't put back in queue - trigger replacement immediately
+                # This avoids the container being picked up and rejected repeatedly
+                container.state = "stopped"
+                task = asyncio.create_task(self._handle_unhealthy_on_release(container))
+                task.add_done_callback(
+                    lambda t: self._log_task_exception(t, f"replace_on_allocate env{container.env_id}")
+                )
                 continue
             
             # Healthy container found
@@ -841,34 +1180,114 @@ class ContainerManager:
         if self._health_monitor and not self._health_monitor.check_health(container):
             logger.warning(
                 f"[ContainerManager] Container env{container.env_id} unhealthy after release, "
-                f"triggering restart"
+                f"triggering replacement"
             )
             container.state = "stopped"
-            # Restart in background (don't block release)
-            asyncio.create_task(self._restart_container(container))
-            # Put back in queue - it will be skipped until healthy
-            await self.available_queue.put(container)
+            # Use the same failover flow: destroy unhealthy, activate backup, create new for buffer
+            task = asyncio.create_task(self._handle_unhealthy_on_release(container))
+            task.add_done_callback(
+                lambda t: self._log_task_exception(t, f"handle_unhealthy_on_release env{container.env_id}")
+            )
         else:
             # Healthy - return to pool
             container.state = "ready"
             await self.available_queue.put(container)
     
-    async def get_backup_container(self) -> Optional[int]:
+    async def activate_backup_container(self) -> Optional[int]:
         """
-        Get a backup container from the hot standby pool.
+        Activate a backup container from the hot standby pool.
+        
+        Moves a container from backup pool to main pool and makes it available.
+        Used for instant failover when an idle container becomes unhealthy.
         
         Returns:
-            env_id of the backup container, or None if no backup available
+            env_id of the activated backup, or None if no backup available
         """
-        if not self._backup_containers:
-            return None
-        
-        backup = self._backup_containers.pop(0)
-        self.containers.append(backup)
+        async with self._containers_lock:
+            if not self.backup_containers:
+                return None
+            backup = self.backup_containers.pop(0)
+            self.containers.append(backup)
         await self.available_queue.put(backup)
         
         logger.info(f"[ContainerManager] Activated backup container env{backup.env_id}")
         return backup.env_id
+    
+    async def _handle_unhealthy_on_release(self, unhealthy_container: ContainerInstance) -> None:
+        """
+        Handle an unhealthy container discovered during release or allocation.
+        
+        Implements consistent flow: new containers always go to buffer first.
+        
+        Flow:
+        1. Remove unhealthy container from pool and destroy it
+        2. If backup available: activate backup (buffer → pool)
+        3. Create NEW container with NEW env_id → buffer
+        4. If no backup was available: immediately activate the new container (buffer → pool)
+        
+        This maintains the invariant: len(pool) + len(buffer) = constant
+        And ensures consistent pattern: new → buffer, activate → pool
+        
+        Args:
+            unhealthy_container: The container found unhealthy
+        """
+        old_env_id = unhealthy_container.env_id
+        logger.info(f"[ContainerManager] Handling unhealthy container env{old_env_id} on release")
+        
+        # Step 1: Remove from pool and destroy (in-place, under lock)
+        await self._remove_from_pool_and_destroy(unhealthy_container)
+        logger.info(f"[ContainerManager] ✓ Removed and destroyed unhealthy container env{old_env_id}")
+        
+        # Step 2: Try to activate backup for instant failover
+        backup_env_id = await self.activate_backup_container()
+        
+        if backup_env_id is not None:
+            logger.info(f"[ContainerManager] ✓ Instant failover: env{old_env_id} → backup env{backup_env_id}")
+        else:
+            # No backup available - create new container to buffer first, then activate
+            # This maintains consistent flow: new → buffer → pool
+            logger.warning(f"[ContainerManager] No backup available, creating new container...")
+            try:
+                new_container = await self._create_container_internal(env_id=None)
+                # Add to buffer first (consistent design)
+                async with self._containers_lock:
+                    self.backup_containers.append(new_container)
+                logger.info(f"[ContainerManager] ✓ Created new container env{new_container.env_id} in buffer")
+                
+                # Now activate it (buffer → pool)
+                activated_env_id = await self.activate_backup_container()
+                logger.info(f"[ContainerManager] ✓ Activated env{activated_env_id} from buffer to pool")
+                
+                if self._recovery_callback:
+                    try:
+                        if asyncio.iscoroutinefunction(self._recovery_callback):
+                            await self._recovery_callback(new_container.env_id)
+                        else:
+                            self._recovery_callback(new_container.env_id)
+                    except Exception as e:
+                        logger.debug(f"[ContainerManager] Recovery callback error: {e}")
+            except Exception as e:
+                logger.error(f"[ContainerManager] Failed to create replacement: {e}")
+            
+            # No need for Step 3 since we used the new container immediately
+            return
+        
+        # Step 3: Create NEW container with NEW env_id for buffer (only if we used a backup)
+        # NOTE: We do NOT call recovery callback here - the new container goes to backup pool,
+        # not main pool. The dispatcher should only be notified when containers are in main pool.
+        # The backup_env_id was already activated and added to main pool above.
+        if backup_env_id is not None:
+            try:
+                new_backup = await self._create_container_internal(env_id=None)
+                async with self._containers_lock:
+                    self.backup_containers.append(new_backup)
+                logger.info(
+                    f"[ContainerManager] ✓ Created new backup env{new_backup.env_id} "
+                    f"(buffer_size={len(self.backup_containers)})"
+                )
+                # No recovery callback - backup pool containers are not for dispatcher
+            except Exception as e:
+                logger.error(f"[ContainerManager] Failed to create backup replacement: {e}")
 
     # =========================================================================
     # Health Monitoring
@@ -1031,7 +1450,7 @@ class ContainerManager:
 
     async def mark_container_unhealthy_async(self, env_id: int) -> None:
         """
-        Mark a container as unhealthy for background restart.
+        Mark a container as unhealthy for background replacement.
         
         Args:
             env_id: Environment ID of the container to mark
@@ -1041,12 +1460,21 @@ class ContainerManager:
             container.is_healthy = False
             logger.warning(f"[ContainerManager] Container env{env_id} marked as unhealthy")
 
-    def set_recovery_callback(self, callback) -> None:
+    def set_recovery_callback(self, callback: Optional[Callable[..., Any]]) -> None:
         """
-        Set callback to be called when a container is recovered.
+        Set callback to be invoked when a replacement container is added to main pool.
+        
+        Called with (new_env_id: int) when a new container has been created and
+        added to the MAIN pool (not backup pool). This happens in:
+        - sync_replace_container: immediate replacement added to main pool
+        - _handle_unhealthy_on_release: when no backup available, new container 
+          is created and immediately activated into main pool
+        
+        NOTE: Containers added to backup pool do NOT trigger this callback.
+        The callback is only for containers ready for immediate use by dispatcher.
         
         Args:
-            callback: Async function to call with (env_id) when container is recovered
+            callback: Callable taking (env_id: int). Use None to clear.
         """
         self._recovery_callback = callback
     
@@ -1061,16 +1489,25 @@ class ContainerManager:
             logger.warning("[ContainerManager] Health monitor already running")
             return
         
-        # Create health monitor with callbacks
+        # Create health monitor with callbacks for failover support
+        # Note: on_sync_restart uses _create_sync_replacement (creates NEW container)
+        # instead of _restart_container (which would restart with same env_id)
         self._health_monitor = HealthMonitor(
             containers=self.containers,
-            on_restart_needed=self._restart_container,
+            on_sync_restart=self._create_sync_replacement,
+            on_activate_backup=self.activate_backup_container,
+            on_create_replacement=self._create_replacement_backup,
             on_status_log=self._log_pool_status,
         )
         
         self._health_monitor_running = True
         await self._health_monitor.start(interval)
-        logger.info(f"[ContainerManager] Health monitor started (interval={interval}s)")
+        
+        backup_count = len(self.backup_containers)
+        logger.info(
+            f"[ContainerManager] Health monitor started (interval={interval}s, "
+            f"backup_pool={backup_count})"
+        )
     
     async def stop_health_monitor(self):
         """Stop the background health check task."""
@@ -1080,90 +1517,221 @@ class ContainerManager:
             self._health_monitor = None
         logger.info("[ContainerManager] Health monitor stopped")
     
-    async def _restart_container(self, container: ContainerInstance):
+    # =========================================================================
+    # Container Creation Helpers
+    # =========================================================================
+    
+    def _get_container_config(self) -> ContainerConfig:
+        """Get ContainerConfig from stored pool configuration."""
+        if self._pool_config is None:
+            raise RuntimeError("Pool config not available - call create_pool first")
+        
+        return ContainerConfig(
+            sample_mode=self._pool_config["sample_mode"],
+            snapshot=self._pool_config["snapshot"],
+            train_task_family=self._pool_config["train_task_family"],
+            val_task_family=self._pool_config["val_task_family"],
+            initial_wait=self._pool_config.get("initial_wait", 45.0),
+        )
+    
+    async def _create_container_internal(self, env_id: Optional[int] = None) -> ContainerInstance:
         """
-        Restart a failed container, preserving env_id and config.
+        Create a new container with the stored pool configuration.
+        
+        This is the common container creation logic used by both restart and
+        replacement operations.
         
         Args:
-            container: ContainerInstance to restart
+            env_id: Specific env_id to use, or None to allocate a new one atomically
+            
+        Returns:
+            New ContainerInstance
+            
+        Raises:
+            RuntimeError: If pool config not available
         """
-        if self._pool_config is None:
-            logger.error(
-                f"[ContainerManager] Cannot restart container env{container.env_id}: "
-                f"pool config not available"
-            )
-            return
+        config = self._get_container_config()
+        use_host_network = self._pool_config.get("use_host_network", True)
         
-        env_id = container.env_id
-        old_restart_count = container.restart_count
+        # Allocate env_id atomically if not specified
+        if env_id is None:
+            async with self._env_id_lock:
+                env_id = self._next_env_id
+                self._next_env_id += 1
         
-        # Try to stop the old container if it still exists
+        # Allocate ports for this env_id
+        ports = self._port_allocator.preallocate_ports(pool_size=1, base_env_id=env_id)[0]
+        
+        # Create container via factory
+        return await self._factory.create(
+            env_id=env_id,
+            ports=ports,
+            config=config,
+            use_host_network=use_host_network,
+        )
+    
+    def _stop_container_safe(self, container: ContainerInstance) -> None:
+        """Stop a container, handling NotFound gracefully."""
         try:
             container.container.stop()
         except docker.errors.NotFound:
             pass  # Already removed
         except Exception as e:
-            logger.warning(
-                f"[ContainerManager] Error stopping old container env{env_id}: {e}"
-            )
-        
+            logger.warning(f"[ContainerManager] Error stopping container env{container.env_id}: {e}")
+    
+    async def _remove_from_pool_and_destroy(self, unhealthy_container: ContainerInstance) -> None:
+        """
+        Remove container from main pool in-place and stop it.
+        Uses _containers_lock so HealthMonitor and other coroutines see consistent state.
+        In-place modification keeps HealthMonitor's reference to self.containers valid.
+        """
+        old_env_id = unhealthy_container.env_id
+        async with self._containers_lock:
+            self.containers[:] = [c for c in self.containers if c.env_id != old_env_id]
+        self._stop_container_safe(unhealthy_container)
+    
+    def _log_task_exception(self, task: asyncio.Task, context: str) -> None:
+        """Log background task exceptions to avoid silent failures."""
+        if task.cancelled():
+            return
         try:
-            config = ContainerConfig(
-                sample_mode=self._pool_config["sample_mode"],
-                snapshot=self._pool_config["snapshot"],
-                train_task_family=self._pool_config["train_task_family"],
-                val_task_family=self._pool_config["val_task_family"],
-                initial_wait=self._pool_config.get("initial_wait", 45.0),
-            )
+            task.result()
+        except Exception as e:
+            logger.error(f"[ContainerManager] Background task failed ({context}): {e}")
+    
+    # =========================================================================
+    # Container Restart/Replacement
+    # =========================================================================
+    
+    async def _restart_container(self, container: ContainerInstance):
+        """
+        DEPRECATED: This method restarts with same env_id which causes container accumulation.
+        Use _create_sync_replacement instead.
+        
+        Kept for backward compatibility but should not be called.
+        
+        Args:
+            container: ContainerInstance to restart
+        """
+        logger.warning(
+            f"[ContainerManager] _restart_container called for env{container.env_id} - "
+            f"this is deprecated, use _create_sync_replacement instead"
+        )
+        # Delegate to the new method
+        await self._create_sync_replacement(container)
+    
+    async def _create_sync_replacement(self, unhealthy_container: ContainerInstance):
+        """
+        Create a synchronous replacement for an unhealthy container.
+        
+        Used when no backup is available and we need immediate replacement.
+        Creates a NEW container with NEW env_id (never reuses old env_id).
+        
+        Flow:
+        1. Remove unhealthy container from pool and destroy it
+        2. Create NEW container with NEW env_id
+        3. Add new container to pool and available queue
+        
+        Args:
+            unhealthy_container: ContainerInstance to replace
+        """
+        old_env_id = unhealthy_container.env_id
+        
+        if self._pool_config is None:
+            logger.error(f"[ContainerManager] Cannot replace env{old_env_id}: pool config not available")
+            return
+        
+        logger.info(f"[ContainerManager] Creating sync replacement for env{old_env_id}...")
+        
+        # Step 1: Remove from pool and destroy (in-place, under lock)
+        await self._remove_from_pool_and_destroy(unhealthy_container)
+        
+        # Step 2: Create NEW container with NEW env_id
+        try:
+            new_container = await self._create_container_internal(env_id=None)
             
-            # Allocate new ports
-            ports = self._port_allocator.preallocate_ports(pool_size=1, base_env_id=env_id)[0]
-            
-            # Create new container with same env_id
-            new_container = await self._factory.create(
-                env_id=env_id,
-                ports=ports,
-                config=config,
-                use_host_network=True,
-            )
-            
-            # Update the existing ContainerInstance in place
-            container.container_id = new_container.container_id
-            container.container = new_container.container
-            container.server_port = new_container.server_port
-            container.emulator_port = new_container.emulator_port
-            container.grpc_port = new_container.grpc_port
-            container.state = "ready"
-            container.is_healthy = True
-            container.restart_count = old_restart_count + 1
-            container.current_trajectory = None
-            container.last_health_check = time.time()
+            # Step 3: Add to pool and available queue
+            async with self._containers_lock:
+                self.containers.append(new_container)
+            await self.available_queue.put(new_container)
             
             logger.info(
-                f"[ContainerManager] Container env{env_id} restarted successfully "
-                f"(restart_count={container.restart_count})"
+                f"[ContainerManager] ✓ Sync replacement complete: env{old_env_id} → env{new_container.env_id} "
+                f"(pool_size={len(self.containers)}, buffer_size={len(self.backup_containers)})"
             )
+            if self._recovery_callback:
+                try:
+                    if asyncio.iscoroutinefunction(self._recovery_callback):
+                        await self._recovery_callback(new_container.env_id)
+                    else:
+                        self._recovery_callback(new_container.env_id)
+                except Exception as e:
+                    logger.debug(f"[ContainerManager] Recovery callback error: {e}")
             
         except Exception as e:
-            logger.error(
-                f"[ContainerManager] Failed to restart container env{env_id}: {e}"
+            logger.error(f"[ContainerManager] Failed to create sync replacement for env{old_env_id}: {e}")
+    
+    async def _create_replacement_backup(self, failed_container: ContainerInstance) -> Optional[ContainerInstance]:
+        """
+        Create a replacement container and add it to the backup pool.
+        
+        Called in background after instant failover to replenish the hot standby pool.
+        The failed container is removed and a NEW container is created with fresh
+        env_id and ports (not reusing the failed container's identity).
+        
+        Args:
+            failed_container: The container that failed and needs replacement
+            
+        Returns:
+            New ContainerInstance added to backup pool, or None on failure
+        """
+        old_env_id = failed_container.env_id
+        
+        if self._pool_config is None:
+            logger.error(f"[ContainerManager] Cannot create replacement: pool config not available")
+            return None
+        
+        # Remove failed container from main pool and destroy it (in-place, under lock)
+        await self._remove_from_pool_and_destroy(failed_container)
+        
+        # Create replacement with NEW env_id (atomic allocation)
+        try:
+            new_container = await self._create_container_internal(env_id=None)
+            
+            # Add to backup pool (not main pool)
+            async with self._containers_lock:
+                self.backup_containers.append(new_container)
+            
+            logger.info(
+                f"[ContainerManager] ✓ Replacement created: env{new_container.env_id} "
+                f"(backup_pool={len(self.backup_containers)})"
             )
-            container.is_healthy = False
-            container.state = "stopped"
+            # NOTE: No recovery callback - this container goes to backup pool, not main pool.
+            # The dispatcher should only be notified when containers are in main pool.
+            return new_container
+            
+        except Exception as e:
+            logger.error(f"[ContainerManager] Failed to create replacement for env{old_env_id}: {e}")
+            return None
     
     # =========================================================================
     # Cleanup
     # =========================================================================
     
     async def cleanup(self):
-        """Stop all containers in the pool."""
-        if not self.containers:
+        """Stop all containers in both pool and buffer."""
+        all_containers = self.containers + self.backup_containers
+        
+        if not all_containers:
             logger.info("[ContainerManager] No containers to cleanup")
             return
         
-        logger.info(f"[ContainerManager] Cleaning up {len(self.containers)} containers...")
+        logger.info(
+            f"[ContainerManager] Cleaning up {len(self.containers)} pool + "
+            f"{len(self.backup_containers)} buffer containers..."
+        )
         
-        for container_instance in self.containers:
+        for container_instance in all_containers:
             try:
                 if container_instance.container:
                     logger.debug(f"[ContainerManager] Stopping container env{container_instance.env_id}...")
@@ -1171,6 +1739,16 @@ class ContainerManager:
                     logger.debug(f"[ContainerManager] ✓ Container env{container_instance.env_id} stopped")
             except Exception as e:
                 logger.warning(f"[ContainerManager] Error stopping container env{container_instance.env_id}: {e}")
+        
+        self.containers.clear()
+        self.backup_containers.clear()
+        if self.available_queue is not None:
+            while True:
+                try:
+                    self.available_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            self.available_queue = None
         
         logger.info(f"[ContainerManager] ✓ Cleanup complete")
     
@@ -1202,14 +1780,27 @@ class ContainerManager:
                 "server_port": c.server_port,
             })
         
+        # Also include backup container info
+        backup_details = []
+        for c in self.backup_containers:
+            backup_details.append({
+                "env_id": c.env_id,
+                "state": c.state,
+                "is_healthy": c.is_healthy,
+                "server_port": c.server_port,
+            })
+        
         return {
-            "total": len(self.containers),
+            "pool_size": len(self.containers),
+            "buffer_size": len(self.backup_containers),
+            "total": len(self.containers) + len(self.backup_containers),
             "healthy": healthy_count,
             "unhealthy": unhealthy_count,
             "in_use": in_use_count,
             "idle": idle_count,
             "failed_trajectories": len(self.failed_trajectories),
             "containers": container_details,
+            "backup_containers": backup_details,
         }
     
     def _log_pool_status(self):
@@ -1217,8 +1808,9 @@ class ContainerManager:
         status = self.get_pool_status()
         logger.info(
             f"[ContainerManager] Pool Status: "
-            f"{status['healthy']} healthy, {status['unhealthy']} unhealthy, "
-            f"{status['idle']} idle, {status['in_use']} in_use"
+            f"pool={status['pool_size']}, buffer={status['buffer_size']}, "
+            f"healthy={status['healthy']}, unhealthy={status['unhealthy']}, "
+            f"idle={status['idle']}, in_use={status['in_use']}"
         )
     
     def get_failed_trajectories(self) -> List[Tuple[int, int, str]]:
