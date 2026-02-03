@@ -337,15 +337,20 @@ class SkyAgentLoopManager:
         per_sample_errors = []
         
         for i in range(len(input_ids)):
-            sample_ids = input_ids[i:i+1]
-            sample_mask = attention_mask[i:i+1]
-            sample_igt = image_grid_thw_list[i]
+            # get_rope_index expects UNBATCHED tensors (1D for input_ids, 2D for image_grid_thw)
+            # See: verl/models/transformers/qwen2_vl.py line 74:
+            #   "The batch dim has been removed and input_ids should be a 1D tensor"
+            sample_ids = input_ids[i]  # [seq_len] - squeeze out batch dim
+            sample_mask = attention_mask[i]  # [seq_len] - squeeze out batch dim
+            sample_igt = image_grid_thw_list[i]  # [num_images, 3] - already correct
             
             try:
                 if sample_igt is not None:
-                    # Ensure correct shape for image_grid_thw
-                    if sample_igt.dim() == 2:
-                        sample_igt = sample_igt.unsqueeze(0)
+                    # Ensure image_grid_thw is 2D: [num_images, 3]
+                    # Do NOT add batch dimension - get_rope_index expects unbatched
+                    if sample_igt.dim() == 3:
+                        # Remove spurious batch dim if present
+                        sample_igt = sample_igt.squeeze(0)
                     
                     pos_ids = get_rope_index(
                         self._vlm_processor,
@@ -355,8 +360,8 @@ class SkyAgentLoopManager:
                     )
                     metrics["vlm_samples_computed"] += 1
                 else:
-                    # No image for this sample - use text-only position_ids
-                    pos_ids = (sample_mask.cumsum(dim=1) - 1) * sample_mask
+                    # No image for this sample - use text-only position_ids (1D)
+                    pos_ids = (sample_mask.cumsum(dim=0) - 1) * sample_mask
                     metrics["vlm_samples_fallback"] += 1
                 
                 position_ids_list.append(pos_ids)
@@ -371,8 +376,8 @@ class SkyAgentLoopManager:
                 }
                 per_sample_errors.append(error_info)
                 
-                # Use text-only fallback for this sample
-                pos_ids = (sample_mask.cumsum(dim=1) - 1) * sample_mask
+                # Use text-only fallback for this sample (1D)
+                pos_ids = (sample_mask.cumsum(dim=0) - 1) * sample_mask
                 position_ids_list.append(pos_ids)
                 metrics["vlm_samples_fallback"] += 1
         
@@ -392,32 +397,34 @@ class SkyAgentLoopManager:
             metrics["used_text_only_fallback"] = True
             return (attention_mask.cumsum(dim=1) - 1) * attention_mask, metrics
         
-        # Handle mixed dimensionality (some 3D VLM, some 2D text-only)
+        # Handle mixed dimensionality:
+        # - VLM position_ids from get_rope_index: [3, seq_len] (2D)
+        # - Text-only fallback: [seq_len] (1D)
+        # We need to normalize all to [3, seq_len] for VLM compatibility
         try:
-            # Check if we have mixed dimensions
             dims = [p.dim() for p in position_ids_list]
-            if len(set(dims)) > 1:
-                # Mixed dimensions - need to expand 2D to 3D for consistency
+            if len(set(dims)) > 1 or 1 in dims:
+                # Mixed dimensions or have 1D - expand 1D to 2D for VLM
                 print(
                     f"[position_ids] INFO: Mixed dimensions detected: {dims}. "
-                    f"Expanding 2D tensors to 3D for consistency."
+                    f"Expanding 1D tensors to 2D (3, seq_len) for VLM compatibility."
                 )
                 expanded_list = []
                 for pos_ids in position_ids_list:
-                    if pos_ids.dim() == 2:
-                        # Expand [1, seq_len] to [1, 3, seq_len] for VLM compatibility
+                    if pos_ids.dim() == 1:
+                        # Expand [seq_len] to [3, seq_len] for VLM compatibility
                         # Use same position for all 3 dimensions (text-only behavior)
-                        pos_ids = pos_ids.unsqueeze(1).expand(-1, 3, -1)
+                        pos_ids = pos_ids.unsqueeze(0).expand(3, -1)
                     expanded_list.append(pos_ids)
                 position_ids_list = expanded_list
             
-            # Now concatenate
-            if position_ids_list[0].dim() == 3:
-                # VLM format: [1, 3, seq_len] -> [batch, 3, seq_len]
-                position_ids = torch.cat(position_ids_list, dim=0)
+            # Now stack into batch: each is [3, seq_len] -> [batch, 3, seq_len]
+            if position_ids_list[0].dim() == 2:
+                # VLM format: [3, seq_len] -> stack to [batch, 3, seq_len]
+                position_ids = torch.stack(position_ids_list, dim=0)
             else:
-                # Text-only format: [1, seq_len] -> [batch, seq_len]
-                position_ids = torch.cat(position_ids_list, dim=0)
+                # Unexpected - should not happen after normalization
+                position_ids = torch.stack(position_ids_list, dim=0)
             
             # Validate shape
             expected_batch = len(input_ids)
