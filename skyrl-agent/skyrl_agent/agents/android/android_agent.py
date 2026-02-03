@@ -13,17 +13,20 @@ Refactored from verl/trainer/mobile_agent.py
 """
 
 import copy
+import os
+import time
 import torch
 from typing import List, Dict, Any, Tuple, Optional
 from dataclasses import dataclass, field
 from uuid import uuid4
 import numpy as np
 
+# Timing instrumentation toggle (set DEBUG_TIMING=1 to enable)
+DEBUG_TIMING = os.environ.get("DEBUG_TIMING", "0") == "1"
+
 from skyrl_agent.config.configuration_utils import TrajectoryConfig
 from skyrl_agent.integrations.base import AsyncInferBackend
 from skyrl_agent.tools.base import TOOL_REGISTRY
-from skyrl_agent.dispatcher.async_utils import call_sync_from_async
-
 # Import utilities (pure functions extracted for testability)
 from .utils import (
     init_messages,
@@ -259,6 +262,22 @@ class AndroidAgent:
             tokenize=True,
         )
     
+    def extract_images_for_inference(self, messages: List[Dict]) -> Optional[List[Any]]:
+        """
+        Extract images from messages for vLLM inference.
+        
+        Delegates to the agnostic utility function in skyrl_agent.functional.utils.
+        For VLM models like Qwen2-VL, images must be passed separately to vLLM.
+        
+        Args:
+            messages: Messages containing image content
+            
+        Returns:
+            List of PIL images, or None if no images found
+        """
+        from skyrl_agent.functional.utils import extract_images_from_messages
+        return extract_images_from_messages(messages)
+    
     # === TRAINING TENSOR PROCESSING ===
     
     def process_for_training(self, messages: List[Dict]) -> Dict[str, Any]:
@@ -422,6 +441,23 @@ class AndroidAgent:
                     self.state.finish_reason = finish_reason
                     break
             except Exception as e:
+                # Import here to avoid circular dependency
+                from skyrl_agent.runtime.android.exceptions import ContainerDeadError
+                
+                # Re-raise ContainerDeadError - dispatcher needs to handle container replacement
+                if isinstance(e, ContainerDeadError):
+                    print(f"[AndroidAgent] Container dead for instance={self.state.instance_id} traj={self.state.trajectory_id}: {e}")
+                    raise
+                
+                # Application errors (deterministic) - fail gracefully, don't retry
+                if isinstance(e, (IndexError, ValueError, KeyError)):
+                    self.state.finish_reason = f"error_application: {type(e).__name__}: {str(e)}"
+                    print(f"[AndroidAgent] Application error (non-retryable): {e}")
+                    import traceback
+                    traceback.print_exc()
+                    break
+                
+                # Other runtime errors - log and break
                 self.state.finish_reason = f"error_runtime: {str(e)}"
                 print(f"[AndroidAgent Error] instance={self.state.instance_id} traj={self.state.trajectory_id}: {e}")
                 import traceback
@@ -449,6 +485,9 @@ class AndroidAgent:
         # 2. Prepare input
         input_ids = self.prepare_input_ids(selected_messages)
         
+        # 2b. Extract images for VLM inference (required for Qwen2-VL with vLLM V1)
+        image_data = self.extract_images_for_inference(selected_messages)
+        
         # Check context window
         response_token_len = len(input_ids) - self.state.prompt_token_len
         if response_token_len >= self.max_prompt_length:
@@ -459,11 +498,20 @@ class AndroidAgent:
         sampling_params = copy.deepcopy(self.sampling_params)
         sampling_params["max_tokens"] = self.max_prompt_length - response_token_len
         
+        if DEBUG_TIMING:
+            num_images = len(image_data) if image_data else 0
+            print(f"[Context] step={self.state.step_count} tokens={len(input_ids)} images={num_images}")
+            vllm_start = time.perf_counter()
+        
         response_str, stop_reason = await self.infer_engine.async_generate_ids(
             input_ids=input_ids,
             sampling_params=sampling_params,
             request_id=self.agent_id,
+            image_data=image_data,
         )
+        
+        if DEBUG_TIMING:
+            vllm_elapsed = time.perf_counter() - vllm_start
         
         # Check for length stop
         if stop_reason == "length":
@@ -483,14 +531,21 @@ class AndroidAgent:
             action_dict = {"action_type": "status", "goal_status": "infeasible"}
             thought = f"Parse error: {response_str[:200]}"
         
-        # 5. Execute via AndroidEnvTool
+        # 5. Execute via AndroidEnvTool (use async_call to avoid asyncio nesting issues)
         tool = self.tools["android_env"]
-        output = await call_sync_from_async(
-            tool.call,
+        
+        if DEBUG_TIMING:
+            container_start = time.perf_counter()
+        
+        output = await tool.async_call(
             action_dict,
             env_handle=self.env_handle,
             thought=thought,
         )
+        
+        if DEBUG_TIMING:
+            container_elapsed = time.perf_counter() - container_start
+            print(f"[Timing] step={self.state.step_count} vLLM={vllm_elapsed:.2f}s container={container_elapsed:.2f}s total={vllm_elapsed+container_elapsed:.2f}s")
         
         self.state.reward = output.get("reward", 0.0)
         terminated = output.get("terminated", False)

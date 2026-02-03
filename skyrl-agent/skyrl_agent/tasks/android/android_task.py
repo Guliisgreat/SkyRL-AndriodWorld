@@ -84,16 +84,14 @@ class AndroidTask(BaseTask):
             buffer_size=buffer_size,
         )
 
-        # Start background health monitor for automatic container recovery
-        # Use 60s initial delay to let containers fully boot before checking
-        await cls._container_manager.start_health_monitor(
-            interval=30.0,           # Check every 30s (reduced frequency)
-            restart_interval=10.0,   # Restart worker checks every 10s
-            initial_delay=60.0,      # Wait 60s before first health check
-        )
-
-        # Wrap each container in a RuntimeClient
+        # Wrap each container in a RuntimeClient (for backward compatibility)
+        # Note: The new async_fix_pool_android dispatcher creates RuntimeClients
+        # on-demand from ContainerInstance, so this is only needed for legacy code
         runtime_clients = [RuntimeClient(container) for container in containers]
+        
+        # Start background health monitor for automatic container recovery
+        # Check every 30s (reduced frequency)
+        await cls._container_manager.start_health_monitor(interval=30.0)
 
         return runtime_clients
 
