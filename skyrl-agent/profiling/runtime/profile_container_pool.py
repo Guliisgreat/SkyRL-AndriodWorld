@@ -29,6 +29,28 @@ Usage:
     RUN_DOCKER_TESTS=true uv run python tests/profiling/profile_container_pool.py \\
         --pool-sizes 8 --parallel-creation --initial-wait 30
 
+    ##########################################
+    # REALISTIC INFERENCE PROFILING (NEW!)
+    ##########################################
+    # These options simulate real inference scenarios with heavy apps like Chrome.
+    # Use these to get timing data that matches actual inference performance.
+    
+    # Profile with Chrome deep navigation (web browsing simulation)
+    RUN_DOCKER_TESTS=true uv run python profiling/runtime/profile_container_pool.py \\
+        --pool-sizes 4 --realistic-action-set chrome_deep
+    
+    # Profile with multi-app workflow (MOST REALISTIC - matches inference)
+    RUN_DOCKER_TESTS=true uv run python profiling/runtime/profile_container_pool.py \\
+        --pool-sizes 4 --realistic-action-set multi_app
+    
+    # Profile with Google Maps (GPU-intensive rendering)
+    RUN_DOCKER_TESTS=true uv run python profiling/runtime/profile_container_pool.py \\
+        --pool-sizes 4 --realistic-action-set maps_deep
+    
+    # Profile with YouTube (media/thumbnail loading)
+    RUN_DOCKER_TESTS=true uv run python profiling/runtime/profile_container_pool.py \\
+        --pool-sizes 4 --realistic-action-set youtube_deep
+
 Options:
     --pool-sizes N [N ...]     Pool sizes to test (default: 1 2 4)
     --parallel-creation        Use bounded parallel pool creation
@@ -37,11 +59,31 @@ Options:
     --skip-concurrent          Skip concurrent throughput test (faster)
     --concurrent-duration S    Duration for concurrent test (default: 30)
     --skip-cleanup             Skip cleanup of stale containers before profiling
+    
+    # Realistic action profiling options:
+    --use-app-launch-actions   Basic Settings app launch
+    --realistic-action-set     Use realistic action sequences for inference simulation:
+        chrome_deep   - Chrome: URL bar, navigation, page scrolling, tab management
+        maps_deep     - Maps: pan, search, GPS-heavy (GPU intensive)
+        youtube_deep  - YouTube: feed scroll, video player (media heavy)
+        email_deep    - Gmail: inbox sync, email reading (network heavy)
+        multi_app     - Chrome→Settings→Contacts→Files (MOST REALISTIC)
 
 Environment Variables:
     RUN_DOCKER_TESTS=true     - Required to run the profiling
     ANDROID_DOCKER_IMAGE      - Docker image name (default: androidworld:v8)
     PROFILE_TEMP_DIR          - Temp directory for logs (default: /tmp/profile_containers)
+
+WHY REALISTIC PROFILING?
+========================
+Basic isolated profiling (tap, scroll, wait) doesn't capture:
+  - App rendering delays (Chrome rendering web pages)
+  - Animation completion (app transitions, loading spinners)
+  - Network latency (page loads, API calls)
+  - State stabilization (UI settling before screenshot)
+
+Using --realistic-action-set gives timing data that matches actual inference,
+where agents interact with real apps that have these overheads.
 """
 
 import asyncio
@@ -105,6 +147,192 @@ PROFILING_ACTIONS = [
     {"action_type": "input_text", "text": "test"},
     {"action_type": "long_press", "touch_point": [0.5, 0.5]},
 ]
+
+# Task-like actions that include app launches (more realistic for inference comparison)
+# These simulate the first 2 steps of a typical task
+PROFILING_ACTIONS_WITH_APP_LAUNCH = [
+    {"action_type": "navigate_home"},                          # Step 0: Ensure home
+    {"action_type": "open_app", "app_name": "settings"},       # Step 1: Open Settings (slow!)
+    {"action_type": "wait"},                                   # Wait for app to load
+    {"action_type": "click", "touch_point": [0.5, 0.3]},       # Step 2: Click in app
+    {"action_type": "scroll", "direction": "down"},            # Step 3: Scroll
+    {"action_type": "navigate_back"},                          # Step 4: Go back
+    {"action_type": "navigate_home"},                          # Step 5: Return home
+]
+
+# ============================================================================
+# REALISTIC INFERENCE SIMULATION ACTIONS
+# ============================================================================
+# These actions simulate real inference scenarios with heavy apps that cause:
+# - Rendering delays (Chrome rendering web pages)
+# - Animation completion (app transitions, loading spinners)
+# - Network latency (page loads, API calls)
+# - State stabilization (UI settling before screenshot)
+# ============================================================================
+
+# Chrome browser deep navigation - simulates typical web browsing tasks
+PROFILING_ACTIONS_CHROME_DEEP = [
+    # Phase 1: Open Chrome (cold start - heaviest operation)
+    {"action_type": "navigate_home"},
+    {"action_type": "open_app", "app_name": "chrome"},         # Cold start Chrome
+    {"action_type": "wait"},                                   # Wait for Chrome to fully load
+    
+    # Phase 2: Interact with browser UI (URL bar, buttons)
+    {"action_type": "click", "touch_point": [0.5, 0.08]},      # Click URL bar (top)
+    {"action_type": "wait"},                                   # Wait for keyboard animation
+    {"action_type": "input_text", "text": "example.com"},      # Type URL
+    {"action_type": "keyboard_enter"},                         # Press enter to navigate
+    {"action_type": "wait"},                                   # Wait for page load
+    {"action_type": "wait"},                                   # Extra wait for render
+    
+    # Phase 3: Page interaction (scroll, click links)
+    {"action_type": "scroll", "direction": "down"},            # Scroll page (triggers render)
+    {"action_type": "wait"},                                   # Wait for scroll animation
+    {"action_type": "scroll", "direction": "down"},            # More scrolling
+    {"action_type": "click", "touch_point": [0.5, 0.5]},       # Click on page content
+    {"action_type": "wait"},                                   # Wait for any navigation
+    
+    # Phase 4: Tab management (heavy UI operations)
+    {"action_type": "click", "touch_point": [0.9, 0.08]},      # Tab switcher button
+    {"action_type": "wait"},                                   # Wait for tab grid animation
+    {"action_type": "navigate_back"},                          # Close tab view
+    
+    # Phase 5: Return to home
+    {"action_type": "navigate_home"},
+]
+
+# Google Maps deep navigation - GPU-intensive app with heavy rendering
+PROFILING_ACTIONS_MAPS_DEEP = [
+    # Phase 1: Open Maps (GPU-intensive cold start)
+    {"action_type": "navigate_home"},
+    {"action_type": "open_app", "app_name": "maps"},           # Open Google Maps
+    {"action_type": "wait"},                                   # Wait for map tiles to load
+    {"action_type": "wait"},                                   # Extra wait for initial render
+    
+    # Phase 2: Map interactions (triggers tile loading)
+    {"action_type": "scroll", "direction": "up"},              # Pan map up
+    {"action_type": "wait"},                                   # Wait for tiles
+    {"action_type": "scroll", "direction": "left"},            # Pan map left
+    {"action_type": "wait"},                                   # Wait for tiles
+    {"action_type": "scroll", "direction": "down"},            # Pan map down
+    {"action_type": "wait"},                                   # Wait for tiles
+    
+    # Phase 3: Search interaction
+    {"action_type": "click", "touch_point": [0.5, 0.1]},       # Search bar
+    {"action_type": "wait"},                                   # Wait for keyboard
+    {"action_type": "input_text", "text": "coffee"},           # Search
+    {"action_type": "keyboard_enter"},                         # Submit search
+    {"action_type": "wait"},                                   # Wait for results
+    {"action_type": "wait"},                                   # Wait for pins to render
+    
+    # Phase 4: Return
+    {"action_type": "navigate_back"},
+    {"action_type": "navigate_home"},
+]
+
+# YouTube app - video player with heavy media operations
+PROFILING_ACTIONS_YOUTUBE_DEEP = [
+    # Phase 1: Open YouTube (media-heavy app)
+    {"action_type": "navigate_home"},
+    {"action_type": "open_app", "app_name": "youtube"},        # Open YouTube
+    {"action_type": "wait"},                                   # Wait for feed to load
+    {"action_type": "wait"},                                   # Wait for thumbnails
+    
+    # Phase 2: Browse feed (image loading)
+    {"action_type": "scroll", "direction": "down"},            # Scroll feed
+    {"action_type": "wait"},                                   # Wait for lazy load
+    {"action_type": "scroll", "direction": "down"},            # More scrolling
+    {"action_type": "wait"},                                   # Wait for thumbnails
+    
+    # Phase 3: Video interaction
+    {"action_type": "click", "touch_point": [0.5, 0.3]},       # Click a video
+    {"action_type": "wait"},                                   # Wait for video player
+    {"action_type": "wait"},                                   # Wait for video to buffer
+    {"action_type": "click", "touch_point": [0.5, 0.5]},       # Tap to show controls
+    {"action_type": "wait"},                                   # Animation
+    
+    # Phase 4: Return
+    {"action_type": "navigate_back"},
+    {"action_type": "navigate_home"},
+]
+
+# Gmail/Email - network-heavy app with list rendering
+PROFILING_ACTIONS_EMAIL_DEEP = [
+    # Phase 1: Open Gmail
+    {"action_type": "navigate_home"},
+    {"action_type": "open_app", "app_name": "gmail"},          # Open Gmail
+    {"action_type": "wait"},                                   # Wait for inbox sync
+    {"action_type": "wait"},                                   # Wait for email list
+    
+    # Phase 2: Browse inbox (list scrolling)
+    {"action_type": "scroll", "direction": "down"},            # Scroll inbox
+    {"action_type": "wait"},                                   # Wait for render
+    {"action_type": "scroll", "direction": "down"},
+    {"action_type": "wait"},
+    
+    # Phase 3: Open an email
+    {"action_type": "click", "touch_point": [0.5, 0.3]},       # Click email
+    {"action_type": "wait"},                                   # Wait for email to load
+    {"action_type": "scroll", "direction": "down"},            # Scroll email content
+    {"action_type": "wait"},
+    
+    # Phase 4: Return
+    {"action_type": "navigate_back"},
+    {"action_type": "navigate_home"},
+]
+
+# Combined realistic scenario - multi-app workflow (most realistic)
+PROFILING_ACTIONS_MULTI_APP_WORKFLOW = [
+    # Start fresh
+    {"action_type": "navigate_home"},
+    
+    # === App 1: Chrome (heavy browser) ===
+    {"action_type": "open_app", "app_name": "chrome"},
+    {"action_type": "wait"},
+    {"action_type": "click", "touch_point": [0.5, 0.08]},      # URL bar
+    {"action_type": "wait"},
+    {"action_type": "input_text", "text": "test"},
+    {"action_type": "keyboard_enter"},
+    {"action_type": "wait"},
+    {"action_type": "wait"},
+    {"action_type": "scroll", "direction": "down"},
+    {"action_type": "wait"},
+    {"action_type": "navigate_home"},                          # Return to home
+    
+    # === App 2: Settings (system app) ===
+    {"action_type": "open_app", "app_name": "settings"},
+    {"action_type": "wait"},
+    {"action_type": "scroll", "direction": "down"},
+    {"action_type": "wait"},
+    {"action_type": "click", "touch_point": [0.5, 0.5]},       # Click setting
+    {"action_type": "wait"},
+    {"action_type": "navigate_back"},
+    {"action_type": "navigate_home"},
+    
+    # === App 3: Contacts (database app) ===
+    {"action_type": "open_app", "app_name": "contacts"},
+    {"action_type": "wait"},
+    {"action_type": "scroll", "direction": "down"},
+    {"action_type": "wait"},
+    {"action_type": "navigate_home"},
+    
+    # === App 4: Files (file system) ===
+    {"action_type": "open_app", "app_name": "files"},
+    {"action_type": "wait"},
+    {"action_type": "scroll", "direction": "down"},
+    {"action_type": "wait"},
+    {"action_type": "navigate_home"},
+]
+
+# All available realistic profiling action sets
+REALISTIC_ACTION_SETS = {
+    "chrome_deep": PROFILING_ACTIONS_CHROME_DEEP,
+    "maps_deep": PROFILING_ACTIONS_MAPS_DEEP,
+    "youtube_deep": PROFILING_ACTIONS_YOUTUBE_DEEP,
+    "email_deep": PROFILING_ACTIONS_EMAIL_DEEP,
+    "multi_app": PROFILING_ACTIONS_MULTI_APP_WORKFLOW,
+    "basic_app_launch": PROFILING_ACTIONS_WITH_APP_LAUNCH,
+}
 
 
 @dataclass
@@ -345,6 +573,8 @@ class ContainerPoolProfiler:
         manager,
         containers,
         num_cycles: int = 2,
+        use_app_launch_actions: bool = False,
+        realistic_action_set: Optional[str] = None,
     ) -> Dict[str, List[float]]:
         """
         Profile step operation latency for all action types.
@@ -353,17 +583,36 @@ class ContainerPoolProfiler:
             manager: ContainerManager instance
             containers: List of containers to test on
             num_cycles: Number of times to cycle through all action types
+            use_app_launch_actions: If True, use PROFILING_ACTIONS_WITH_APP_LAUNCH (includes open_app)
+            realistic_action_set: If provided, use one of REALISTIC_ACTION_SETS:
+                - "chrome_deep": Chrome browser with URL navigation, page scrolling
+                - "maps_deep": Google Maps with pan/search (GPU intensive)
+                - "youtube_deep": YouTube with video browsing (media heavy)
+                - "email_deep": Gmail with inbox navigation
+                - "multi_app": Multi-app workflow (most realistic)
+                - "basic_app_launch": Basic app launch with Settings
         
         Returns:
             Dict mapping action_type -> list of latencies in seconds
         """
         from skyrl_agent.runtime.android.runtime_client import RuntimeClient
         
-        print(f"\n  [4/5] Profiling step operations (all action types, {num_cycles} cycles)...")
+        # Select action set based on arguments
+        if realistic_action_set and realistic_action_set in REALISTIC_ACTION_SETS:
+            actions_to_test = REALISTIC_ACTION_SETS[realistic_action_set]
+            action_mode = f"realistic ({realistic_action_set})"
+        elif use_app_launch_actions:
+            actions_to_test = PROFILING_ACTIONS_WITH_APP_LAUNCH
+            action_mode = "with app launch"
+        else:
+            actions_to_test = PROFILING_ACTIONS
+            action_mode = "basic"
+        
+        print(f"\n  [4/5] Profiling step operations ({action_mode}, {num_cycles} cycles, {len(actions_to_test)} actions)...")
         
         # Initialize latency tracking per action type
         step_latencies_by_type: Dict[str, List[float]] = {}
-        for action in PROFILING_ACTIONS:
+        for action in actions_to_test:
             action_type = action["action_type"]
             if action_type not in step_latencies_by_type:
                 step_latencies_by_type[action_type] = []
@@ -383,7 +632,7 @@ class ContainerPoolProfiler:
                 
                 # Cycle through all action types
                 for cycle in range(num_cycles):
-                    for action in PROFILING_ACTIONS:
+                    for action in actions_to_test:
                         action_type = action["action_type"]
                         
                         start = time.time()
@@ -510,6 +759,8 @@ class ContainerPoolProfiler:
         use_parallel: bool = False,
         max_concurrent: int = 4,
         initial_wait: float = 45.0,
+        use_app_launch_actions: bool = False,
+        realistic_action_set: Optional[str] = None,
     ) -> PoolMetrics:
         """
         Run full profiling for a specific pool size.
@@ -522,6 +773,13 @@ class ContainerPoolProfiler:
             use_parallel: Use parallel pool creation
             max_concurrent: Max concurrent container creations (for parallel mode)
             initial_wait: Initial emulator boot wait time in seconds
+            use_app_launch_actions: If True, test with app launch actions (basic)
+            realistic_action_set: If provided, use a realistic action set for inference simulation:
+                - "chrome_deep": Chrome browser deep navigation
+                - "maps_deep": Google Maps with pan/search
+                - "youtube_deep": YouTube browsing
+                - "email_deep": Gmail navigation
+                - "multi_app": Multi-app workflow (most realistic)
         
         Returns:
             PoolMetrics with all measurements
@@ -567,7 +825,9 @@ class ContainerPoolProfiler:
             # 4. Profile step operations (returns Dict[str, List[float]])
             try:
                 step_latencies_by_type = await self.profile_step_operations(
-                    manager, containers, num_cycles=1
+                    manager, containers, num_cycles=1,
+                    use_app_launch_actions=use_app_launch_actions,
+                    realistic_action_set=realistic_action_set,
                 )
             except Exception as e:
                 errors.append(f"Step profiling failed: {e}")
@@ -810,6 +1070,27 @@ async def main():
         help="Skip cleanup of stale containers before profiling"
     )
     
+    parser.add_argument(
+        "--use-app-launch-actions",
+        action="store_true",
+        help="Use basic app launch actions (open_app with Settings)"
+    )
+    
+    parser.add_argument(
+        "--realistic-action-set",
+        type=str,
+        choices=list(REALISTIC_ACTION_SETS.keys()),
+        default=None,
+        help="""Use a realistic action set for inference simulation. Options:
+            chrome_deep  - Chrome browser with URL navigation, page scrolling (renders web pages)
+            maps_deep    - Google Maps with pan/search (GPU intensive, tile loading)
+            youtube_deep - YouTube with video browsing (media heavy, thumbnails)
+            email_deep   - Gmail with inbox navigation (network/sync heavy)
+            multi_app    - Multi-app workflow: Chrome→Settings→Contacts→Files (MOST REALISTIC)
+            basic_app_launch - Basic Settings app launch (default --use-app-launch-actions)
+        """
+    )
+    
     args = parser.parse_args()
     
     # Check prerequisites
@@ -837,6 +1118,11 @@ async def main():
     if args.parallel_creation:
         print(f"Max concurrent: {args.max_concurrent}")
     print(f"Initial wait: {args.initial_wait}s")
+    print(f"Use app launch actions: {args.use_app_launch_actions}")
+    if args.realistic_action_set:
+        print(f"Realistic action set: {args.realistic_action_set}")
+        action_count = len(REALISTIC_ACTION_SETS[args.realistic_action_set])
+        print(f"  -> {action_count} actions in sequence")
     print("=" * 60)
     
     # Cleanup stale containers before profiling
@@ -869,6 +1155,8 @@ async def main():
                 use_parallel=args.parallel_creation,
                 max_concurrent=args.max_concurrent,
                 initial_wait=args.initial_wait,
+                use_app_launch_actions=args.use_app_launch_actions,
+                realistic_action_set=args.realistic_action_set,
             )
             results.append(metrics)
             
