@@ -27,14 +27,17 @@ DEBUG_TIMING = os.environ.get("DEBUG_TIMING", "0") == "1"
 from skyrl_agent.config.configuration_utils import TrajectoryConfig
 from skyrl_agent.integrations.base import AsyncInferBackend
 from skyrl_agent.tools.base import TOOL_REGISTRY
+from skyrl_agent.agents.memory import StepMemory, MemoryConfig
+from skyrl_agent.agents.vlm_training import (
+    TrainingAccumulator,
+    TrainingAccumulatorConfig,
+)
 # Import utilities (pure functions extracted for testability)
-from .utils import (
+from .android_utils import (
     init_messages,
-    select_messages,
     load_content,
     numpy_to_base64,
     parse_uitars_action,
-    add_box_token,
 )
 
 
@@ -72,32 +75,23 @@ answer(content='') # Answer user's question.
 @dataclass
 class TrajectoryState:
     """
-    Single container for all trajectory data.
+    Single container for trajectory data.
     
     Used both during execution AND as final output.
-    Replaces scattered self.xxx variables with one cohesive container.
+    Training tensors are now managed by TrainingAccumulator.
     """
-    # Identity
+    # === Identity ===
     instance_id: str
     trajectory_id: str
     
-    # Core data (source of truth)
-    messages: List[Dict] = field(default_factory=list)
-    images: List[np.ndarray] = field(default_factory=list)
+    # === Conversation (for inference) ===
+    messages: List[Dict] = field(default_factory=list)  # Full message history
+    images: List[np.ndarray] = field(default_factory=list)  # Screenshot history
     
-    # Training tensors (accumulated)
-    input_ids: Optional[torch.Tensor] = None
-    labels: Optional[torch.Tensor] = None
-    attention_mask: Optional[torch.Tensor] = None
-    pixel_values: Optional[torch.Tensor] = None
-    image_grid_thw: Optional[torch.Tensor] = None
-    
-    # Tracking
+    # === Tracking ===
     step_count: int = 0
-    prompt_token_len: int = 0
-    processed_until: int = 0  # For incremental training tensor processing
     
-    # Result
+    # === Result ===
     is_done: bool = False
     finish_reason: str = ""
     reward: float = 0.0
@@ -152,9 +146,28 @@ class AndroidAgent:
         self.state = TrajectoryState(
             instance_id=traj_config.instance_id,
             trajectory_id=traj_config.trajectory_id,
-            input_ids=torch.zeros((0,), dtype=torch.int64),
-            labels=torch.full((0,), -100, dtype=torch.int64),
-            attention_mask=torch.zeros((0,), dtype=torch.int64),
+        )
+        
+        # Memory module for sliding window (inference context)
+        max_history_steps = getattr(traj_config, 'max_history_steps', 10)
+        self.memory = StepMemory(MemoryConfig(
+            max_steps=max_history_steps,
+            max_tokens=self.max_prompt_length,
+            system_messages=2,  # System + task
+        ))
+        
+        # Training accumulator (encapsulates all training tensor management)
+        training_strategy = getattr(traj_config, 'training_strategy', 'early')
+        self.training = TrainingAccumulator(
+            processor=self.processor,
+            tokenizer=self.tokenizer,
+            config=TrainingAccumulatorConfig(
+                max_tokens=self.max_prompt_length,
+                max_length=self.max_prompt_length,
+                strategy=training_strategy,
+                system_messages=2,  # System + task
+            ),
+            load_content_fn=load_content,
         )
         
         # Register tool
@@ -211,15 +224,15 @@ class AndroidAgent:
         
         Args:
             messages: Current message list
-            response: Raw assistant response
+            response: Assistant response (with box tokens preserved from vLLM)
             
         Returns:
             New message list with assistant message appended
         """
-        formatted_response = add_box_token(response)
+        # Response already has box tokens (skip_special_tokens=False), no add_box_token needed
         return messages + [{
             "role": "assistant",
-            "content": [{"type": "text", "text": formatted_response}]
+            "content": [{"type": "text", "text": response}]
         }]
     
     def append_observation(self, messages: List[Dict], image: np.ndarray) -> List[Dict]:
@@ -278,138 +291,6 @@ class AndroidAgent:
         from skyrl_agent.functional.utils import extract_images_from_messages
         return extract_images_from_messages(messages)
     
-    # === TRAINING TENSOR PROCESSING ===
-    
-    def process_for_training(self, messages: List[Dict]) -> Dict[str, Any]:
-        """
-        Process messages into training tensors.
-        
-        Converts OpenAI-format messages into tokenized tensors for VLM training.
-        Each message is processed individually, then concatenated. Labels are set
-        to -100 for system/user (masked in loss), actual tokens for assistant (learned).
-        
-        Args:
-            messages: Messages to process (already selected by caller via select_messages)
-            
-        Returns:
-            Dict with input_ids, labels, attention_mask, pixel_values, image_grid_thw
-        """
-        try:
-            from qwen_vl_utils import process_vision_info
-        except ImportError:
-            return {}
-        
-        if self.processor is None:
-            return {}
-        
-        # === Step 1: Extract images from all messages ===
-        # Fail loudly if image processing fails - silent failures produce corrupted training data
-        image_inputs, video_inputs, video_kwargs = process_vision_info(
-            messages, return_video_kwargs=True
-        )
-        
-        # Per-message accumulators
-        input_ids_list = []
-        labels_list = []
-        attention_mask_list = []
-        
-        # Image tracking: process_vision_info returns all images flattened,
-        # we slice them per-message based on how many <|image_pad|> each has
-        image_count = 0
-        pixel_values_list = []
-        image_grid_thw_list = []
-        
-        # === Step 2: Process each message individually ===
-        for msg in messages:
-            role = msg['role']
-            # load_content: text → text, image → "<|vision_start|><|image_pad|><|vision_end|>"
-            content = load_content(msg['content'])
-            # Format as ChatML: <|im_start|>role\ncontent<|im_end|>\n
-            prompt = f'<|im_start|>{role}\n' + content + '<|im_end|>\n'
-            
-            # === Step 2a: Tokenize with VLM processor ===
-            # The processor expands <|image_pad|> into actual image token sequences
-            cur_image_num = prompt.count("<|image_pad|>")
-            if cur_image_num > 0:
-                # Pass corresponding images for this message
-                result = self.processor(
-                    image_inputs[image_count:image_count + cur_image_num],
-                    [prompt],
-                    add_special_tokens=False,
-                    return_tensors="pt"
-                )
-                image_count += cur_image_num
-            else:
-                # Text-only message
-                result = self.processor(
-                    None,
-                    [prompt],
-                    add_special_tokens=False,
-                    return_tensors="pt"
-                )
-            
-            cur_input_ids = result.pop('input_ids')[0]
-            cur_attention_mask = result.pop('attention_mask')[0]
-            
-            # Collect image embeddings if present
-            if 'pixel_values' in result:
-                pixel_values_list.append(result["pixel_values"])
-            if 'image_grid_thw' in result:
-                image_grid_thw_list.append(result["image_grid_thw"])
-            
-            input_ids_list.append(cur_input_ids)
-            attention_mask_list.append(cur_attention_mask)
-            
-            # === Step 2b: Create labels for training ===
-            # system/user → -100 (ignored in loss, model doesn't learn these)
-            # assistant  → actual tokens (model learns to predict these)
-            if role in ["system", "user"]:
-                labels_list.append(torch.full_like(cur_input_ids, -100))
-            else:
-                labels_list.append(cur_input_ids)
-        
-        # === Step 3: Concatenate all messages into single tensors ===
-        result = {}
-        if input_ids_list:
-            result["input_ids"] = torch.cat(input_ids_list, dim=0)
-            result["labels"] = torch.cat(labels_list, dim=0)
-            result["attention_mask"] = torch.cat(attention_mask_list, dim=0)
-        
-        if pixel_values_list:
-            result["pixel_values"] = torch.cat(pixel_values_list, dim=0)
-        
-        if image_grid_thw_list:
-            result["image_grid_thw"] = torch.cat(image_grid_thw_list, dim=0)
-        
-        return result
-    
-    def accumulate_tensors(self, new_tensors: Dict[str, Any]) -> None:
-        """
-        Accumulate new tensors into state.
-        
-        Args:
-            new_tensors: Dict from process_for_training()
-        """
-        if not new_tensors:
-            return
-        
-        if "input_ids" in new_tensors:
-            self.state.input_ids = torch.cat([self.state.input_ids, new_tensors["input_ids"]], dim=0)
-            self.state.labels = torch.cat([self.state.labels, new_tensors["labels"]], dim=0)
-            self.state.attention_mask = torch.cat([self.state.attention_mask, new_tensors["attention_mask"]], dim=0)
-        
-        if "pixel_values" in new_tensors:
-            if self.state.pixel_values is None:
-                self.state.pixel_values = new_tensors["pixel_values"]
-            else:
-                self.state.pixel_values = torch.cat([self.state.pixel_values, new_tensors["pixel_values"]], dim=0)
-        
-        if "image_grid_thw" in new_tensors:
-            if self.state.image_grid_thw is None:
-                self.state.image_grid_thw = new_tensors["image_grid_thw"]
-            else:
-                self.state.image_grid_thw = torch.cat([self.state.image_grid_thw, new_tensors["image_grid_thw"]], dim=0)
-    
     # === MAIN LOOP (explicit data flow) ===
     
     async def run(self, instruction: List[Dict]) -> Tuple[str, Any]:
@@ -427,10 +308,7 @@ class AndroidAgent:
         self.state.images = []
         
         # Process initial messages for training
-        initial_tensors = self.process_for_training(self.state.messages)
-        self.accumulate_tensors(initial_tensors)
-        self.state.prompt_token_len = len(self.state.input_ids)
-        self.state.processed_until = len(self.state.messages)
+        self.training.add_initial(self.state.messages)
         
         result = None
         
@@ -479,36 +357,40 @@ class AndroidAgent:
         self.state.step_count += 1
         print(f"[AndroidAgent Step {self.state.step_count}] instance={self.state.instance_id} traj={self.state.trajectory_id}")
         
-        # 1. Select messages for LLM (explicit selection)
-        selected_messages = select_messages(self.state.messages, mode="full")
+        # 1. Select messages for LLM (sliding window via memory module)
+        selected_messages = self.memory.get_inference_messages(self.state.messages)
         
-        # 2. Prepare input
-        input_ids = self.prepare_input_ids(selected_messages)
+        # 2. Prepare inference input_ids (tokenized prompt for vLLM)
+        inference_input_ids = self.prepare_input_ids(selected_messages)
         
         # 2b. Extract images for VLM inference (required for Qwen2-VL with vLLM V1)
         image_data = self.extract_images_for_inference(selected_messages)
         
-        # Check context window
-        response_token_len = len(input_ids) - self.state.prompt_token_len
-        if response_token_len >= self.max_prompt_length:
-            self.state.is_done = True
-            return True, "CONTEXT_WINDOW_EXCEEDED", None
-        
         # 3. Generate response
         sampling_params = copy.deepcopy(self.sampling_params)
-        sampling_params["max_tokens"] = self.max_prompt_length - response_token_len
+        # Limit max_tokens to remaining context window
+        sampling_params["max_tokens"] = min(
+            sampling_params.get("max_tokens", 2048),
+            self.max_prompt_length - len(inference_input_ids)
+        )
         
         if DEBUG_TIMING:
             num_images = len(image_data) if image_data else 0
-            print(f"[Context] step={self.state.step_count} tokens={len(input_ids)} images={num_images}")
+            print(f"[Context] step={self.state.step_count} tokens={len(inference_input_ids)} images={num_images}")
             vllm_start = time.perf_counter()
         
-        response_str, stop_reason = await self.infer_engine.async_generate_ids(
-            input_ids=input_ids,
+        # Generate response from vLLM with token IDs for training
+        # With skip_special_tokens=False, box tokens are preserved in response_str
+        # We use the actual token IDs for training to avoid retokenization drift
+        result = await self.infer_engine.async_generate_ids(
+            input_ids=inference_input_ids,
             sampling_params=sampling_params,
             request_id=self.agent_id,
             image_data=image_data,
+            return_token_ids=True,
         )
+        
+        response_str, stop_reason, _prompt_token_ids, response_token_ids = result
         
         if DEBUG_TIMING:
             vllm_elapsed = time.perf_counter() - vllm_start
@@ -517,6 +399,7 @@ class AndroidAgent:
         if stop_reason == "length":
             print(f"[AndroidAgent] Stopping reason: {stop_reason}. Stopping agent.")
             self.state.messages = self.append_assistant(self.state.messages, response_str)
+            self.training.add_step(self.state.messages, response_token_ids)  # Best effort, ignore return
             self.state.is_done = True
             return True, "CONTEXT_WINDOW_EXCEEDED", None
         
@@ -556,16 +439,7 @@ class AndroidAgent:
         
         if terminated or truncated:
             self.state.is_done = True
-            # Process only new messages for training
-            train_messages = select_messages(
-                self.state.messages,
-                mode="incremental",
-                start_idx=self.state.processed_until
-            )
-            new_tensors = self.process_for_training(train_messages)
-            self.accumulate_tensors(new_tensors)
-            self.state.processed_until = len(self.state.messages)
-            
+            self.training.add_step(self.state.messages, response_token_ids)  # Best effort, ignore return
             finish_reason = "FINISH" if terminated else "TRUNCATED"
             return True, finish_reason, self.state.reward
         
@@ -573,30 +447,18 @@ class AndroidAgent:
         image = output.get("image")
         if image is None:
             self.state.is_done = True
-            # Process only new messages for training
-            train_messages = select_messages(
-                self.state.messages,
-                mode="incremental",
-                start_idx=self.state.processed_until
-            )
-            new_tensors = self.process_for_training(train_messages)
-            self.accumulate_tensors(new_tensors)
-            self.state.processed_until = len(self.state.messages)
+            self.training.add_step(self.state.messages, response_token_ids)  # Best effort, ignore return
             return True, "NO_SCREENSHOT", None
         
-        # Update state with observation (EXPLICIT assignment)
+        # Update state with observation
         self.state.messages = self.append_observation(self.state.messages, image)
         self.state.images.append(image)
         
-        # 8. Process for training (EXPLICIT: select then process)
-        train_messages = select_messages(
-            self.state.messages,
-            mode="incremental",
-            start_idx=self.state.processed_until
-        )
-        new_tensors = self.process_for_training(train_messages)
-        self.accumulate_tensors(new_tensors)
-        self.state.processed_until = len(self.state.messages)
+        # 8. Add step to training accumulator - stop if strategy says to stop
+        _should_add, should_continue = self.training.add_step(self.state.messages, response_token_ids)
+        if not should_continue:
+            self.state.is_done = True
+            return True, "TRAINING_BUDGET_EXCEEDED", None
         
         return False, None, None
     
@@ -614,99 +476,66 @@ class AndroidAgent:
         """
         Return training tensors with position_ids computed.
         
-        Refactored from EnvWorker.get_train_dict() lines 296-325.
+        Delegates to TrainingAccumulator for VLM training dict construction.
         """
-        try:
-            from verl.models.transformers.qwen2_vl import get_rope_index
-            import verl.utils.torch_functional as VF
-            
-            position_ids = get_rope_index(
-                self.processor,
-                input_ids=self.state.input_ids,
-                image_grid_thw=self.state.image_grid_thw,
-                attention_mask=self.state.attention_mask,
-            )
-            
-            # Postprocess input_ids and attention_mask (padding/truncation)
-            # VF.postprocess_data expects 2D tensors [batch, seq]
-            input_ids_2d = self.state.input_ids.unsqueeze(0) if self.state.input_ids.dim() == 1 else self.state.input_ids
-            attention_mask_2d = self.state.attention_mask.unsqueeze(0) if self.state.attention_mask.dim() == 1 else self.state.attention_mask
-            
-            input_ids_2d, attention_mask_2d = VF.postprocess_data(
-                input_ids=input_ids_2d,
-                attention_mask=attention_mask_2d,
-                max_length=self.max_prompt_length,
-                pad_token_id=self.tokenizer.pad_token_id,
-                left_pad=True,
-                truncation='right',
-            )
-            
-            # Squeeze back to 1D
-            input_ids = input_ids_2d.squeeze(0)
-            attention_mask = attention_mask_2d.squeeze(0)
-            
-            # Handle position_ids and labels separately with same padding
-            seq_len = input_ids.shape[0]
-            orig_len = position_ids.shape[1] if position_ids.dim() > 1 else position_ids.shape[0]
-            
-            if seq_len > orig_len:
-                # Pad position_ids (left pad with 0s)
-                pad_len = seq_len - orig_len
-                if position_ids.dim() > 1:
-                    position_ids = torch.cat([
-                        torch.zeros((position_ids.shape[0], pad_len), dtype=position_ids.dtype),
-                        position_ids
-                    ], dim=1)
-                else:
-                    position_ids = torch.cat([
-                        torch.zeros(pad_len, dtype=position_ids.dtype),
-                        position_ids
-                    ])
-            elif seq_len < orig_len:
-                # Truncate from right
-                if position_ids.dim() > 1:
-                    position_ids = position_ids[:, :seq_len]
-                else:
-                    position_ids = position_ids[:seq_len]
-            
-            # Handle labels similarly
-            labels = self.state.labels
-            if labels is not None:
-                orig_label_len = labels.shape[0]
-                if seq_len > orig_label_len:
-                    pad_len = seq_len - orig_label_len
-                    labels = torch.cat([
-                        torch.full((pad_len,), -100, dtype=labels.dtype),
-                        labels
-                    ])
-                elif seq_len < orig_label_len:
-                    labels = labels[:seq_len]
-            
-            data = {
-                'input_ids': input_ids,
-                'labels': labels,
-                'position_ids': position_ids,
-                'attention_mask': attention_mask,
-            }
-            
-            if self.state.pixel_values is not None:
-                data['multi_modal_inputs'] = {
-                    'pixel_values': self.state.pixel_values,
-                    'image_grid_thw': self.state.image_grid_thw,
-                }
-            
-            return data
-            
-        except ImportError:
-            # Fallback if verl imports not available
-            return {
-                'input_ids': self.state.input_ids,
-                'labels': self.state.labels,
-                'attention_mask': self.state.attention_mask,
-            }
+        return self.training.get_train_dict()
     
-    # === BACKWARD COMPATIBILITY GETTERS ===
-    # These delegate to state for code that still uses old API
+    # === BACKWARD COMPATIBILITY METHODS ===
+    # These delegate to training/state for code that still uses old API
+    
+    def process_for_training(self, messages: List[Dict]) -> Dict[str, Any]:
+        """
+        Process messages into training tensors (backward compatible).
+        
+        Delegates to training_utils.process_messages_for_vlm_training().
+        Returns dict with legacy key names for compatibility.
+        
+        Args:
+            messages: Messages to process
+            
+        Returns:
+            Dict with input_ids, labels, attention_mask, pixel_values, image_grid_thw
+        """
+        from skyrl_agent.agents.vlm_training import process_messages_for_vlm_training
+        result = process_messages_for_vlm_training(
+            messages=messages,
+            processor=self.processor,
+            tokenizer=self.tokenizer,
+            response_token_ids_cache=self.training._response_token_ids_cache,
+            load_content_fn=load_content,
+        )
+        # Remap keys for backward compatibility
+        return {
+            "input_ids": result.get("train_input_ids"),
+            "labels": result.get("train_labels"),
+            "attention_mask": result.get("train_attention_mask"),
+            "pixel_values": result.get("train_pixel_values"),
+            "image_grid_thw": result.get("train_image_grid_thw"),
+        }
+    
+    def accumulate_tensors(self, new_tensors: Dict[str, Any]) -> None:
+        """
+        Accumulate tensors (backward compatible).
+        
+        Delegates to training._accumulate(). Accepts legacy key names.
+        
+        Args:
+            new_tensors: Dict from process_for_training() with legacy or new keys
+        """
+        # Remap legacy keys to new keys if needed
+        remapped = {}
+        for old_key, new_key in [
+            ("input_ids", "train_input_ids"),
+            ("labels", "train_labels"),
+            ("attention_mask", "train_attention_mask"),
+            ("pixel_values", "train_pixel_values"),
+            ("image_grid_thw", "train_image_grid_thw"),
+        ]:
+            if old_key in new_tensors:
+                remapped[new_key] = new_tensors[old_key]
+            elif new_key in new_tensors:
+                remapped[new_key] = new_tensors[new_key]
+        self.training._accumulate(remapped)
     
     def get_messages(self) -> List[Dict]:
         """Return conversation history (backward compatible)."""

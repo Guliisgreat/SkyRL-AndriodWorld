@@ -55,7 +55,7 @@ def __getattr__(name):
     
     if name in ("init_messages", "select_messages", "load_content", 
                 "numpy_to_base64", "parse_uitars_action", "add_box_token"):
-        from skyrl_agent.agents.android.utils import (
+        from skyrl_agent.agents.android.android_utils import (
             init_messages,
             select_messages,
             load_content,

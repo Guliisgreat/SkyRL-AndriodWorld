@@ -114,6 +114,10 @@ class AndroidAgentRunner(AgentRunner):
                     traj_cfg.max_pixels = getattr(self.cfg.data, 'max_pixels', 1003520)
                     traj_cfg.min_pixels = getattr(self.cfg.data, 'min_pixels', 3136)
                 
+                # Add memory config (sliding window for inference)
+                if hasattr(self.cfg, 'generator'):
+                    traj_cfg.max_history_steps = getattr(self.cfg.generator, 'max_history_steps', 10)
+                
                 traj = AndroidTrajectory(
                     cfg=traj_cfg,
                     data=data,
