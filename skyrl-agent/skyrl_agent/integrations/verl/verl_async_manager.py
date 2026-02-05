@@ -216,6 +216,7 @@ class SkyAgentLoopManager:
                     multi_modal_inputs.append({"pixel_values": pv, "image_grid_thw": igt})
                 else:
                     multi_modal_inputs.append({})
+            
             non_tensor_batch["multi_modal_inputs"] = np.array(multi_modal_inputs, dtype=object)
 
             position_ids, position_ids_metrics = self._compute_vlm_position_ids(
@@ -418,7 +419,9 @@ class SkyAgentLoopManager:
                     expanded_list.append(pos_ids)
                 position_ids_list = expanded_list
             
-            # Now stack into batch: each is [3, seq_len] -> [batch, 3, seq_len]
+            # Stack into batch: each is [3, seq_len] -> [batch, 3, seq_len]
+            # verl's dp_actor.py expects (batch, num_dims, seq_length) and transposes internally
+            # See dp_actor.py line 115-116: position_ids.transpose(0, 1) for qwen2vl mrope
             if position_ids_list[0].dim() == 2:
                 # VLM format: [3, seq_len] -> stack to [batch, 3, seq_len]
                 position_ids = torch.stack(position_ids_list, dim=0)
@@ -426,9 +429,20 @@ class SkyAgentLoopManager:
                 # Unexpected - should not happen after normalization
                 position_ids = torch.stack(position_ids_list, dim=0)
             
+            # For transformers >= 4.54.0, position_ids needs 4 dimensions:
+            # (text_pos, temporal_pos, height_pos, width_pos)
+            # See: https://github.com/huggingface/transformers/pull/39447
+            # Store as (batch, 4, seq) - dp_actor.py will transpose to (4, batch, seq)
+            if position_ids.shape[1] == 3:
+                # Prepend text position (same as first dim for M-RoPE)
+                # Text position is cumulative position based on attention mask
+                text_position = (attention_mask.cumsum(dim=1) - 1) * attention_mask  # [batch, seq]
+                text_position = text_position.unsqueeze(1)  # [batch, 1, seq]
+                position_ids = torch.cat([text_position, position_ids], dim=1)  # [batch, 4, seq]
+            
             # Validate shape
             expected_batch = len(input_ids)
-            actual_batch = position_ids.shape[0]
+            actual_batch = position_ids.shape[0]  # batch is dim 0
             if actual_batch != expected_batch:
                 print(
                     f"[position_ids] ERROR: Shape mismatch after concat. "

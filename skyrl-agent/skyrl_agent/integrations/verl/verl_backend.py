@@ -8,7 +8,7 @@ Key changes from verl 0.5.x:
 """
 
 from skyrl_agent.integrations.base import AsyncInferBackend, GeneratorOutput, GeneratorInput
-from typing import Any, List, Dict, Tuple
+from typing import Any, List, Dict, Tuple, Union
 from loguru import logger
 
 # Import TokenOutput from verl 0.6.1
@@ -25,6 +25,13 @@ class VeRLBackend(AsyncInferBackend):
     
     Handles the TokenOutput return type from verl 0.6.1's generate() method
     and decodes token_ids to text using the provided tokenizer.
+    
+    Extended Interface:
+        This backend extends the base AsyncInferBackend with an optional
+        `return_token_ids` parameter in async_generate_ids(). When True,
+        returns (response_text, finish_reason, prompt_token_ids, response_token_ids)
+        instead of just (response_text, finish_reason). This allows avoiding
+        retokenization drift when using the tokens for training.
     """
 
     def __init__(self, infer_engine, tokenizer=None, cfg: Dict[str, Any] = None):
@@ -47,8 +54,9 @@ class VeRLBackend(AsyncInferBackend):
         sampling_params: Dict[str, Any],
         request_id: str,
         image_data: List[Any] = None,
+        return_token_ids: bool = False,
         **kwargs,
-    ) -> Tuple[str, str]:
+    ) -> Union[Tuple[str, str], Tuple[str, str, List[int], List[int]]]:
         """
         Generate text from input token IDs.
         
@@ -57,10 +65,13 @@ class VeRLBackend(AsyncInferBackend):
             sampling_params: Sampling parameters for generation
             request_id: Unique request identifier for sticky sessions
             image_data: List of PIL images or numpy arrays for VLM models
+            return_token_ids: If True, also return prompt and response token IDs
+                              (avoids retokenization for training)
             **kwargs: Additional arguments
             
         Returns:
-            Tuple of (response_text, finish_reason)
+            If return_token_ids=False: Tuple of (response_text, finish_reason)
+            If return_token_ids=True: Tuple of (response_text, finish_reason, prompt_token_ids, response_token_ids)
         """
         # verl 0.6.1 returns TokenOutput from generate()
         token_output: TokenOutput = await self.infer_engine.generate(
@@ -71,27 +82,35 @@ class VeRLBackend(AsyncInferBackend):
         )
         
         # Decode token_ids to text string
-        token_ids = token_output.token_ids
+        # NOTE: skip_special_tokens=False to preserve box tokens (<|box_start|>, <|box_end|>)
+        # This avoids the need for add_box_token() and enables using actual tokens for training
+        response_token_ids = token_output.token_ids
         if self.tokenizer is not None:
             response_str = self.tokenizer.decode(
-                token_ids, 
-                skip_special_tokens=True
+                response_token_ids, 
+                skip_special_tokens=False
             )
         else:
             # Fallback: join token IDs as string (not recommended)
             logger.warning("Tokenizer not provided, returning raw token_ids as string")
-            response_str = str(token_ids)
+            response_str = str(response_token_ids)
         
         # Infer finish_reason from token_ids
         # verl 0.6.1 TokenOutput only has token_ids and log_probs, no stop_reason
         finish_reason = "stop"  # Default
-        if self.tokenizer is not None and len(token_ids) > 0:
+        if self.tokenizer is not None and len(response_token_ids) > 0:
             # Check if last token is EOS
-            if token_ids[-1] == self.tokenizer.eos_token_id:
+            if response_token_ids[-1] == self.tokenizer.eos_token_id:
                 finish_reason = "stop"
             else:
                 # Likely hit max_tokens limit
                 finish_reason = "length"
+        
+        if return_token_ids:
+            # Return token IDs to avoid retokenization for training
+            # prompt_token_ids = what we passed in (input_ids)
+            # response_token_ids = what model generated
+            return response_str, finish_reason, list(input_ids), list(response_token_ids)
         
         return response_str, finish_reason
 
