@@ -149,13 +149,17 @@ def parse_uitars_action(text: str) -> Tuple[Dict, str]:
     action_str = re.sub(r"\\\)", ")", action_str)
     action_str = re.sub(r"\\\'", "'", action_str)
     
-    if match := re.match(r"click\(start_box='?\((\d+),(\d+)\)'?\)", action_str):
+    # Pattern for coordinates with optional box tokens: <|box_start|>(x,y)<|box_end|> or just (x,y)
+    # The box tokens may be present when skip_special_tokens=False is used
+    BOX_COORD = r"'?(?:<\|box_start\|>)?\((\d+),(\d+)\)(?:<\|box_end\|>)?'?"
+    
+    if match := re.match(rf"click\(start_box={BOX_COORD}\)", action_str):
         action = {
             "action_type": "click",
             "touch_point": [int(match[1]) / 1000, int(match[2]) / 1000]
         }
     
-    elif match := re.match(r"long_press\(start_box='?\((\d+),(\d+)\)'?.*\)", action_str):
+    elif match := re.match(rf"long_press\(start_box={BOX_COORD}.*\)", action_str):
         action = {
             "action_type": "long_press",
             "touch_point": [int(match[1]) / 1000, int(match[2]) / 1000]
@@ -180,7 +184,7 @@ def parse_uitars_action(text: str) -> Tuple[Dict, str]:
             action = {"action_type": "answer", "text": match[1]}
     
     elif match := re.match(
-        r"scroll\(start_box='?\((\d+),(\d+)\)'?,end_box='?\((\d+),(\d+)\)'?\)",
+        rf"scroll\(start_box={BOX_COORD},end_box={BOX_COORD}\)",
         action_str
     ):
         x_start = int(match[1])
