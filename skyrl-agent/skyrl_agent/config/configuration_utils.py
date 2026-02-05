@@ -37,6 +37,10 @@ class TrajectoryConfig:
     # Buffer to leave below max_model_len for response generation
     # Larger to account for image tokens (~1300 per image)
     context_buffer: int = 4096
+    # Sliding window size for inference context (number of steps)
+    max_history_steps: int = 10
+    # Training memory strategy: "early" (stop on budget), "recent" (sliding window), "full" (error on budget)
+    training_strategy: str = "early"
     
     @property
     def context_limit_threshold(self) -> int:
