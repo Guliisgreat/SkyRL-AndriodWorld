@@ -114,7 +114,6 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
                 self.role_worker_mapping[Role.RefPolicy],
                 config=self.config.actor_rollout_ref,
                 role="ref",
-                profile_option=self.config.trainer.npu_profile.options,
             )
             self.resource_pool_to_cls[resource_pool]["ref"] = ref_policy_cls
 
@@ -474,9 +473,10 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
                 metrics = {}
                 timing_raw = {}
 
+                profile_steps = OmegaConf.select(self.config.trainer, "profile_steps", default=None)
                 do_profile = (
-                    self.global_steps in self.config.trainer.profile_steps
-                    if self.config.trainer.profile_steps is not None
+                    self.global_steps in profile_steps
+                    if profile_steps is not None
                     else False
                 )
                 with marked_timer("start_profile", timing_raw):
@@ -490,15 +490,22 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
                             self.rm_wg.start_profile()
 
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
-                if self.global_steps == 1:
-                    prompts = self.tokenizer.batch_decode(batch.batch["input_ids"], skip_special_tokens=True)
-                    print("prompts: ", prompts[:2])
+                # Debug print disabled for agent-mode datasets (batch.batch is None)
+                # if self.global_steps == 1:
+                #     prompts = self.tokenizer.batch_decode(batch.batch["input_ids"], skip_special_tokens=True)
+                #     print("prompts: ", prompts[:2])
 
-                # pop those keys for generation
-                batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
+                # pop those keys for generation (guard for agent-mode where batch.batch is None)
+                batch_keys_to_pop = []
+                if batch.batch is not None:
+                    for key in ["input_ids", "attention_mask", "position_ids"]:
+                        if key in batch.batch:
+                            batch_keys_to_pop.append(key)
                 # Dacheng: a hack now to pop 'instance' if it exists (for swe); TODO: make this a config option
                 # TODO: A unified pr on data format
-                non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
+                non_tensor_batch_keys_to_pop = []
+                if "raw_prompt_ids" in batch.non_tensor_batch:
+                    non_tensor_batch_keys_to_pop.append("raw_prompt_ids")
                 if "instance" in batch.non_tensor_batch:
                     non_tensor_batch_keys_to_pop.append("instance")
                 else:
@@ -558,12 +565,30 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
 
                             del gen_baseline_batch, gen_baseline_output
 
+                    # Get batch size from non_tensor_batch for agent-mode (batch.batch is None)
+                    batch_size = len(batch.non_tensor_batch.get("instance", batch.non_tensor_batch.get("data_source", [])))
                     batch.non_tensor_batch["uid"] = np.array(
-                        [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
+                        [str(uuid.uuid4()) for _ in range(batch_size)], dtype=object
                     )
                     # repeat to align with repeated responses in rollout
                     batch = batch.repeat(repeat_times=self.config.skyrl_agent.num_trajectories, interleave=True)
-                    batch = batch.union(gen_batch_output)
+
+                    # Handle agent-mode where batch.batch is None (uses raw_prompt instead of input_ids)
+                    if batch.batch is None:
+                        # For agent-mode, batch.batch is None but gen_batch_output.batch has the generated data
+                        batch.batch = gen_batch_output.batch
+                        # Merge non_tensor_batch from gen_batch_output
+                        if gen_batch_output.non_tensor_batch:
+                            for key, value in gen_batch_output.non_tensor_batch.items():
+                                if key not in batch.non_tensor_batch:
+                                    batch.non_tensor_batch[key] = value
+                        # Merge meta_info from gen_batch_output
+                        if gen_batch_output.meta_info:
+                            for key, value in gen_batch_output.meta_info.items():
+                                if key not in batch.meta_info:
+                                    batch.meta_info[key] = value
+                    else:
+                        batch = batch.union(gen_batch_output)
 
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
                     if rollout_data_dir:
@@ -573,12 +598,12 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
 
                     print(
                         "Batch size: ",
-                        len(batch.batch),
+                        len(batch.batch) if batch.batch is not None else batch_size,
                         " Num trajectories: ",
                         self.config.skyrl_agent.num_trajectories,
                     )
 
-                    if "response_mask" not in batch.batch.keys():
+                    if batch.batch is not None and "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
                     # Balance the number of valid tokens across DP ranks.
                     # NOTE: This usually changes the order of data in the `batch`,
@@ -718,6 +743,7 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
                             self._dump_generations(
                                 inputs=inputs,
                                 outputs=outputs,
+                                gts=[""] * len(inputs),  # No ground truth for agent tasks
                                 scores=scores,
                                 reward_extra_infos_dict=reward_extra_infos_dict,
                                 dump_path=rollout_data_dir,
@@ -793,7 +819,7 @@ class SkyAgentPPOTrainer(RayPPOTrainer):
                     self.train_dataloader.sampler.update(batch=batch)
 
                 # TODO: make a canonical logger that supports various backend
-                logger.log(data=metrics, step=self.global_steps, commit=True)
+                logger.log(data=metrics, step=self.global_steps)
 
                 progress_bar.update(1)
                 self.global_steps += 1
