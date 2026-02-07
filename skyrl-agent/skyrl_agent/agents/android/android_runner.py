@@ -111,8 +111,8 @@ class AndroidAgentRunner(AgentRunner):
                 
                 # Add Android-specific config
                 if hasattr(self.cfg, 'data'):
-                    traj_cfg.max_pixels = getattr(self.cfg.data, 'max_pixels', 1003520)
-                    traj_cfg.min_pixels = getattr(self.cfg.data, 'min_pixels', 3136)
+                    traj_cfg.max_pixels = getattr(self.cfg.data, 'max_pixels', 564480)
+                    traj_cfg.min_pixels = getattr(self.cfg.data, 'min_pixels', 78400)
                 
                 # Add memory config (sliding window for inference)
                 if hasattr(self.cfg, 'generator'):

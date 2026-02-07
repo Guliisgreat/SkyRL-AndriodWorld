@@ -136,8 +136,8 @@ class AndroidAgent:
         self.sampling_params = traj_config.sampling_params
         self.max_prompt_length = traj_config.max_prompt_length
         self.max_iterations = traj_config.max_iterations
-        self.max_pixels = getattr(traj_config, 'max_pixels', 1003520)
-        self.min_pixels = getattr(traj_config, 'min_pixels', 3136)
+        self.max_pixels = getattr(traj_config, 'max_pixels', 564480)
+        self.min_pixels = getattr(traj_config, 'min_pixels', 78400)
         
         # Unique agent ID for inference
         self.agent_id = uuid4().hex

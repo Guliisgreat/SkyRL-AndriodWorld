@@ -135,8 +135,8 @@ class AndroidTask(BaseTask):
         cls,
         observation: Dict,
         prompt_formatter=None,
-        min_pixels: int = 3136,
-        max_pixels: int = 1003520,
+        min_pixels: int = 78400,
+        max_pixels: int = 564480,
     ) -> List[Dict]:
         """
         Format observation into messages (task description + image).
