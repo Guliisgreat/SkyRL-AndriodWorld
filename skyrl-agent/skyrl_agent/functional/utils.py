@@ -270,3 +270,52 @@ class ToolExecutionFailed(StepException):
 
     def __init__(self):
         super().__init__(StepResult.continuing(None))
+
+
+def extract_images_from_messages(messages: List[Dict[str, Any]]) -> Optional[List[Any]]:
+    """
+    Extract images from OpenAI-format messages for VLM inference.
+    
+    This is an agnostic utility function that can be used by any agent
+    that needs to pass images to a VLM backend. It uses qwen_vl_utils
+    which handles the standard OpenAI message format with images.
+    
+    Args:
+        messages: List of messages in OpenAI format, potentially containing
+                  images as base64 data URLs or file paths.
+    
+    Returns:
+        List of PIL images, or None if no images found or extraction fails.
+    
+    Example message format:
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What's in this image?"},
+                {"type": "image", "image": "data:image/png;base64,..."}
+            ]
+        }
+    """
+    try:
+        from qwen_vl_utils import process_vision_info
+    except ImportError:
+        # qwen_vl_utils not available, return None silently
+        return None
+    
+    if not messages:
+        return None
+    
+    try:
+        # process_vision_info extracts images from OpenAI-format messages
+        image_inputs, video_inputs, _ = process_vision_info(
+            messages, return_video_kwargs=True
+        )
+        
+        if image_inputs:
+            return image_inputs
+        return None
+    except Exception as e:
+        # Log but don't fail - some messages may not have images
+        import logging
+        logging.debug(f"Image extraction warning: {e}")
+        return None

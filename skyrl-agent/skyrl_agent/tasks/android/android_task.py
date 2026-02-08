@@ -7,11 +7,13 @@ Does NOT handle per-step formatting (that's Agent's responsibility).
 
 import io
 import base64
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from skyrl_agent.runtime.android import ContainerManager
 from PIL import Image
 
 from skyrl_agent.tasks.base import BaseTask
-from skyrl_agent.agents.android.android_agent import UITARS_USR_PROMPT_THOUGHT
 
 
 class AndroidTask(BaseTask):
@@ -24,51 +26,87 @@ class AndroidTask(BaseTask):
     - evaluate_result(): Evaluate trajectory result
     """
     
+    # Class-level storage for ContainerManager (shared across calls)
+    _container_manager: Optional['ContainerManager'] = None
+
     @classmethod
     async def initialize_runtime(cls, env_config: Dict[str, Any]) -> List:
         """
         Pre-start environment pool.
-        
+
         Called once by AndroidAgentRunner on first run().
-        Delegates actual environment creation to Environment Layer.
-        
+        Creates Docker containers via ContainerManager and wraps them in RuntimeClients.
+
         Args:
             env_config: Environment configuration dict containing:
-                - pool_size: Number of environments to create
-                - docker_image: Docker image for Android emulator
-                - snapshot: Snapshot name
-                - Other env-specific config
-        
+                - pool_size: Number of environments to create (default: 8)
+                - docker_image: Docker image for Android emulator (default: "androidworld:v8")
+                - snapshot: Snapshot name (default: "clean")
+                - sample_mode: Task sampling mode (default: "sequential")
+                - train_task_family: Training task family (default: "android_world")
+                - val_task_family: Validation task family (default: "android_world")
+                - temp_path: Path for temp files (default: "/tmp")
+                - base_env_id: Starting env ID (default: 0)
+                - lock_file: Lock file path for port allocation (optional)
+
         Returns:
-            List of env handles for async_fix_pool dispatcher
+            List of RuntimeClient instances for async_fix_pool dispatcher
         """
-        # Import here to avoid circular dependency
-        # The actual AndroidWorldHostEnv is in Environment Layer
-        try:
-            from verl.trainer.androidworld_env import AndroidWorldHostEnv
-        except ImportError:
-            raise ImportError(
-                "AndroidWorldHostEnv not found. Please ensure the environment layer is available."
-            )
-        
+        from skyrl_agent.runtime.android import ContainerManager, RuntimeClient
+
         pool_size = env_config.get("pool_size", 8)
+        buffer_size = env_config.get("buffer_size", 0)  # Hot standby containers
         base_env_id = env_config.get("base_env_id", 0)
-        
-        env_pool = []
-        for i in range(pool_size):
-            env = AndroidWorldHostEnv(
-                docker_image=env_config.get("docker_image", "androidworld:v8"),
-                sample_mode=env_config.get("sample_mode", "random"),
-                save_images=env_config.get("save_images", False),
-                env_id=base_env_id + i,
-                snapshot=env_config.get("snapshot", "default"),
-                train_task_family=env_config.get("train_task_family", None),
-                val_task_family=env_config.get("val_task_family", None),
-                temp_path=env_config.get("temp_path", "/tmp"),
+        docker_image = env_config.get("docker_image", "androidworld:v8")
+        temp_path = env_config.get("temp_path", "/tmp")
+        lock_file = env_config.get("lock_file")
+
+        # Create ContainerManager if not already created
+        if cls._container_manager is None:
+            cls._container_manager = ContainerManager(
+                docker_image=docker_image,
+                temp_path=temp_path,
+                lock_file=lock_file,
             )
-            env_pool.append(env)
+
+        # Create container pool (parallel for faster initialization)
+        # With optional backup buffer for hot standby containers
+        containers = await cls._container_manager.create_pool_parallel(
+            pool_size=pool_size,
+            base_env_id=base_env_id,
+            max_concurrent=min(pool_size + buffer_size, 8),  # Bound parallelism
+            initial_wait=30.0,  # Reduced wait for parallel
+            max_retries=2,
+            sample_mode=env_config.get("sample_mode", "sequential"),
+            snapshot=env_config.get("snapshot", "clean"),
+            train_task_family=env_config.get("train_task_family", "android_world"),
+            val_task_family=env_config.get("val_task_family", "android_world"),
+            buffer_size=buffer_size,
+        )
+
+        # Wrap each container in a RuntimeClient (for backward compatibility)
+        # Note: The new async_fix_pool_android dispatcher creates RuntimeClients
+        # on-demand from ContainerInstance, so this is only needed for legacy code
+        runtime_clients = [RuntimeClient(container) for container in containers]
         
-        return env_pool
+        # Start background health monitor for automatic container recovery
+        # Check every 30s (reduced frequency)
+        await cls._container_manager.start_health_monitor(interval=30.0)
+
+        return runtime_clients
+
+    @classmethod
+    async def cleanup_runtime(cls):
+        """
+        Cleanup the container pool.
+
+        Should be called when training is complete to stop all Docker containers.
+        """
+        if cls._container_manager is not None:
+            # Stop health monitor before cleanup
+            await cls._container_manager.stop_health_monitor()
+            await cls._container_manager.cleanup()
+            cls._container_manager = None
     
     @classmethod
     def get_instruction(cls, instance: Dict) -> List[Dict]:
@@ -93,16 +131,28 @@ class AndroidTask(BaseTask):
         ]
     
     @classmethod
-    def format_observation(cls, observation: Dict) -> List[Dict]:
+    def format_observation(
+        cls,
+        observation: Dict,
+        prompt_formatter=None,
+        min_pixels: int = 78400,
+        max_pixels: int = 564480,
+    ) -> List[Dict]:
         """
         Format observation into messages (task description + image).
         
-        Called by trajectory after env.reset() to add task-specific content.
+        Returns RAW observation data. Agent-specific prompt formatting 
+        should be applied by the Agent layer via prompt_formatter.
         
         Args:
             observation: Observation from env.reset() containing:
                 - task: Task instruction string
                 - image: Screenshot as numpy array
+            prompt_formatter: Optional callable to format the task instruction
+                              with an agent-specific prompt template.
+                              If None, returns raw task instruction.
+            min_pixels: Minimum pixels for image (agent/model specific, default for Qwen2-VL)
+            max_pixels: Maximum pixels for image (agent/model specific, default for Qwen2-VL)
         
         Returns:
             Messages with task instruction and initial screenshot
@@ -110,12 +160,18 @@ class AndroidTask(BaseTask):
         task_instruction = observation.get("task", "")
         image = observation.get("image")
         
+        # Apply agent-specific prompt formatting if provided
+        if prompt_formatter is not None:
+            formatted_text = prompt_formatter(task_instruction)
+        else:
+            formatted_text = task_instruction
+        
         messages = [
             {
                 "role": "user",
                 "content": [{
                     "type": "text",
-                    "text": UITARS_USR_PROMPT_THOUGHT.format(instruction=task_instruction)
+                    "text": formatted_text
                 }]
             },
         ]
@@ -128,8 +184,8 @@ class AndroidTask(BaseTask):
                 "content": [{
                     "type": "image",
                     "image": f"data:image/png;base64,{image_base64}",
-                    "min_pixels": 3136,
-                    "max_pixels": 1003520,
+                    "min_pixels": min_pixels,
+                    "max_pixels": max_pixels,
                 }]
             })
         

@@ -53,15 +53,18 @@ def sample_observation_base64():
     }
 
 
+# Note: mock_docker_client is defined in test_container_manager.py
+# This fixture is kept for backward compatibility with other test files
 @pytest.fixture
-def mock_docker_client():
-    """Mock docker client."""
+def mock_docker_client_legacy():
+    """Mock docker client (legacy - use injection instead)."""
     from unittest.mock import patch
     
     mock_client = MagicMock()
     mock_container = MagicMock()
     mock_container.id = "test-id"
     mock_container.stop = Mock()
+    mock_container.status = "running"
     mock_container.attrs = {
         'NetworkSettings': {
             'Ports': {}
@@ -70,6 +73,7 @@ def mock_docker_client():
     
     mock_client.containers.list.return_value = []
     mock_client.containers.run.return_value = mock_container
+    mock_client.containers.get.side_effect = Exception("Not found")
     
     # Patch docker.from_env at the point where it's called
     with patch('skyrl_agent.runtime.android.container_manager.docker') as mock_docker_module:

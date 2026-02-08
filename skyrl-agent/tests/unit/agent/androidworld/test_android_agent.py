@@ -15,7 +15,7 @@ import pytest
 from PIL import Image
 
 from skyrl_agent.agents.android.android_agent import AndroidAgent, UITARS_USR_PROMPT_THOUGHT
-from skyrl_agent.agents.android.utils import parse_uitars_action, add_box_token, numpy_to_base64, init_messages
+from skyrl_agent.agents.android.android_utils import parse_uitars_action, add_box_token, numpy_to_base64, init_messages
 
 
 # ==================== Static Method Tests (No Mocking Needed) ====================
@@ -863,8 +863,8 @@ class TestProcessForTraining:
                 del sys.modules['qwen_vl_utils']
 
 
-class TestAccumulateTensors:
-    """Test AndroidAgent.accumulate_tensors() method."""
+class TestTrainingAccumulator:
+    """Test TrainingAccumulator via AndroidAgent.training."""
     
     @pytest.fixture
     def agent(self, mock_traj_config, mock_infer_engine, mock_tokenizer, 
@@ -886,63 +886,63 @@ class TestAccumulateTensors:
         return agent
     
     def test_accumulate_tensors_concatenates_input_ids(self, agent):
-        """Verify input_ids are concatenated correctly."""
+        """Verify train_input_ids are concatenated correctly via TrainingAccumulator."""
         import torch
         
         # Initial state has empty tensors
-        assert agent.state.input_ids.shape[0] == 0
+        assert agent.training._train_input_ids.shape[0] == 0
         
-        # Accumulate first batch
+        # Accumulate first batch using internal _accumulate method
         batch1 = {
-            "input_ids": torch.tensor([1, 2, 3]),
-            "labels": torch.tensor([-100, -100, -100]),
-            "attention_mask": torch.tensor([1, 1, 1]),
+            "train_input_ids": torch.tensor([1, 2, 3]),
+            "train_labels": torch.tensor([-100, -100, -100]),
+            "train_attention_mask": torch.tensor([1, 1, 1]),
         }
-        agent.accumulate_tensors(batch1)
+        agent.training._accumulate(batch1)
         
-        assert agent.state.input_ids.shape[0] == 3
+        assert agent.training._train_input_ids.shape[0] == 3
         
         # Accumulate second batch
         batch2 = {
-            "input_ids": torch.tensor([4, 5]),
-            "labels": torch.tensor([4, 5]),
-            "attention_mask": torch.tensor([1, 1]),
+            "train_input_ids": torch.tensor([4, 5]),
+            "train_labels": torch.tensor([4, 5]),
+            "train_attention_mask": torch.tensor([1, 1]),
         }
-        agent.accumulate_tensors(batch2)
+        agent.training._accumulate(batch2)
         
-        assert agent.state.input_ids.shape[0] == 5
-        assert list(agent.state.input_ids) == [1, 2, 3, 4, 5]
+        assert agent.training._train_input_ids.shape[0] == 5
+        assert list(agent.training._train_input_ids) == [1, 2, 3, 4, 5]
     
     def test_accumulate_tensors_handles_pixel_values(self, agent):
-        """Verify pixel_values are accumulated correctly."""
+        """Verify train_pixel_values are accumulated correctly."""
         import torch
         
-        assert agent.state.pixel_values is None
+        assert agent.training._train_pixel_values is None
         
         # First batch with pixel values
         batch1 = {
-            "input_ids": torch.tensor([1, 2]),
-            "labels": torch.tensor([-100, -100]),
-            "attention_mask": torch.tensor([1, 1]),
-            "pixel_values": torch.zeros((1, 3, 224, 224)),
-            "image_grid_thw": torch.tensor([[1, 14, 14]]),
+            "train_input_ids": torch.tensor([1, 2]),
+            "train_labels": torch.tensor([-100, -100]),
+            "train_attention_mask": torch.tensor([1, 1]),
+            "train_pixel_values": torch.zeros((1, 3, 224, 224)),
+            "train_image_grid_thw": torch.tensor([[1, 14, 14]]),
         }
-        agent.accumulate_tensors(batch1)
+        agent.training._accumulate(batch1)
         
-        assert agent.state.pixel_values.shape[0] == 1
+        assert agent.training._train_pixel_values.shape[0] == 1
         
         # Second batch with more pixel values
         batch2 = {
-            "input_ids": torch.tensor([3, 4]),
-            "labels": torch.tensor([3, 4]),
-            "attention_mask": torch.tensor([1, 1]),
-            "pixel_values": torch.zeros((2, 3, 224, 224)),
-            "image_grid_thw": torch.tensor([[1, 14, 14], [1, 14, 14]]),
+            "train_input_ids": torch.tensor([3, 4]),
+            "train_labels": torch.tensor([3, 4]),
+            "train_attention_mask": torch.tensor([1, 1]),
+            "train_pixel_values": torch.zeros((2, 3, 224, 224)),
+            "train_image_grid_thw": torch.tensor([[1, 14, 14], [1, 14, 14]]),
         }
-        agent.accumulate_tensors(batch2)
+        agent.training._accumulate(batch2)
         
-        assert agent.state.pixel_values.shape[0] == 3
-        assert agent.state.image_grid_thw.shape[0] == 3
+        assert agent.training._train_pixel_values.shape[0] == 3
+        assert agent.training._train_image_grid_thw.shape[0] == 3
     
     def test_accumulate_tensors_handles_empty_dict(self, agent):
         """Verify empty dict doesn't modify state."""
@@ -950,16 +950,16 @@ class TestAccumulateTensors:
         
         # Add some initial tensors
         batch = {
-            "input_ids": torch.tensor([1, 2, 3]),
-            "labels": torch.tensor([-100, -100, -100]),
-            "attention_mask": torch.tensor([1, 1, 1]),
+            "train_input_ids": torch.tensor([1, 2, 3]),
+            "train_labels": torch.tensor([-100, -100, -100]),
+            "train_attention_mask": torch.tensor([1, 1, 1]),
         }
-        agent.accumulate_tensors(batch)
+        agent.training._accumulate(batch)
         
-        initial_len = agent.state.input_ids.shape[0]
+        initial_len = agent.training._train_input_ids.shape[0]
         
         # Accumulate empty dict
-        agent.accumulate_tensors({})
+        agent.training._accumulate({})
         
         # Should be unchanged
-        assert agent.state.input_ids.shape[0] == initial_len
+        assert agent.training._train_input_ids.shape[0] == initial_len

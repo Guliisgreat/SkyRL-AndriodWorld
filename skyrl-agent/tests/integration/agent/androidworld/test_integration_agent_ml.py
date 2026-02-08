@@ -120,7 +120,7 @@ def sample_messages_text_only():
 @pytest.fixture
 def sample_messages_with_image():
     """Sample messages including an image."""
-    from skyrl_agent.agents.android.utils import numpy_to_base64
+    from skyrl_agent.agents.android.android_utils import numpy_to_base64
     
     image = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
     image_b64 = numpy_to_base64(image)
@@ -153,7 +153,7 @@ def sample_messages_with_image():
 @pytest.fixture
 def sample_multi_image_messages():
     """Sample messages with multiple images (multi-step trajectory)."""
-    from skyrl_agent.agents.android.utils import numpy_to_base64
+    from skyrl_agent.agents.android.android_utils import numpy_to_base64
     
     messages = [
         {
@@ -473,14 +473,14 @@ class TestProcessForTrainingIntegration:
 
 
 @skipif_no_ml_deps
-class TestTensorAccumulationIntegration:
-    """Tests for tensor accumulation with real ML components."""
+class TestTrainingAccumulatorIntegration:
+    """Tests for TrainingAccumulator with real ML components."""
     
-    def test_accumulate_tensors_grows_correctly(
+    def test_training_accumulator_grows_correctly(
         self, real_tokenizer, real_processor, mock_traj_config,
         mock_infer_engine, mock_env_handle
     ):
-        """Tensor accumulation grows state correctly."""
+        """TrainingAccumulator grows tensors correctly."""
         from skyrl_agent.agents.android.android_agent import AndroidAgent
         
         with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
@@ -497,27 +497,27 @@ class TestTensorAccumulationIntegration:
                 env_handle=mock_env_handle,
             )
         
-        # First batch
+        # First batch - use add_initial
         messages1 = [
             {"role": "system", "content": [{"type": "text", "text": "System prompt"}]},
             {"role": "user", "content": [{"type": "text", "text": "User input"}]},
         ]
-        tensors1 = agent.process_for_training(messages1)
-        agent.accumulate_tensors(tensors1)
-        len_after_first = agent.state.input_ids.shape[0]
+        agent.training.add_initial(messages1)
+        len_after_first = agent.training._train_input_ids.shape[0]
         
-        # Second batch
-        messages2 = [
+        # Second batch - add assistant + user messages
+        messages_all = messages1 + [
             {"role": "assistant", "content": [{"type": "text", "text": "Assistant response"}]},
+            {"role": "user", "content": [{"type": "text", "text": "Follow up"}]},
         ]
-        tensors2 = agent.process_for_training(messages2)
-        agent.accumulate_tensors(tensors2)
-        len_after_second = agent.state.input_ids.shape[0]
+        mock_response_token_ids = [1, 2, 3, 4, 5]  # Simulated tokens
+        agent.training.add_step(messages_all, mock_response_token_ids)
+        len_after_second = agent.training._train_input_ids.shape[0]
         
         # Verify growth
         assert len_after_second > len_after_first
-        assert agent.state.input_ids.shape == agent.state.labels.shape
-        assert agent.state.input_ids.shape == agent.state.attention_mask.shape
+        assert agent.training._train_input_ids.shape == agent.training._train_labels.shape
+        assert agent.training._train_input_ids.shape == agent.training._train_attention_mask.shape
     
     def test_accumulate_tensors_with_images(
         self, real_tokenizer, real_processor, mock_traj_config,
@@ -525,7 +525,7 @@ class TestTensorAccumulationIntegration:
     ):
         """Tensor accumulation handles images correctly."""
         from skyrl_agent.agents.android.android_agent import AndroidAgent
-        from skyrl_agent.agents.android.utils import numpy_to_base64
+        from skyrl_agent.agents.android.android_utils import numpy_to_base64
         
         with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
@@ -557,8 +557,8 @@ class TestTensorAccumulationIntegration:
         tensors1 = agent.process_for_training(messages1)
         agent.accumulate_tensors(tensors1)
         
-        assert agent.state.pixel_values is not None
-        initial_pixel_count = agent.state.pixel_values.shape[0]
+        assert agent.training._train_pixel_values is not None
+        initial_pixel_count = agent.training._train_pixel_values.shape[0]
         
         # Second image
         image2 = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
@@ -577,7 +577,7 @@ class TestTensorAccumulationIntegration:
         agent.accumulate_tensors(tensors2)
         
         # Verify pixel values accumulated
-        assert agent.state.pixel_values.shape[0] > initial_pixel_count
+        assert agent.training._train_pixel_values.shape[0] > initial_pixel_count
 
 
 # ==================== Edge Cases ====================

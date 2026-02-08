@@ -136,7 +136,7 @@ class TestInitializeTrajectory:
     
     @pytest.mark.asyncio
     async def test_initialize_trajectory(self, trajectory_with_env, sample_instruction):
-        """Verify env reset and instruction generation."""
+        """Verify env reset and template/observation storage."""
         await trajectory_with_env.initialize_trajectory()
         
         # Verify env.reset was called
@@ -145,15 +145,12 @@ class TestInitializeTrajectory:
         # Verify task.get_instruction was called (for template)
         trajectory_with_env.task.get_instruction.assert_called_once()
         
-        # Verify task.format_observation was called (for observation content)
-        trajectory_with_env.task.format_observation.assert_called_once()
+        # Note: format_observation is now called by agent in generate_trajectory,
+        # not in initialize_trajectory (agent-specific formatting)
         
-        # Verify initial_instruction is set (combined from both methods)
-        assert trajectory_with_env.initial_instruction is not None
+        # Verify template_messages and observation are stored for agent to use
+        assert trajectory_with_env.template_messages is not None
         assert trajectory_with_env.initial_observation is not None
-        
-        # Verify instruction is the combination of template + observation
-        assert len(trajectory_with_env.initial_instruction) == len(sample_instruction)
     
     @pytest.mark.asyncio
     async def test_initialize_trajectory_reset_payload(self, trajectory_with_env):
@@ -184,7 +181,8 @@ class TestGenerateTrajectory:
         trajectory.env_handle = mock_env_handle
         trajectory.env_id = 0
         trajectory.processor = mock_processor
-        trajectory.initial_instruction = sample_instruction
+        # template_messages is the system prompt from task.get_instruction()
+        trajectory.template_messages = [sample_instruction[0]]  # Just system message
         trajectory.initial_observation = sample_observation
         
         return trajectory
@@ -203,7 +201,11 @@ class TestGenerateTrajectory:
             mock_state.reward = 1.0
             mock_state.format_reward = 0.0
             
-            mock_agent = AsyncMock()
+            # Mock the formatted instruction returned by agent
+            mock_formatted_instruction = [{"role": "user", "content": "formatted"}]
+            
+            mock_agent = Mock()
+            mock_agent.format_initial_instruction = Mock(return_value=mock_formatted_instruction)
             mock_agent.run = AsyncMock(return_value=("FINISH", 1.0))
             mock_agent.get_state = Mock(return_value=mock_state)
             mock_agent.get_train_dict = Mock(return_value={})
@@ -214,8 +216,15 @@ class TestGenerateTrajectory:
             # Verify agent was created
             MockAgent.assert_called_once()
             
-            # Verify agent.run was called with instruction
-            mock_agent.run.assert_called_once_with(initialized_trajectory.initial_instruction)
+            # Verify agent.format_initial_instruction was called
+            mock_agent.format_initial_instruction.assert_called_once_with(
+                template_messages=initialized_trajectory.template_messages,
+                observation=initialized_trajectory.initial_observation,
+                task=initialized_trajectory.task,
+            )
+            
+            # Verify agent.run was called with formatted instruction
+            mock_agent.run.assert_called_once_with(mock_formatted_instruction)
             
             # Verify result was stored
             assert initialized_trajectory.result is not None
@@ -376,7 +385,7 @@ class TestFullTrajectoryLifecycle:
         # 1. Initialize
         await trajectory.initialize_trajectory()
         
-        assert trajectory.initial_instruction is not None
+        assert trajectory.template_messages is not None
         assert trajectory.initial_observation is not None
         
         # 2. Generate (with mocked agent)
@@ -391,7 +400,8 @@ class TestFullTrajectoryLifecycle:
             mock_state.reward = 1.0
             mock_state.format_reward = 0.0
             
-            mock_agent = AsyncMock()
+            mock_agent = Mock()
+            mock_agent.format_initial_instruction = Mock(return_value=[{"role": "user", "content": "test"}])
             mock_agent.run = AsyncMock(return_value=("FINISH", 1.0))
             mock_agent.get_state = Mock(return_value=mock_state)
             mock_agent.get_train_dict = Mock(return_value={})
@@ -426,7 +436,8 @@ class TestTrajectoryAttributes:
         assert trajectory.env_handle is None
         assert trajectory.processor is None
         assert trajectory.agent is None
-        assert trajectory.initial_instruction is None
+        assert trajectory.template_messages is None
+        assert trajectory.initial_observation is None
     
     def test_env_assignment(self, mock_traj_config, sample_data, mock_infer_engine,
                             mock_tokenizer, mock_task, mock_env_handle):

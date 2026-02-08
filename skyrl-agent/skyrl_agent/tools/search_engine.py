@@ -27,9 +27,9 @@ class SearchEngine(BaseTool):
         },
         "required": ["query"],
     }
+    # Defer API key validation to call time to avoid import errors
+    # when the tool is registered but not actually used
     google_search_key = os.getenv("GOOGLE_SEARCH_KEY")
-    if not google_search_key:
-        raise ValueError("GOOGLE_SEARCH_KEY environment variable is required")
 
     # Optional blocklists to prevent data leakage (e.g., excluding benchmark/dataset sites)
     # Configure via env vars:
@@ -62,6 +62,8 @@ class SearchEngine(BaseTool):
         Returns:
             str: Formatted search results or error message
         """
+        if not self.google_search_key:
+            return "Error: GOOGLE_SEARCH_KEY environment variable is required for search"
         url = "https://google.serper.dev/search"
         headers = {
             "X-API-KEY": self.google_search_key,

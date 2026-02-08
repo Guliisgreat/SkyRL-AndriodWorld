@@ -365,8 +365,8 @@ class TestE2ERealRunner:
         from skyrl_agent.tasks.android.android_task import AndroidTask
         from skyrl_agent.dispatcher.dispatchers import DISPATCHER_REGISTRY
         
-        # Verify dispatcher is registered
-        assert "async_fix_pool" in DISPATCHER_REGISTRY
+        # Verify dispatcher is registered (now using async_fix_pool_retry)
+        assert "async_fix_pool_retry" in DISPATCHER_REGISTRY
         
         # Setup
         cfg = create_runner_config(pool_size=1, num_trajectories=1, max_iterations=2)
@@ -379,7 +379,7 @@ class TestE2ERealRunner:
         
         # Track dispatcher calls
         dispatcher_called = []
-        original_dispatcher = DISPATCHER_REGISTRY["async_fix_pool"]
+        original_dispatcher = DISPATCHER_REGISTRY["async_fix_pool_retry"]
         
         async def tracking_dispatcher(cfg, init_fn, run_fn, eval_fn):
             dispatcher_called.append(True)
@@ -396,7 +396,7 @@ class TestE2ERealRunner:
             with patch.object(AndroidTask, 'initialize_runtime', new_callable=AsyncMock) as mock_init:
                 mock_init.return_value = env_pool
                 
-                with patch.dict(DISPATCHER_REGISTRY, {"async_fix_pool": tracking_dispatcher}):
+                with patch.dict(DISPATCHER_REGISTRY, {"async_fix_pool_retry": tracking_dispatcher}):
                     await runner.run(input_batch)
         
         # Verify: Dispatcher was called

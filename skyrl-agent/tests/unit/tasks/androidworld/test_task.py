@@ -13,12 +13,16 @@ from skyrl_agent.tasks.android.android_task import AndroidTask
 class TestInitializeRuntime:
     """Test AndroidTask.initialize_runtime()."""
 
+    @pytest.fixture(autouse=True)
+    def reset_container_manager(self):
+        """Reset the class-level container manager before each test."""
+        AndroidTask._container_manager = None
+        yield
+        AndroidTask._container_manager = None
+
     @pytest.mark.asyncio
     async def test_initialize_runtime(self, tmp_path):
-        """Test initialize_runtime creates pool and clients."""
-        import sys
-        from unittest.mock import patch, Mock, MagicMock
-
+        """Test initialize_runtime creates pool and RuntimeClients."""
         env_config = {
             "pool_size": 3,
             "docker_image": "androidworld:test",
@@ -27,58 +31,67 @@ class TestInitializeRuntime:
             "lock_file": str(tmp_path / "test.lck"),
         }
 
-        # Create mock AndroidWorldHostEnv class
-        mock_env_instances = [Mock() for _ in range(3)]
-        mock_env_class = Mock(side_effect=mock_env_instances)
+        # Create mock container instances
+        mock_containers = [Mock() for _ in range(3)]
 
-        # Mock the verl module and AndroidWorldHostEnv
-        mock_verl = MagicMock()
-        mock_verl.trainer.androidworld_env.AndroidWorldHostEnv = mock_env_class
+        # Mock ContainerManager and RuntimeClient at the module where they're imported
+        with patch('skyrl_agent.runtime.android.ContainerManager') as MockContainerManager, \
+             patch('skyrl_agent.runtime.android.RuntimeClient') as MockRuntimeClient:
 
-        with patch.dict(sys.modules, {'verl': mock_verl, 'verl.trainer': mock_verl.trainer,
-                                       'verl.trainer.androidworld_env': mock_verl.trainer.androidworld_env}):
+            # Configure mock ContainerManager
+            mock_manager_instance = AsyncMock()
+            mock_manager_instance.create_pool_parallel = AsyncMock(return_value=mock_containers)
+            mock_manager_instance.start_health_monitor = AsyncMock()
+            MockContainerManager.return_value = mock_manager_instance
+
+            # Configure mock RuntimeClient to return distinct instances
+            mock_clients = [Mock() for _ in range(3)]
+            MockRuntimeClient.side_effect = mock_clients
+
             clients = await AndroidTask.initialize_runtime(env_config)
 
+            # Verify results
             assert len(clients) == 3
-            assert mock_env_class.call_count == 3
+            assert MockContainerManager.call_count == 1
+            mock_manager_instance.create_pool_parallel.assert_called_once()
+            assert MockRuntimeClient.call_count == 3
 
     @pytest.mark.asyncio
     async def test_initialize_runtime_default_config(self, tmp_path):
         """Test initialize_runtime with default config."""
-        import sys
-        from unittest.mock import patch, Mock, MagicMock
-
         env_config = {
             "docker_image": "androidworld:test",
             "temp_path": str(tmp_path),
             "lock_file": str(tmp_path / "test.lck"),
         }
 
-        # Create mock AndroidWorldHostEnv class for 8 instances (default pool_size)
-        mock_env_instances = [Mock() for _ in range(8)]
-        mock_env_class = Mock(side_effect=mock_env_instances)
+        # Create mock container instances for 8 (default pool_size)
+        mock_containers = [Mock() for _ in range(8)]
 
-        # Mock the verl module
-        mock_verl = MagicMock()
-        mock_verl.trainer.androidworld_env.AndroidWorldHostEnv = mock_env_class
+        with patch('skyrl_agent.runtime.android.ContainerManager') as MockContainerManager, \
+             patch('skyrl_agent.runtime.android.RuntimeClient') as MockRuntimeClient:
 
-        with patch.dict(sys.modules, {'verl': mock_verl, 'verl.trainer': mock_verl.trainer,
-                                       'verl.trainer.androidworld_env': mock_verl.trainer.androidworld_env}):
+            mock_manager_instance = AsyncMock()
+            mock_manager_instance.create_pool_parallel = AsyncMock(return_value=mock_containers)
+            mock_manager_instance.start_health_monitor = AsyncMock()
+            MockContainerManager.return_value = mock_manager_instance
+
+            mock_clients = [Mock() for _ in range(8)]
+            MockRuntimeClient.side_effect = mock_clients
+
             clients = await AndroidTask.initialize_runtime(env_config)
 
             assert len(clients) == 8  # Default pool_size
+            mock_manager_instance.create_pool_parallel.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_initialize_runtime_custom_config(self, tmp_path):
         """Test initialize_runtime with custom config."""
-        import sys
-        from unittest.mock import patch, Mock, MagicMock
-
         env_config = {
             "pool_size": 5,
             "docker_image": "androidworld:custom",
             "snapshot": "custom_snapshot",
-            "sample_mode": "sequential",
+            "sample_mode": "random",
             "train_task_family": "custom_train",
             "val_task_family": "custom_val",
             "temp_path": str(tmp_path),
@@ -86,19 +99,58 @@ class TestInitializeRuntime:
             "lock_file": str(tmp_path / "test.lck"),
         }
 
-        # Create mock AndroidWorldHostEnv class for 5 instances
-        mock_env_instances = [Mock() for _ in range(5)]
-        mock_env_class = Mock(side_effect=mock_env_instances)
+        mock_containers = [Mock() for _ in range(5)]
 
-        # Mock the verl module
-        mock_verl = MagicMock()
-        mock_verl.trainer.androidworld_env.AndroidWorldHostEnv = mock_env_class
+        with patch('skyrl_agent.runtime.android.ContainerManager') as MockContainerManager, \
+             patch('skyrl_agent.runtime.android.RuntimeClient') as MockRuntimeClient:
 
-        with patch.dict(sys.modules, {'verl': mock_verl, 'verl.trainer': mock_verl.trainer,
-                                       'verl.trainer.androidworld_env': mock_verl.trainer.androidworld_env}):
+            mock_manager_instance = AsyncMock()
+            mock_manager_instance.create_pool_parallel = AsyncMock(return_value=mock_containers)
+            mock_manager_instance.start_health_monitor = AsyncMock()
+            MockContainerManager.return_value = mock_manager_instance
+
+            mock_clients = [Mock() for _ in range(5)]
+            MockRuntimeClient.side_effect = mock_clients
+
             clients = await AndroidTask.initialize_runtime(env_config)
 
             assert len(clients) == 5
+            mock_manager_instance.create_pool_parallel.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_runtime(self, tmp_path):
+        """Test cleanup_runtime stops containers."""
+        env_config = {
+            "pool_size": 2,
+            "docker_image": "androidworld:test",
+            "temp_path": str(tmp_path),
+            "lock_file": str(tmp_path / "test.lck"),
+        }
+
+        mock_containers = [Mock() for _ in range(2)]
+
+        with patch('skyrl_agent.runtime.android.ContainerManager') as MockContainerManager, \
+             patch('skyrl_agent.runtime.android.RuntimeClient') as MockRuntimeClient:
+
+            mock_manager_instance = AsyncMock()
+            mock_manager_instance.create_pool_parallel = AsyncMock(return_value=mock_containers)
+            mock_manager_instance.start_health_monitor = AsyncMock()
+            mock_manager_instance.stop_health_monitor = AsyncMock()
+            mock_manager_instance.cleanup = AsyncMock()
+            MockContainerManager.return_value = mock_manager_instance
+
+            mock_clients = [Mock() for _ in range(2)]
+            MockRuntimeClient.side_effect = mock_clients
+
+            # Initialize
+            await AndroidTask.initialize_runtime(env_config)
+            assert AndroidTask._container_manager is not None
+
+            # Cleanup
+            await AndroidTask.cleanup_runtime()
+            mock_manager_instance.stop_health_monitor.assert_called_once()
+            mock_manager_instance.cleanup.assert_called_once()
+            assert AndroidTask._container_manager is None
 
 
 class TestGetInstruction:

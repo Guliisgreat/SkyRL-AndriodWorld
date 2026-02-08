@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
+Main entry point for PPO training with verl 0.6.1.
 Note that we don't combine the main with ray_trainer as ray_trainer is used by other main.
 """
 
@@ -22,7 +23,7 @@ import hydra
 import ray
 from omegaconf import OmegaConf
 
-from verl.trainer.constants_ppo import PPO_RAY_RUNTIME_ENV
+from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
 from verl.utils.device import is_cuda_available
 
 from .verl_trainer import SkyAgentPPOTrainer
@@ -32,16 +33,20 @@ from collections import defaultdict
 
 from verl.workers.reward_manager import register
 from verl.protocol import DataProto
-from verl.trainer.main_ppo import create_rl_dataset, create_rl_sampler, config_dir
+from verl.trainer.main_ppo import create_rl_dataset, create_rl_sampler
+import verl.trainer
+
+# config_dir is the path to verl's hydra config directory
+config_dir = os.path.join(os.path.dirname(verl.trainer.main_ppo.__file__), "config")
 
 
 @register("skyagent")
 class SkyAgentRewardManager:
-    """The reward manager."""
+    """The reward manager for skyrl-agent."""
 
     def __init__(self, tokenizer, num_examine, compute_score=None, reward_fn_key="data_source") -> None:
         """
-        Initialize the NaiveRewardManager instance.
+        Initialize the SkyAgentRewardManager instance.
 
         Args:
             tokenizer: The tokenizer used to decode token IDs into text.
@@ -67,7 +72,6 @@ class SkyAgentRewardManager:
         reward_tensor = torch.zeros_like(data.batch["responses"], dtype=torch.float32)
         reward_extra_info = defaultdict(list)
 
-        already_print_data_sources = {}
         print(
             f"In Reward manager: data proto batch keys: {data.batch.keys()}, non tensor batch keys: {data.non_tensor_batch.keys()} meta info keys: {data.meta_info.keys()}"
         )
@@ -79,18 +83,15 @@ class SkyAgentRewardManager:
 
             prompt_length = prompt_ids.shape[-1]
 
-            valid_prompt_length = data_item.batch["attention_mask"][:prompt_length].sum()
-            valid_prompt_ids = prompt_ids[-valid_prompt_length:]
+            # valid_prompt_length = data_item.batch["attention_mask"][:prompt_length].sum()
+            # valid_prompt_ids = prompt_ids[-valid_prompt_length:]
 
-            response_ids = data_item.batch["responses"]
+            # response_ids = data_item.batch["responses"]
             valid_response_length = data_item.batch["attention_mask"][prompt_length:].sum()
-            valid_response_ids = response_ids[:valid_response_length]
 
             # decode
-            prompt_str = self.tokenizer.decode(valid_prompt_ids, skip_special_tokens=True)
-            response_str = self.tokenizer.decode(valid_response_ids, skip_special_tokens=True)
 
-            reward_tensor[i, valid_response_length - 1] = float(data_item.non_tensor_batch["rewards"])
+            reward_tensor[i, valid_response_length - 1] = int(data_item.non_tensor_batch["rewards"])
 
             # data_source = data_item.non_tensor_batch["data_source"]
 
@@ -127,28 +128,41 @@ def run_ppo(config) -> None:
         # Initialize Ray with a local cluster configuration
         # Set environment variables in the runtime environment to control tokenizer parallelism,
         # NCCL debug level, VLLM logging level, and allow runtime LoRA updating
-        # `num_cpus` specifies the number of CPU cores Ray can use, obtained from the configuration
-
+        default_runtime_env = get_ppo_ray_runtime_env()
+        
+        # Get ray_init kwargs from config (with fallback for different config formats)
+        ray_kwargs = config.get("ray_kwargs", {})
+        ray_init_kwargs = ray_kwargs.get("ray_init", {}) if ray_kwargs else {}
+        runtime_env_kwargs = ray_init_kwargs.get("runtime_env", {}) if ray_init_kwargs else {}
+        
         # use V1 for async engine
-        PPO_RAY_RUNTIME_ENV["env_vars"].update({"VLLM_USE_V1": "1"})
+        runtime_env_vars = runtime_env_kwargs.get("env_vars", {})
+        runtime_env_vars["VLLM_USE_V1"] = "1"
         if os.environ.get("LD_LIBRARY_PATH", None):
-            # export LD_LIBRARY_PATH path from driver process, needed for EFA on Anyscale rn
             print("Exporting `LD_LIBRARY_PATH` from driver")
-            PPO_RAY_RUNTIME_ENV["env_vars"].update({"LD_LIBRARY_PATH": os.environ["LD_LIBRARY_PATH"]})
+            runtime_env_vars["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH"]
+        runtime_env_kwargs["env_vars"] = runtime_env_vars
+        
+        runtime_env = OmegaConf.merge(default_runtime_env, runtime_env_kwargs)
+        ray_init_kwargs = OmegaConf.create({**dict(ray_init_kwargs), "runtime_env": runtime_env})
+        print(f"ray init kwargs: {ray_init_kwargs}")
+        ray.init(**OmegaConf.to_container(ray_init_kwargs))
 
-        ray.init(
-            runtime_env=PPO_RAY_RUNTIME_ENV,
-            num_cpus=config.ray_init.num_cpus,
-        )
-
-    # Create a remote instance of the TaskRunner class, and
-    # Execute the `run` method of the TaskRunner instance remotely and wait for it to complete
+    # Create a remote instance of the TaskRunner class
+    # TaskRunner is already decorated with @ray.remote(num_cpus=1)
+    
+    # Check for profiling configuration (handle both old and new config formats)
+    profiler_config = config.get("global_profiler", None)
     if (
         is_cuda_available
-        and config.trainer.get("profile_steps") is not None
-        and len(config.trainer.get("profile_steps", [])) > 0
+        and profiler_config is not None
+        and profiler_config.get("tool") == "nsys"
+        and profiler_config.get("steps") is not None
+        and len(profiler_config.get("steps", [])) > 0
     ):
-        nsight_options = OmegaConf.to_container(config.trainer.controller_nsight_options)
+        nsight_options = OmegaConf.to_container(
+            profiler_config.global_tool_config.nsys.controller_nsight_options
+        )
         runner = TaskRunner.options(runtime_env={"nsight": nsight_options}).remote()
     else:
         runner = TaskRunner.remote()
@@ -162,8 +176,8 @@ def run_ppo(config) -> None:
         raise
 
     # [Optional] get the path of the timeline trace file from the configuration, default to None
-    # This file is used for performance analysis
-    timeline_json_file = config.ray_init.get("timeline_json_file", None)
+    ray_kwargs = config.get("ray_kwargs", {})
+    timeline_json_file = ray_kwargs.get("timeline_json_file", None) if ray_kwargs else None
     if timeline_json_file:
         ray.timeline(filename=timeline_json_file)
 
@@ -234,7 +248,7 @@ class TaskRunner:
 
         # Version validation for vllm.
         if config.actor_rollout_ref.rollout.name in ["vllm"]:
-            from verl.utils.vllm_utils import is_version_ge
+            from verl.utils.vllm import is_version_ge
 
             if config.actor_rollout_ref.model.get("lora_rank", 0) > 0:
                 if not is_version_ge(pkg="vllm", minver="0.7.3"):
@@ -268,7 +282,7 @@ class TaskRunner:
         else:
             raise NotImplementedError
 
-        from .verl_trainer import ResourcePoolManager, Role
+        from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role
 
         # Map roles to their corresponding remote worker classes.
         role_worker_mapping = {

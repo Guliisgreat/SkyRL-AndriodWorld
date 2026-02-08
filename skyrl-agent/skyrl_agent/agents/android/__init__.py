@@ -6,6 +6,7 @@ This module provides:
 - AndroidTrajectory: Trajectory management following ReActTrajectory pattern
 - AndroidAgentRunner: Runner using async_fix_pool dispatcher
 - TrajectoryState: State container for trajectory data
+- UITARS_USR_PROMPT_THOUGHT: Agent-specific prompt template
 - Utilities: Pure functions for parsing, formatting, and selection
 
 Note: Uses lazy imports to avoid requiring all dependencies at import time.
@@ -17,7 +18,7 @@ __all__ = [
     "AndroidTrajectory",
     "AndroidAgentRunner",
     "TrajectoryState",
-    # Constants
+    # Prompt template (agent-specific)
     "UITARS_USR_PROMPT_THOUGHT",
     # Utility functions
     "init_messages",
@@ -31,14 +32,18 @@ __all__ = [
 
 def __getattr__(name):
     """Lazy import for android agent classes to avoid dependency issues at import time."""
+    # Agent classes and prompt (lazy loaded due to heavy dependencies)
     if name in ("AndroidAgent", "TrajectoryState", "UITARS_USR_PROMPT_THOUGHT"):
         from skyrl_agent.agents.android.android_agent import (
             AndroidAgent,
             TrajectoryState,
             UITARS_USR_PROMPT_THOUGHT,
         )
-        return {"AndroidAgent": AndroidAgent, "TrajectoryState": TrajectoryState, 
-                "UITARS_USR_PROMPT_THOUGHT": UITARS_USR_PROMPT_THOUGHT}[name]
+        return {
+            "AndroidAgent": AndroidAgent,
+            "TrajectoryState": TrajectoryState,
+            "UITARS_USR_PROMPT_THOUGHT": UITARS_USR_PROMPT_THOUGHT,
+        }[name]
     
     if name == "AndroidTrajectory":
         from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
@@ -50,7 +55,7 @@ def __getattr__(name):
     
     if name in ("init_messages", "select_messages", "load_content", 
                 "numpy_to_base64", "parse_uitars_action", "add_box_token"):
-        from skyrl_agent.agents.android.utils import (
+        from skyrl_agent.agents.android.android_utils import (
             init_messages,
             select_messages,
             load_content,
