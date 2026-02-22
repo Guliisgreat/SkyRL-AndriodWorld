@@ -904,6 +904,7 @@ class ContainerManager:
         train_task_family: str = "android_world",
         val_task_family: str = "android_world",
         buffer_size: int = 0,
+        use_host_network: bool = False,
     ) -> List[ContainerInstance]:
         """
         Create pool of N containers with bounded parallel creation.
@@ -922,6 +923,10 @@ class ContainerManager:
             train_task_family: Training task family name
             val_task_family: Validation task family name
             buffer_size: Number of additional buffer containers (hot standby)
+            use_host_network: Use host networking for containers (default: False).
+                Host networking is incompatible with multi-container pools because
+                emulators bind to fixed internal ports that conflict. Only use with
+                pool_size=1 for tasks requiring dynamic port access (e.g., SMS).
         
         Returns:
             List of ContainerInstance objects (pool_size main + buffer_size backup)
@@ -933,7 +938,7 @@ class ContainerManager:
             "train_task_family": train_task_family,
             "val_task_family": val_task_family,
             "initial_wait": initial_wait,
-            "use_host_network": False,
+            "use_host_network": use_host_network,
         }
         
         self.available_queue = asyncio.Queue()
@@ -973,7 +978,7 @@ class ContainerManager:
                             env_id=env_id,
                             ports=ports,
                             config=config,
-                            use_host_network=False,
+                            use_host_network=use_host_network,
                         )
                         
                         # Convert to ContainerInstance
