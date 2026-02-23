@@ -332,7 +332,7 @@ async def step_adb(env: Env, data: StepAdbInput):
         args = command.split()
         if args and args[0] == "adb":
             args = args[1:]
-        full_cmd = [env.adb_path, "-s", f"emulator-{env.console_port}"] + args
+        full_cmd = [env.adb_path, "-P", str(env.adb_server_port), "-s", f"emulator-{env.console_port}"] + args
         result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=30)
         command_output = (result.stdout or "") + (result.stderr or "")
 
