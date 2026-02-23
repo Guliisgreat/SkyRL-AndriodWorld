@@ -1,6 +1,6 @@
 # ADB Agent Prompt Design Guide
 
-A practical guide to understanding, modifying, and extending the prompt for the ADB command agent (`cli_adb_agent.py`).
+A practical guide to understanding, modifying, and extending the prompt for the ADB command agent (`android_adb_agent.py`).
 
 ---
 
@@ -43,7 +43,7 @@ The ADB agent has a simple loop:
 
 ## 2. Prompt Structure
 
-The full prompt lives in `skyrl_agent/agents/android/adb_agent.py` as `ADB_AGENT_PROMPT`. It has 7 sections:
+The full prompt lives in `skyrl_agent/agents/android/android_adb_agent.py` as `ADB_AGENT_PROMPT`. It has 7 sections:
 
 ### 2.1 Role Statement (1 sentence)
 
@@ -221,7 +221,7 @@ BLOCKED_PATTERNS = [
 
 ### Adding a New Command
 
-1. **Add to `ALLOWED_PREFIXES`** in `adb_agent.py`:
+1. **Add to `ALLOWED_PREFIXES`** in `android_adb_agent.py`:
    ```python
    "adb shell screencap",  # new: screen capture to file
    ```
@@ -255,9 +255,9 @@ The most effective levers are the **behavioral guidelines** in "Important Notes"
 ### Changing the Output Format
 
 If you change the format (e.g., adding a `Plan:` field), you must also update:
-- `parse_adb_command()` in `adb_agent.py` — the parser
-- `append_assistant()` — how the response is stored
-- `android_adb_agent.py` — the VERL integration agent (if used for training)
+- `_parse_adb_command()` in `android_adb_agent.py` — the parser
+- `_append_assistant()` — how the response is stored
+- `AndroidADBAgent.step()` — the VERL agent step method
 
 ---
 
@@ -300,9 +300,7 @@ On 5 easy open-app tasks, ADB agent achieves **5/5 (100%)** vs GUI agent's **3/5
 
 | File | Role |
 |------|------|
-| `skyrl_agent/agents/android/adb_agent.py` | Prompt, parser, command execution, message building |
-| `scripts/cli_adb_agent.py` | CLI runner (thin wrapper over adb_agent.py) |
-| `skyrl_agent/agents/android/android_adb_agent.py` | VERL training integration (subclass of AndroidAgent) |
+| `skyrl_agent/agents/android/android_adb_agent.py` | Prompt, parser, message building, sliding window, safety validation, and VERL agent class (self-contained) |
 | `docker/android/server/server_adb.py` | Docker container endpoint for `/step_adb` |
 | `tests/unit/agent/androidworld/test_adb_agent.py` | Unit tests for parser and validation |
 
