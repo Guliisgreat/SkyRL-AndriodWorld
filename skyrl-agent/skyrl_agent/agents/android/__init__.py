@@ -17,6 +17,8 @@ __all__ = [
     "AndroidAgent",
     "AndroidTrajectory",
     "AndroidAgentRunner",
+    "AndroidADBAgent",
+    "AndroidFullADBAgent",
     "TrajectoryState",
     # Prompt template (agent-specific)
     "UITARS_USR_PROMPT_THOUGHT",
@@ -52,6 +54,14 @@ def __getattr__(name):
     if name == "AndroidAgentRunner":
         from skyrl_agent.agents.android.android_runner import AndroidAgentRunner
         return AndroidAgentRunner
+    
+    if name == "AndroidADBAgent":
+        from skyrl_agent.agents.android.android_adb_agent import AndroidADBAgent
+        return AndroidADBAgent
+    
+    if name == "AndroidFullADBAgent":
+        from skyrl_agent.agents.android.android_full_adb_agent import AndroidFullADBAgent
+        return AndroidFullADBAgent
     
     if name in ("init_messages", "select_messages", "load_content", 
                 "numpy_to_base64", "parse_uitars_action", "add_box_token"):
