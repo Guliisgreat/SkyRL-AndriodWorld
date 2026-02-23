@@ -386,6 +386,7 @@ class AndroidAgent:
             request_id=self.agent_id,
             image_data=image_data,
             return_token_ids=True,
+            messages=selected_messages,  # Chat API backends use this directly
         )
         
         response_str, stop_reason, _prompt_token_ids, response_token_ids = result

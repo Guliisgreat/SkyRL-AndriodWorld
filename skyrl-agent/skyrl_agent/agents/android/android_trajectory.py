@@ -97,7 +97,7 @@ class AndroidTrajectory(BaseTrajectory):
             "trajectory_id": state.trajectory_id,
             "messages": state.messages,
             "history_images": state.images,
-            "train_dict": self.agent.get_train_dict(),  # Needs position_ids computation
+            "train_dict": self._safe_get_train_dict(),
             "results": result,
             "finish_reason": state.finish_reason,
             "reward": state.reward,
@@ -105,6 +105,14 @@ class AndroidTrajectory(BaseTrajectory):
             "state": {},
         }
     
+    def _safe_get_train_dict(self) -> dict:
+        """Get training dict, returning empty dict if processor is unavailable."""
+        try:
+            return self.agent.get_train_dict()
+        except (AttributeError, TypeError):
+            # processor is None (e.g. OpenAI API mode) — training data not needed
+            return {}
+
     async def evaluate_trajectory(self):
         """
         Evaluate trajectory using Task with agent's history.
