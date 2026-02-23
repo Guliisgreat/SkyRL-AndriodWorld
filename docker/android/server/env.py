@@ -18,8 +18,44 @@ from google.protobuf import json_format
 from android_world.env import env_launcher, json_action, adb_utils
 from android_world import registry
 from android_world import suite_utils
+from android_world.env import android_world_controller
+from android_env.components import config_classes
+from android_env import loader
 
 from .logger_config import get_logger
+
+
+def _patch_get_controller_for_adb_port():
+    """Ensure get_controller uses ADB_SERVER_PORT from env (required for host-network multi-container)."""
+    if getattr(android_world_controller, '_adb_port_patched', False):
+        return
+    _orig_get_controller = android_world_controller.get_controller
+    _write_default_task_proto = android_world_controller._write_default_task_proto
+
+    def _patched_get_controller(
+        console_port=5554,
+        adb_path=android_world_controller.DEFAULT_ADB_PATH,
+        grpc_port=8554,
+    ):
+        adb_server_port = int(os.environ.get("ADB_SERVER_PORT", "5037"))
+        config = config_classes.AndroidEnvConfig(
+            task=config_classes.FilesystemTaskConfig(path=_write_default_task_proto()),
+            simulator=config_classes.EmulatorConfig(
+                emulator_launcher=config_classes.EmulatorLauncherConfig(
+                    emulator_console_port=console_port,
+                    adb_port=console_port + 1,
+                    grpc_port=grpc_port,
+                ),
+                adb_controller=config_classes.AdbControllerConfig(
+                    adb_path=adb_path,
+                    adb_server_port=adb_server_port,
+                ),
+            ),
+        )
+        return android_world_controller.AndroidWorldController(loader.load(config))
+
+    android_world_controller.get_controller = _patched_get_controller
+    android_world_controller._adb_port_patched = True
 
 # Global flag to track if KVM check has been performed
 _KVM_CHECK_PERFORMED = threading.Event()
@@ -91,6 +127,8 @@ class AndroidWorldEnv(gym.Env):
         # Expand paths
         self.emulator_path = os.path.expanduser(emulator_path)
         self.adb_path = os.path.expanduser(adb_path)
+        self.adb_server_port = int(os.getenv("ADB_SERVER_PORT", "5037"))
+        os.environ["ANDROID_ADB_SERVER_PORT"] = str(self.adb_server_port)
         self.temp_path = temp_path
 
         # Create temp directory if it doesn't exist
@@ -161,6 +199,9 @@ class AndroidWorldEnv(gym.Env):
         self.terminated = False
         self.truncated = False
         time.sleep(30)  # Wait for emulator to start
+
+        # Use per-container ADB port (required for host-network parallel containers)
+        _patch_get_controller_for_adb_port()
 
         # Construct android world environment
         self.env = env_launcher.load_and_setup_env(
@@ -649,7 +690,7 @@ class AndroidWorldEnv(gym.Env):
         # Kill emulator using ADB
         try:
             subprocess.run(
-                [self.adb_path, "-s", f"emulator-{self.console_port}", "emu", "kill"],
+                [self.adb_path, "-P", str(self.adb_server_port), "-s", f"emulator-{self.console_port}", "emu", "kill"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
@@ -735,9 +776,9 @@ class AndroidWorldEnv(gym.Env):
         # Check if the emulator is detected by ADB
         try:
             result = subprocess.run(
-                [self.adb_path, "devices"], 
-                capture_output=True, 
-                text=True, 
+                [self.adb_path, "-P", str(self.adb_server_port), "devices"],
+                capture_output=True,
+                text=True,
                 check=True
             )
             device_name = f"emulator-{self.console_port}"
@@ -773,7 +814,7 @@ class AndroidWorldEnv(gym.Env):
             # Kill the emulator using ADB
             try:
                 subprocess.run(
-                    [self.adb_path, "-s", f"emulator-{self.console_port}", "emu", "kill"],
+                    [self.adb_path, "-P", str(self.adb_server_port), "-s", f"emulator-{self.console_port}", "emu", "kill"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=10,
