@@ -352,9 +352,11 @@ class InferenceRunner:
                 artifact_jsonl.add_file(jsonl_file)
                 self.wandb.log_artifact(artifact_jsonl)
             
-            # Finish wandb run
+            # Finish wandb run (capture URL before finish() since wandb.run is None afterward)
+            run = getattr(self.wandb, "run", None)
+            run_url = run.url if run is not None else "N/A"
             self.wandb.finish()
-            print(f"WandB run finished: {self.wandb.run.url if hasattr(self.wandb, 'run') else 'N/A'}")
+            print(f"WandB run finished: {run_url}")
 
 
 if __name__ == "__main__":

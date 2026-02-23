@@ -368,11 +368,9 @@ class AndroidAgent:
         
         # 3. Generate response
         sampling_params = copy.deepcopy(self.sampling_params)
-        # Limit max_tokens to remaining context window
-        sampling_params["max_tokens"] = min(
-            sampling_params.get("max_tokens", 2048),
-            self.max_prompt_length - len(inference_input_ids)
-        )
+        # Pop max_tokens to avoid duplicate keyword in vLLM SamplingParams(max_tokens=..., **sampling_params).
+        # Server sets max_tokens from config; do not pass it in the dict.
+        sampling_params.pop("max_tokens", None)
         
         if DEBUG_TIMING:
             num_images = len(image_data) if image_data else 0

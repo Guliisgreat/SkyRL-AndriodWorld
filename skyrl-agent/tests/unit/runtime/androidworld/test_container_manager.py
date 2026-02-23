@@ -461,9 +461,11 @@ class TestContainerPoolManagement:
             _docker_client=mock_docker_client,
         )
         
-        containers = await manager.create_pool(
+        containers = await manager.create_pool_parallel(
             pool_size=3,
             base_env_id=0,
+            max_concurrent=2,
+            initial_wait=0.1,
         )
         
         assert len(containers) == 3
@@ -517,7 +519,7 @@ class TestContainerPoolManagement:
         )
         
         # Create pool
-        await manager.create_pool(pool_size=2, base_env_id=0)
+        await manager.create_pool_parallel(pool_size=2, base_env_id=0, max_concurrent=2, initial_wait=0.1)
         
         # Allocate container
         container = await manager.allocate_container()
@@ -556,7 +558,7 @@ class TestContainerPoolManagement:
         )
         
         # Create pool and allocate
-        await manager.create_pool(pool_size=2, base_env_id=0)
+        await manager.create_pool_parallel(pool_size=2, base_env_id=0, max_concurrent=2, initial_wait=0.1)
         container = await manager.allocate_container()
         
         # Release container
@@ -580,7 +582,7 @@ class TestContainerPoolManagement:
         )
         
         # Create pool with 1 container to ensure reuse
-        await manager.create_pool(pool_size=1, base_env_id=0)
+        await manager.create_pool_parallel(pool_size=1, base_env_id=0, max_concurrent=1, initial_wait=0.1)
         
         # Allocate the only container
         container1 = await manager.allocate_container()
@@ -615,7 +617,7 @@ class TestCleanup:
         )
         
         # Create pool
-        containers = await manager.create_pool(pool_size=2, base_env_id=0)
+        containers = await manager.create_pool_parallel(pool_size=2, base_env_id=0, max_concurrent=2, initial_wait=0.1)
         
         # Cleanup
         await manager.cleanup()
@@ -643,7 +645,7 @@ class TestPoolStatus:
         )
         
         # Create pool
-        await manager.create_pool(pool_size=2, base_env_id=0)
+        await manager.create_pool_parallel(pool_size=2, base_env_id=0, max_concurrent=2, initial_wait=0.1)
         
         # Get status
         status = manager.get_pool_status()
@@ -668,7 +670,7 @@ class TestPoolStatus:
         )
         
         # Create pool
-        await manager.create_pool(pool_size=1, base_env_id=0)
+        await manager.create_pool_parallel(pool_size=1, base_env_id=0, max_concurrent=1, initial_wait=0.1)
         
         # Allocate and release with failure
         container = await manager.allocate_container(batch_idx=0, trajectory_id=1)

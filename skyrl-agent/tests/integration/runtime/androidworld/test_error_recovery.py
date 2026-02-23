@@ -695,7 +695,8 @@ class TestContainerSwitching:
         containers_used = []
         
         # Allocate all containers, release them, and track IDs
-        for i in range(min(3, len(containers))):
+        n_alloc = min(3, len(containers))
+        for i in range(n_alloc):
             container = await manager.allocate_container()
             containers_used.append(container.env_id)
             await manager.release_container(container)
@@ -705,7 +706,7 @@ class TestContainerSwitching:
         logger.info(f"Containers used: {containers_used}, unique: {unique_containers}")
         
         # Should be able to cycle through available containers
-        assert len(containers_used) == 3, "Should have allocated 3 times"
+        assert len(containers_used) == n_alloc, f"Should have allocated {n_alloc} times"
     
     @pytest.mark.asyncio
     async def test_fast_fail_on_connection_refused(
