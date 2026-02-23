@@ -29,9 +29,11 @@ async def test_real_container_communication():
     
     try:
         # Create a single container
-        containers = await manager.create_pool(
+        containers = await manager.create_pool_parallel(
             pool_size=1,
             base_env_id=0,
+            max_concurrent=1,
+            initial_wait=30.0,
             sample_mode="sequential",
             snapshot="clean",
         )
@@ -85,9 +87,11 @@ async def test_container_pool_with_real_containers():
     
     try:
         # Create pool - use different base_env_id to avoid conflict with first test
-        containers = await manager.create_pool(
+        containers = await manager.create_pool_parallel(
             pool_size=2,
             base_env_id=100,
+            max_concurrent=2,
+            initial_wait=30.0,
         )
         
         assert len(containers) == 2

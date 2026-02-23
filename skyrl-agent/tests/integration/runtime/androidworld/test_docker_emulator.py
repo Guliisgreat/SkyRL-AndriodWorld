@@ -405,9 +405,11 @@ class TestRuntimeClientIntegration:
         
         try:
             # Create single container
-            containers = await manager.create_pool(
+            containers = await manager.create_pool_parallel(
                 pool_size=1,
-                base_env_id=10,  # Use different env_id to avoid conflicts
+                base_env_id=10,
+                max_concurrent=1,
+                initial_wait=30.0,
                 sample_mode="sequential",
                 snapshot="clean",
             )
@@ -501,9 +503,11 @@ class TestContainerManagerPool:
         )
         
         try:
-            containers = await manager.create_pool(
+            containers = await manager.create_pool_parallel(
                 pool_size=2,
                 base_env_id=20,
+                max_concurrent=2,
+                initial_wait=30.0,
             )
             
             assert len(containers) == 2
@@ -527,7 +531,7 @@ class TestContainerManagerPool:
         )
         
         try:
-            await manager.create_pool(pool_size=2, base_env_id=30)
+            await manager.create_pool_parallel(pool_size=2, base_env_id=30, max_concurrent=2, initial_wait=30.0)
             
             # Allocate one
             container1 = await manager.allocate_container()
@@ -553,7 +557,7 @@ class TestContainerManagerPool:
         )
         
         try:
-            await manager.create_pool(pool_size=2, base_env_id=40)
+            await manager.create_pool_parallel(pool_size=2, base_env_id=40, max_concurrent=2, initial_wait=30.0)
             
             status = manager.get_pool_status()
             
@@ -587,9 +591,11 @@ class TestEndToEndWorkflow:
         
         try:
             # Create container
-            containers = await manager.create_pool(
+            containers = await manager.create_pool_parallel(
                 pool_size=1,
                 base_env_id=50,
+                max_concurrent=1,
+                initial_wait=30.0,
             )
             
             # Allocate for trajectory
