@@ -82,6 +82,7 @@ class AndroidTask(BaseTask):
             train_task_family=env_config.get("train_task_family", "android_world"),
             val_task_family=env_config.get("val_task_family", "android_world"),
             buffer_size=buffer_size,
+            use_host_network=env_config.get("use_host_network", False),
         )
 
         # Wrap each container in a RuntimeClient (for backward compatibility)

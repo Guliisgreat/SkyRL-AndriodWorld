@@ -141,7 +141,7 @@ uv run --frozen --extra verl --env-file .env -m skyrl_agent.integrations.verl.ve
    actor_rollout_ref.rollout.free_cache_engine=True \
    actor_rollout_ref.rollout.name=vllm \
    actor_rollout_ref.rollout.mode=async \
-   actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+   actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
    actor_rollout_ref.rollout.n=1 \
    actor_rollout_ref.model.enable_gradient_checkpointing=False \
    actor_rollout_ref.ref.fsdp_config.param_offload=True \
