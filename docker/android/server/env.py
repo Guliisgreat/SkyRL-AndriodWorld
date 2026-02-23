@@ -314,11 +314,12 @@ class AndroidWorldEnv(gym.Env):
                     image = Image.fromarray(nparray_image)
                     is_white = self.count_white_pixels(image)
 
+                task = getattr(self, "task", None)
                 info = {
-                    "task": self.task.goal, 
-                    "env_id": self.env_id, 
+                    "task": task.goal if task else "",
+                    "env_id": self.env_id,
                     "max_steps": self.max_steps,
-                    "task_name": self.task.name
+                    "task_name": task.name if task else "",
                 }
 
                 try:
@@ -424,13 +425,17 @@ class AndroidWorldEnv(gym.Env):
         # Process options
         go_home_on_reset = True
         task_id = 0
+        epoch = 0
+        mode = "train"
+        traj = 0
+        total_traj = 1
         if options is not None:
             go_home_on_reset = options.get("go_home_on_reset", True)
             task_id = options.get("task_id", 0)
-            epoch = options.get("epoch", 0)
-            mode = options.get("mode", "train")
-            traj = options.get("traj", 0)
-            total_traj = options.get("total_traj", 1)
+            epoch = options.get("epoch", epoch)
+            mode = options.get("mode", mode)
+            traj = options.get("traj", traj)
+            total_traj = options.get("total_traj", total_traj)
         
         if total_traj == 1:
             self.image_folder = f'/data/log/{mode}/epoch{epoch}/task{task_id}'
