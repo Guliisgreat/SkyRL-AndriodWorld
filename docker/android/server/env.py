@@ -317,20 +317,24 @@ class AndroidWorldEnv(gym.Env):
                 info = {
                     "task": self.task.goal, 
                     "env_id": self.env_id, 
-                    # "state": state, 
                     "max_steps": self.max_steps,
                     "task_name": self.task.name
                 }
+
+                try:
+                    info["ui_elements"] = [
+                        self._ui_element_to_dict(el) for el in state.ui_elements
+                    ]
+                except Exception:
+                    info["ui_elements"] = []
                 
                 if self.save_images:
                     ui_element_path = os.path.join(
                         self.image_folder, f"{self.image_id}_{self.steps}_ui_element.json"
                     )
                     with open(ui_element_path, "w", encoding="utf-8") as file:
-                        serializable_elements = [self._ui_element_to_dict(el) for el in state.ui_elements]
-                        json.dump(serializable_elements, file, ensure_ascii=False, indent=4)
+                        json.dump(info["ui_elements"], file, ensure_ascii=False, indent=4)
                     
-                    # try storing the ally tree with json format
                     try:
                         ally_tree_path = os.path.join(
                             self.image_folder, f"{self.image_id}_{self.steps}_ally_tree.json"
@@ -338,8 +342,6 @@ class AndroidWorldEnv(gym.Env):
                         json_data = json_format.MessageToDict(state.forest, preserving_proto_field_name=True)
                         with open(ally_tree_path, "w", encoding="utf-8") as f:
                             json.dump(json_data, f, ensure_ascii=False, indent=4)
-
-                    # error exist and store it as txt
                     except Exception as e:
                         ally_tree_path = os.path.join(
                             self.image_folder, f"{self.image_id}_{self.steps}_ally_tree.txt"
@@ -460,7 +462,11 @@ class AndroidWorldEnv(gym.Env):
 
         # Get observation
         observation, info = self.get_raw_observation()
-        self.current_observation = {"image": observation, "task": info["task"]}
+        self.current_observation = {
+            "image": observation,
+            "task": info["task"],
+            "ui_elements": info.get("ui_elements", []),
+        }
 
         return self.current_observation, info
 
@@ -632,7 +638,11 @@ class AndroidWorldEnv(gym.Env):
         
         # Get the next observation
         observation, info = self.get_raw_observation()
-        self.current_observation = {"image": observation, "task": info["task"]}
+        self.current_observation = {
+            "image": observation,
+            "task": info["task"],
+            "ui_elements": info.get("ui_elements", []),
+        }
 
         # Calculate reward
         reward = self.evaluation()

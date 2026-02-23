@@ -253,9 +253,11 @@ class PortAllocator:
                 allocated_ports.add(server_port)
                 
                 emulator_port = 5574 + 2 * env_id
-                while emulator_port in used_ports or emulator_port in allocated_ports:
+                while emulator_port in used_ports or emulator_port in allocated_ports or (emulator_port % 2 != 0) or (emulator_port + 1) in used_ports or (emulator_port + 1) in allocated_ports:
                     emulator_port += 1
+                # Reserve both the console port and the ADB port (console+1)
                 allocated_ports.add(emulator_port)
+                allocated_ports.add(emulator_port + 1)
                 
                 grpc_port = emulator_port + 3000
                 while grpc_port in used_ports or grpc_port in allocated_ports:

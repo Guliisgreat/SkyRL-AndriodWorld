@@ -1,8 +1,9 @@
 """
-AndroidADBAgentRunner - Runner for ADB agent using AndroidADBTrajectory and RuntimeClientADB.
+AndroidADBAgentRunner - Runner for ADB agent using AndroidADBTrajectory.
 
 Subclass of AndroidAgentRunner; overrides _initialize_trajectories to create
-AndroidADBTrajectory and run() init_fn to wrap containers with RuntimeClientADB.
+AndroidADBTrajectory and run() init_fn to wrap containers with RuntimeClient
+(unified client that supports both step and step_adb).
 """
 
 from omegaconf import OmegaConf
@@ -16,7 +17,7 @@ from loguru import logger
 class AndroidADBAgentRunner(AndroidAgentRunner):
     """
     Runner for ADB agent. Same flow as AndroidAgentRunner but uses
-    AndroidADBTrajectory and RuntimeClientADB(container) for step_adb support.
+    AndroidADBTrajectory and RuntimeClient (which supports step_adb).
     """
 
     def _initialize_trajectories(self, val_mode: bool = False):
@@ -93,14 +94,14 @@ class AndroidADBAgentRunner(AndroidAgentRunner):
 
     async def run(self, input_batch, val_mode: bool = False):
         """
-        Same as base run() but init_fn uses RuntimeClientADB(container).
+        Same as base run() but init_fn uses RuntimeClient(container).
         """
         from skyrl_agent.integrations.base import (
             build_generator_input,
             build_generator_output,
         )
         from skyrl_agent.dispatcher.dispatchers import DISPATCHER_REGISTRY
-        from skyrl_agent.runtime.android.runtime_client_adb import RuntimeClientADB
+        from skyrl_agent.runtime.android.runtime_client import RuntimeClient
 
         self.batch = build_generator_input(
             self.cfg.generator.infer_backend, input_batch
@@ -122,12 +123,12 @@ class AndroidADBAgentRunner(AndroidAgentRunner):
             num_trajectories = self.cfg.generator.num_trajectories
 
         async def init_fn(batch_idx: int, trajectory_id: int, container):
-            """Use RuntimeClientADB so trajectory can call step_adb()."""
+            """Use RuntimeClient (unified: supports both step and step_adb)."""
             instance_ids = list(self.trajectories.keys())
             instance_id = instance_ids[batch_idx]
             traj = self.trajectories[instance_id][trajectory_id]
             traj.env_id = container.env_id
-            traj.env_handle = RuntimeClientADB(container)
+            traj.env_handle = RuntimeClient(container)
             await traj.initialize_trajectory()
 
         async def run_fn(batch_idx: int, trajectory_id: int, container):
