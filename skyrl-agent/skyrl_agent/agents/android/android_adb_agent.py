@@ -3,7 +3,7 @@ AndroidADBAgent - ADB command agent for the VERL pipeline.
 
 Subclass of AndroidAgent; overrides prompt, action parsing, and step execution
 to use raw ADB commands via step_adb() / step() for task control.
-Requires env_handle to be RuntimeClientADB (supports step_adb).
+Requires env_handle to be RuntimeClient (supports step_adb).
 
 Self-contained module: prompt template, safety validation, message building,
 sliding window, parsing, and agent class are all in this single file.
@@ -289,7 +289,7 @@ class AndroidADBAgent(AndroidAgent):
     Android agent that generates raw ADB commands and uses step_adb() for execution.
 
     Calls env_handle.step_adb() for shell commands and env_handle.step() for
-    FINISH/INFEASIBLE. env_handle must be RuntimeClientADB.
+    FINISH/INFEASIBLE. env_handle must be RuntimeClient.
     """
 
     def format_initial_instruction(

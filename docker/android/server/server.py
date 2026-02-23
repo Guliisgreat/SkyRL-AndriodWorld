@@ -1,9 +1,12 @@
 import os
+import re
 import base64
 import time
+import subprocess
 import uvicorn
 import copy
 import asyncio
+import logging
 import numpy as np
 from pydantic import BaseModel
 from typing import Annotated, Optional
@@ -260,6 +263,110 @@ async def get_n_tasks(env: Env):
         "status": "success",
         "n_tasks": n_tasks
     }
+
+# ---------------------------------------------------------------------------
+# ADB command execution (POST /step_adb)
+# ---------------------------------------------------------------------------
+
+_adb_logger = logging.getLogger("server_adb")
+
+ALLOWED_ADB_PREFIXES = [
+    "adb shell input tap", "adb shell input swipe", "adb shell input text", "adb shell input keyevent",
+    "adb shell am start", "adb shell am force-stop", "adb shell am broadcast",
+    "adb shell pm list packages", "adb shell pm list features", "adb shell monkey",
+    "adb shell dumpsys", "adb shell settings get", "adb shell settings put",
+    "adb shell content query", "adb shell content insert", "adb shell content delete",
+    "adb shell getprop", "adb shell ls", "adb shell cat", "adb shell uiautomator dump",
+    "adb shell wm size", "adb shell wm density", "adb shell date", "adb shell whoami",
+]
+BLOCKED_ADB_PATTERNS = [
+    r"\brm\s", r"\brm$", r"\brmdir\b", r"\breboot\b", r"\bshutdown\b",
+    r"\bformat\b", r"\bmkfs\b", r"\bdd\b", r"\bwipe\b",
+    r";\s*rm", r"&&\s*rm", r"\|\s*rm",
+]
+
+def _validate_adb_command(command: str) -> None:
+    if not any(command.startswith(p) for p in ALLOWED_ADB_PREFIXES):
+        raise ValueError(f"Command not in whitelist: {command}")
+    for pat in BLOCKED_ADB_PATTERNS:
+        if re.search(pat, command):
+            raise ValueError(f"Blocked dangerous pattern in command: {command}")
+
+def _parse_task_control(command: str) -> dict:
+    if command.startswith("FINISH"):
+        m = re.search(r"content=['\"]?(.*?)['\"]?\)", command)
+        return {"action_type": "status", "goal_status": "complete", "text": m.group(1) if m else ""}
+    if command.startswith("INFEASIBLE"):
+        m = re.search(r"content=['\"]?(.*?)['\"]?\)", command)
+        return {"action_type": "status", "goal_status": "infeasible", "text": m.group(1) if m else ""}
+    raise ValueError(f"Not a task control command: {command}")
+
+class StepAdbInput(BaseModel):
+    command: str
+    thought: Optional[str] = "Not provided"
+
+@app.post("/step_adb")
+async def step_adb(env: Env, data: StepAdbInput):
+    """Execute a raw ADB command in the container and return observation + command output."""
+    command = data.command.strip()
+    thought = data.thought or "Not provided"
+
+    _adb_logger.info(f"step_adb: command={command[:80]}..., thought={thought[:50]}.")
+
+    try:
+        if command.startswith("FINISH") or command.startswith("INFEASIBLE"):
+            action = _parse_task_control(command)
+            observation, reward, terminated, truncated, info = env.step(action=action, thought=thought)
+            container_state.mark_success()
+            return {
+                "status": "success",
+                "observation": prepare_observation_for_transfer(observation),
+                "command_output": "",
+                "reward": reward,
+                "terminated": terminated,
+                "truncated": truncated,
+                "info": info,
+            }
+
+        _validate_adb_command(command)
+        args = command.split()
+        if args and args[0] == "adb":
+            args = args[1:]
+        full_cmd = [env.adb_path, "-s", f"emulator-{env.console_port}"] + args
+        result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=30)
+        command_output = (result.stdout or "") + (result.stderr or "")
+
+        env.steps += 1
+        observation, info = env.get_raw_observation()
+        env.current_observation = {
+            "image": observation,
+            "task": info.get("task", ""),
+            "ui_elements": info.get("ui_elements", []),
+        }
+        env.truncated = env.steps > env.max_steps
+        reward = env.evaluation()
+
+        container_state.mark_success()
+        return {
+            "status": "success",
+            "observation": prepare_observation_for_transfer(env.current_observation),
+            "command_output": command_output,
+            "reward": reward,
+            "terminated": env.terminated,
+            "truncated": env.truncated,
+            "info": info,
+        }
+    except subprocess.TimeoutExpired:
+        container_state.mark_failure()
+        raise HTTPException(status_code=500, detail="ADB command timed out")
+    except ValueError as e:
+        container_state.mark_failure()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        container_state.mark_failure()
+        _adb_logger.error(f"step_adb failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     server_port = os.getenv("SERVER_PORT", 5000)
