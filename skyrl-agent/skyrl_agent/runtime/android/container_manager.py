@@ -301,9 +301,12 @@ class ContainerFactory:
             "ENV_TASK_FAMILY": config.train_task_family,
             "SERVER_PORT": str(server_port), "EMULATOR_PORT": str(emulator_port), "GRPC_PORT": str(grpc_port),
         }
-        
-        logger.info(f"[ContainerFactory] env{env_id}: Starting Docker container (server={server_port})")
-        
+        if use_host_network:
+            environment["ADB_SERVER_PORT"] = str(5037 + env_id)
+        logger.info(
+            f"[ContainerFactory] env{env_id}: Starting Docker container "
+            f"({'host network' if use_host_network else 'bridge'}, server={server_port})"
+        )
         container_name = f"env{env_id}"
         self._remove_existing_container(container_name)
         
@@ -329,11 +332,15 @@ class ContainerFactory:
             raise Exception(f"Failed to create container for env_id={env_id}: {e}")
     
     def _create_with_host_network(self, env_id: int, environment: dict) -> Any:
+        # Per-env log dir so parallel host-network containers don't share one dir (avoids races/locks)
+        log_host = Path(self.temp_path) / f"env{env_id}" / "log"
+        log_host.mkdir(parents=True, exist_ok=True)
+        # auto_remove=False so failed containers can be inspected with docker logs envN
         return self.docker_client.containers.run(
             self.docker_image, environment=environment,
             devices=["/dev/kvm"] if os.path.exists("/dev/kvm") else None,
-            volumes={os.path.join(self.temp_path, "log"): {"bind": "/data/log", "mode": "rw"}},
-            detach=True, auto_remove=True, name=f"env{env_id}", network_mode="host",
+            volumes={str(log_host): {"bind": "/data/log", "mode": "rw"}},
+            detach=True, auto_remove=False, name=f"env{env_id}", network_mode="host",
         )
     
     def _create_with_port_mapping(self, env_id: int, ports: Tuple[int, int, int], environment: dict) -> Any:
@@ -924,9 +931,9 @@ class ContainerManager:
             val_task_family: Validation task family name
             buffer_size: Number of additional buffer containers (hot standby)
             use_host_network: Use host networking for containers (default: False).
-                Host networking is incompatible with multi-container pools because
-                emulators bind to fixed internal ports that conflict. Only use with
-                pool_size=1 for tasks requiring dynamic port access (e.g., SMS).
+                When True, each container gets a unique ADB server port (5037 + env_id)
+                so parallel creation is supported. Use for tasks requiring dynamic port
+                access (e.g., SMS). Requires Docker image with per-container ADB port support.
         
         Returns:
             List of ContainerInstance objects (pool_size main + buffer_size backup)
@@ -949,7 +956,7 @@ class ContainerManager:
         
         total_containers = pool_size + buffer_size
         logger.info(f"[ContainerManager] Starting parallel pool creation: {pool_size} main + {buffer_size} buffer containers")
-        logger.info(f"[ContainerManager] Config: max_concurrent={max_concurrent}, initial_wait={initial_wait}s")
+        logger.info(f"[ContainerManager] Config: use_host_network={use_host_network}, max_concurrent={max_concurrent}, initial_wait={initial_wait}s")
         
         pool_start_time = time.time()
         
