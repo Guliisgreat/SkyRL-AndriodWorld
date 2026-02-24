@@ -1,11 +1,11 @@
 # Copyright 2024 Bytedance Ltd. and/or its affiliates
 """
-Inference entry point for AndroidWorld with text-only ADB agent (AndroidFullADBAgent).
+Inference entry point for AndroidWorld with text-only ADB agent (AndroidAPITreeADBAgent).
 
 Registers the full-ADB agent via mapping_full_adb before running the same
 inference flow as verl_main_inference. Use with
 +skyrl_agent.task_yaml=.../verl_android_full_adb_inference.yaml so agent_cls
-is AndroidFullADBAgent.
+is AndroidAPITreeADBAgent.
 
 This agent uses only the a11y tree (no screenshots) and outputs ADB commands.
 """

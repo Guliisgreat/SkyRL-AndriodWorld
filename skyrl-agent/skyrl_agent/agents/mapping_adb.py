@@ -11,9 +11,9 @@ from skyrl_agent.agents.mapping import (
 )
 
 AGENT_GENERATOR_REGISTRY[
-    "skyrl_agent.agents.android.AndroidADBAgent"
+    "skyrl_agent.agents.android.AndroidAPIScreenADBAgent"
 ] = "skyrl_agent.agents.android.android_adb_runner.AndroidADBAgentRunner"
 
 AGENT_TRAJECTORY_REGISTRY[
-    "skyrl_agent.agents.android.AndroidADBAgent"
+    "skyrl_agent.agents.android.AndroidAPIScreenADBAgent"
 ] = "skyrl_agent.agents.android.android_adb_trajectory.AndroidADBTrajectory"

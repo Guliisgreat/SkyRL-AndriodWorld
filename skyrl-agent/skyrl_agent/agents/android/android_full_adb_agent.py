@@ -1,5 +1,5 @@
 """
-AndroidFullADBAgent - Text-only ADB agent using a11y tree as input.
+AndroidAPITreeADBAgent - Text-only ADB agent using a11y tree as input.
 
 Subclass of AndroidAgent; uses the accessibility tree (ui_elements) as the sole
 observation instead of screenshots. Generates raw ADB commands via step_adb().
@@ -226,7 +226,7 @@ def _append_text_observation(
 # Agent class
 # ---------------------------------------------------------------------------
 
-class AndroidFullADBAgent(AndroidAgent):
+class AndroidAPITreeADBAgent(AndroidAgent):
     """
     Text-only ADB agent using accessibility tree instead of screenshots.
 

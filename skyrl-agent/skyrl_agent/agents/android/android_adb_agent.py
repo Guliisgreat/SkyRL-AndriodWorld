@@ -1,5 +1,5 @@
 """
-AndroidADBAgent - ADB command agent for the VERL pipeline.
+AndroidAPIScreenADBAgent - ADB command agent for the VERL pipeline.
 
 Subclass of AndroidAgent; overrides prompt, action parsing, and step execution
 to use raw ADB commands via step_adb() / step() for task control.
@@ -285,7 +285,7 @@ def _parse_task_control(command: str) -> Dict:
 # Agent class
 # ---------------------------------------------------------------------------
 
-class AndroidADBAgent(AndroidAgent):
+class AndroidAPIScreenADBAgent(AndroidAgent):
     """
     Android agent that generates raw ADB commands and uses step_adb() for execution.
 

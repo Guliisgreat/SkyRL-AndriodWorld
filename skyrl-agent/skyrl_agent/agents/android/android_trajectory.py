@@ -8,7 +8,6 @@ all state from Agent via getters.
 from typing import Dict, Any, Optional
 
 from skyrl_agent.agents.base import BaseTrajectory
-from skyrl_agent.agents.android.android_agent import AndroidAgent
 
 
 class AndroidTrajectory(BaseTrajectory):
@@ -17,6 +16,10 @@ class AndroidTrajectory(BaseTrajectory):
     
     Orchestrates the trajectory lifecycle (init, generate, evaluate) and
     retrieves all state from Agent via getters.
+    
+    The agent class is resolved dynamically from self.agent_cls (set by
+    BaseTrajectory from cfg.agent_cls), so this trajectory works with any
+    agent that follows the AndroidAgent interface (e.g. AndroidAPIScreenAgent).
     """
     
     def __init__(self, cfg, data, infer_engine, tokenizer, task):
@@ -37,8 +40,8 @@ class AndroidTrajectory(BaseTrajectory):
         self.env_handle: Optional[Any] = None
         self.processor: Optional[Any] = None
         
-        # Agent instance created during generate
-        self.agent: Optional[AndroidAgent] = None
+        # Agent instance created during generate (type resolved from config)
+        self.agent = None
         
         # Stored during initialize for generate
         self.template_messages = None
@@ -71,7 +74,7 @@ class AndroidTrajectory(BaseTrajectory):
         else:
             print(f"[AndroidTrajectory] processor loaded: {type(self.processor).__name__} for instance={self.cfg.instance_id} traj={self.cfg.trajectory_id}")
 
-        self.agent = AndroidAgent(
+        self.agent = self.agent_cls(
             traj_config=self.cfg,
             infer_engine=self.infer_engine,
             tokenizer=self.tokenizer,

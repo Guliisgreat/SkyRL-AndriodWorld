@@ -1,28 +1,28 @@
 """
-AndroidADBTrajectory - Trajectory for ADB agent using AndroidADBAgent and step_adb.
+AndroidADBTrajectory - Trajectory for ADB agent using AndroidAPIScreenADBAgent and step_adb.
 
 Subclass of AndroidTrajectory; overrides generate_trajectory to instantiate
-AndroidADBAgent. env_handle must be RuntimeClient (set by AndroidADBAgentRunner).
+AndroidAPIScreenADBAgent. env_handle must be RuntimeClient (set by AndroidADBAgentRunner).
 """
 
 from typing import Any, Optional
 
 from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
-from skyrl_agent.agents.android.android_adb_agent import AndroidADBAgent
+from skyrl_agent.agents.android.android_adb_agent import AndroidAPIScreenADBAgent
 
 
 class AndroidADBTrajectory(AndroidTrajectory):
     """
     Trajectory for ADB agent. Same lifecycle as AndroidTrajectory;
-    uses AndroidADBAgent and expects env_handle to support step_adb().
+    uses AndroidAPIScreenADBAgent and expects env_handle to support step_adb().
     """
 
     # Agent type for type hints
-    agent: Optional[AndroidADBAgent] = None
+    agent: Optional[AndroidAPIScreenADBAgent] = None
 
     async def generate_trajectory(self):
         """
-        Create AndroidADBAgent (not AndroidAgent), run trajectory, retrieve state.
+        Create AndroidAPIScreenADBAgent (not AndroidAgent), run trajectory, retrieve state.
         """
         if self.processor is None:
             print(
@@ -33,7 +33,7 @@ class AndroidADBTrajectory(AndroidTrajectory):
                 f"[AndroidADBTrajectory] processor loaded: {type(self.processor).__name__} for instance={self.cfg.instance_id} traj={self.cfg.trajectory_id}"
             )
 
-        self.agent = AndroidADBAgent(
+        self.agent = AndroidAPIScreenADBAgent(
             traj_config=self.cfg,
             infer_engine=self.infer_engine,
             tokenizer=self.tokenizer,

@@ -3,7 +3,7 @@
 #
 # Usage: ./verl_android_adb_inference.sh [additional_args]
 #
-# Uses AndroidADBAgent and POST /step_adb. For step_adb support, containers must
+# Uses AndroidAPIScreenADBAgent and POST /step_adb. For step_adb support, containers must
 # run the ADB server (e.g. build: docker build -f docker/android/Dockerfile.adb -t androidworld-adb:v8 .)
 # and set env.docker_image=androidworld-adb:v8 or pass env.docker_image=androidworld-adb:v8.
 
@@ -70,7 +70,7 @@ echo "Starting AndroidWorld ADB Agent Inference"
 echo "=============================================="
 echo "Model: $MODEL"
 echo "Test data: $test_data ($NUM_INSTANCES instances)"
-echo "Agent: AndroidADBAgent (step_adb)"
+echo "Agent: AndroidAPIScreenADBAgent (step_adb)"
 echo "=============================================="
 echo ""
 

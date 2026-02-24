@@ -72,11 +72,10 @@ class AndroidAgentRunner(AgentRunner):
         """
         Initialize trajectory instances.
         
-        Overrides base to use AndroidTrajectory and set processor.
+        Uses self.traj_cls (resolved from AGENT_TRAJECTORY_REGISTRY in
+        AgentRunner.__init__) so the same runner works with any trajectory
+        class registered for the current agent_cls.
         """
-        # Import here to avoid circular dependency
-        from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
-        
         for batch_id, content in enumerate(self.batch):
             data = self._get_data(content)
             instance_id = data["instance_id"] if data["instance_id"] else batch_id
@@ -119,7 +118,7 @@ class AndroidAgentRunner(AgentRunner):
                 if hasattr(self.cfg, 'generator'):
                     traj_cfg.max_history_steps = getattr(self.cfg.generator, 'max_history_steps', 10)
                 
-                traj = AndroidTrajectory(
+                traj = self.traj_cls(
                     cfg=traj_cfg,
                     data=data,
                     tokenizer=self.tokenizer,

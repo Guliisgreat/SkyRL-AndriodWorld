@@ -1,7 +1,7 @@
 #!/bin/bash
 # verl_android_full_adb_inference.sh - Inference with text-only ADB agent (a11y tree input)
 #
-# Uses AndroidFullADBAgent which takes only the accessibility tree as input
+# Uses AndroidAPITreeADBAgent which takes only the accessibility tree as input
 # (no screenshots) and generates ADB commands as output. Suitable for text-only LLMs.
 # vision_is_active is set to false.
 #
@@ -72,7 +72,7 @@ echo "  (text-only: a11y tree input, ADB output)"
 echo "=============================================="
 echo "Model: $MODEL"
 echo "Test data: $test_data ($NUM_INSTANCES instances)"
-echo "Agent: AndroidFullADBAgent (a11y tree + step_adb)"
+echo "Agent: AndroidAPITreeADBAgent (a11y tree + step_adb)"
 echo "vision_is_active: false"
 echo "=============================================="
 echo ""

@@ -80,15 +80,26 @@ Launch an OpenAI API-compatible serving (e.g., vLLM or similar), then configure 
 
 ### 4) AndroidWorld
 
-Three agent types and two inference backends are supported, giving a 3x2 experiment matrix.
+Five agent types and two inference backends are supported.
+
+#### Naming Convention
+
+Agent classes follow the `Android{Model}{Input}{Output}Agent` convention:
+- **Model**: `Open` (open-source, e.g. UI-TARS) / `API` (proprietary, e.g. GPT)
+- **Input**: `Screen` (screenshot) / `Tree` (a11y tree) / `Combo` (both)
+- **Output**: Touch (default, omitted) / `ADB` (ADB shell commands)
+
+`AndroidAgent` (the original UI-TARS agent) is a special case and keeps its name.
 
 #### Agent Types
 
-| Agent | Input | Output | Class | Vision |
-|-------|-------|--------|-------|--------|
-| **GUI Agent** | Screenshot | GUI actions (click, swipe, type) | `AndroidAgent` | Required (VLM) |
-| **ADB Agent** | Screenshot | ADB shell commands | `AndroidADBAgent` | Required (VLM) |
-| **Full ADB Agent** | A11y tree text | ADB shell commands | `AndroidFullADBAgent` | Not needed (text LLM) |
+| Agent | Class | Input | Output | Vision |
+|-------|-------|-------|--------|--------|
+| **Open Screen Touch** (UI-TARS) | `AndroidAgent` | Screenshot | GUI actions | Required (VLM) |
+| **API Screen Touch** | `AndroidAPIScreenAgent` | Screenshot | GUI actions (JSON) | Required (VLM) |
+| **API Combo Touch** | `AndroidAPIComboAgent` | Screenshot + A11y tree | GUI actions (JSON) | Required (VLM) |
+| **API Screen ADB** | `AndroidAPIScreenADBAgent` | Screenshot | ADB shell commands | Required (VLM) |
+| **API Tree ADB** | `AndroidAPITreeADBAgent` | A11y tree text | ADB shell commands | Not needed (text LLM) |
 
 #### Inference Backends
 
@@ -101,9 +112,11 @@ Three agent types and two inference backends are supported, giving a 3x2 experim
 
 | | VERL (local GPU) | OpenAI API |
 |---|---|---|
-| **GUI Agent** | `run_verl/verl_android_inference.yaml` | `run_openai/openai_android_inference.yaml` |
-| **ADB Agent** | `run_verl/verl_android_adb_inference.yaml` | `run_openai/openai_android_adb_inference.yaml` |
-| **Full ADB Agent** | `run_verl/verl_android_full_adb_inference.yaml` | `run_openai/openai_android_full_adb_inference.yaml` |
+| **Open Screen Touch** (UI-TARS) | `run_verl/verl_android_inference.yaml` | `run_openai/openai_android_inference.yaml` |
+| **API Screen Touch** | — | `run_openai/openai_android_gpt_gui.yaml` |
+| **API Combo Touch** | — | `run_openai/openai_android_api_combo.yaml` |
+| **API Screen ADB** | `run_verl/verl_android_adb_inference.yaml` | `run_openai/openai_android_adb_inference.yaml` |
+| **API Tree ADB** | `run_verl/verl_android_full_adb_inference.yaml` | `run_openai/openai_android_full_adb_inference.yaml` |
 
 #### Prerequisites
 
