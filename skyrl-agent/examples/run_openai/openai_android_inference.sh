@@ -2,7 +2,7 @@
 # openai_android_inference.sh - AndroidWorld evaluation via OpenAI-compatible API
 #
 # Usage:
-#   # With OpenAI API (GPT-4o):
+#   # With OpenAI API (GPT-5-mini):
 #   OPENAI_API_KEY=sk-... ./openai_android_inference.sh
 #
 #   # With local vLLM server:
@@ -14,7 +14,7 @@
 #
 # Environment variables:
 #   OPENAI_API_KEY  - Required. API key for the endpoint.
-#   MODEL           - Model name (default: gpt-4o)
+#   MODEL           - Model name (default: gpt-5-mini)
 #   API_URL         - API endpoint URL (default: https://api.openai.com)
 #   API_TYPE        - "chat" or "completions" (default: chat)
 #   TOKENIZER       - HuggingFace tokenizer name (default: same as MODEL)
@@ -29,7 +29,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 # === Defaults ===
-MODEL=${MODEL:-gpt-4o}
+MODEL=${MODEL:-gpt-5-mini}
 API_URL=${API_URL:-https://api.openai.com}
 API_TYPE=${API_TYPE:-chat}
 TOKENIZER=${TOKENIZER:-$MODEL}

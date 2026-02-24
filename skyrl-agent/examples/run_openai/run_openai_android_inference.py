@@ -9,10 +9,10 @@ for context-length management, but the OpenAI chat backend sends the original
 messages directly to the API — no tokenize/decode roundtrip.
 
 Usage:
-    # With OpenAI API (GPT-4o) — uses Qwen tokenizer for the agent internals:
+    # With OpenAI API (GPT-5-mini) — uses Qwen tokenizer for the agent internals:
     OPENAI_API_KEY=sk-... python run_openai_android_inference.py \
         --data ../../data/androidworld_generalization/unseen_task_instance/test.jsonl \
-        --model gpt-4o --tokenizer Qwen/Qwen2-VL-7B-Instruct
+        --model gpt-5-mini --tokenizer Qwen/Qwen2-VL-7B-Instruct
 
     # With local vLLM server (completions mode, token IDs):
     OPENAI_API_KEY=dummy python run_openai_android_inference.py \
