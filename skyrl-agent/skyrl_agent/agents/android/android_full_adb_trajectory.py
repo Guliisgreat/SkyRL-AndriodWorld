@@ -65,5 +65,6 @@ class AndroidFullADBTrajectory(AndroidTrajectory):
             "step_count": state.step_count,
             "total_input_tokens": state.total_input_tokens,
             "total_output_tokens": state.total_output_tokens,
+            "step_records": state.step_records,
             "state": {},
         }

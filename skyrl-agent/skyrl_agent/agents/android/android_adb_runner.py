@@ -10,6 +10,7 @@ from omegaconf import OmegaConf
 
 from skyrl_agent.agents.android.android_runner import AndroidAgentRunner
 from skyrl_agent.agents.android.android_adb_trajectory import AndroidADBTrajectory
+from skyrl_agent.agents.android.trajectory_saver import TrajectorySaver
 from skyrl_agent.config.configuration_utils import TrajectoryConfig
 from loguru import logger
 
@@ -115,6 +116,16 @@ class AndroidADBAgentRunner(AndroidAgentRunner):
                 f"Environment pool initialized with {len(self.env_pool)} environments"
             )
 
+        # Initialize trajectory saver if configured
+        save_trajectories = getattr(self.cfg.generator, "save_trajectories", False)
+        if save_trajectories:
+            save_dir = getattr(self.cfg.generator, "trajectory_save_dir", "/tmp/trajectories")
+            save_screenshots = getattr(self.cfg.generator, "save_screenshots", True)
+            self._trajectory_saver = TrajectorySaver(save_dir=save_dir, save_screenshots=save_screenshots)
+            logger.info(f"Trajectory saving enabled: {save_dir} (screenshots={save_screenshots})")
+        else:
+            self._trajectory_saver = None
+
         self._initialize_trajectories(val_mode=val_mode)
 
         if val_mode:
@@ -168,6 +179,21 @@ class AndroidADBAgentRunner(AndroidAgentRunner):
                 logger.error(
                     f"Trajectory {instance_id}/{trajectory_id} failed: {error}"
                 )
+
+            # Save trajectory to disk if configured
+            if self._trajectory_saver and traj.result is not None:
+                task_text = ""
+                if batch_idx < len(self.batch):
+                    raw_prompt = self.batch[batch_idx].get("raw_prompt", [])
+                    if raw_prompt:
+                        task_text = raw_prompt[0].get("content", "")
+                model_name = getattr(
+                    self.cfg.generator.backend_config, "model_name", ""
+                )
+                try:
+                    self._trajectory_saver.save(traj.result, task_text, model_name)
+                except Exception as e:
+                    logger.warning(f"Failed to save trajectory {instance_id}/{trajectory_id}: {e}")
 
         dispatcher_cfg = {
             "container_manager": container_manager,

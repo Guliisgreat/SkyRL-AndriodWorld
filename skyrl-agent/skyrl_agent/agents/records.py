@@ -18,6 +18,12 @@ class StepRecord:
     thought: str
     action_type: str
     action_params: Dict[str, Any]
+    raw_response: str = ""
+    
+    # Observation context
+    a11y_tree: Optional[str] = None
+    screenshot_path: Optional[str] = None
+    command_output: Optional[str] = None
     
     # Token counts (this step only)
     input_tokens: int = 0       # Prompt tokens for this step

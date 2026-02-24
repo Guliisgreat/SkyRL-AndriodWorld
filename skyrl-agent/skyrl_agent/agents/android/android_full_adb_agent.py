@@ -335,14 +335,32 @@ class AndroidFullADBAgent(AndroidAgent):
             ) = await self.env_handle.step_adb(payload)
 
         self.state.reward = reward
+
+        # Extract a11y tree for step record
+        ui_elements = observation.get("ui_elements", []) if observation else []
+        a11y_tree_text = format_ui_elements(ui_elements) if ui_elements else None
+
+        # Record step for trajectory saving
+        _action_type = "task_control" if command.startswith("FINISH") or command.startswith("INFEASIBLE") else "adb"
+        self.state.step_records.append({
+            "step_idx": self.state.step_count,
+            "thought": thought,
+            "raw_response": response_str,
+            "action_type": _action_type,
+            "action_params": {"command": command},
+            "command_output": command_output,
+            "a11y_tree": a11y_tree_text,
+            "screenshot_idx": None,
+            "input_tokens": len(_prompt_token_ids),
+            "output_tokens": len(response_token_ids),
+        })
+
         self.state.messages = _append_assistant(self.state.messages, response_str)
 
         if terminated or truncated:
             self.state.is_done = True
             self.training.add_step(self.state.messages, response_token_ids)
             return True, "FINISH" if terminated else "TRUNCATED", self.state.reward
-
-        ui_elements = observation.get("ui_elements", []) if observation else []
         image = observation.get("image") if observation else None
         if image is not None and isinstance(image, np.ndarray):
             h, w = image.shape[0], image.shape[1]

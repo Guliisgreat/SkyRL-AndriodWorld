@@ -389,6 +389,22 @@ class AndroidADBAgent(AndroidAgent):
             ) = await self.env_handle.step_adb(payload)
 
         self.state.reward = reward
+
+        # Record step for trajectory saving
+        _action_type = "task_control" if command.startswith("FINISH") or command.startswith("INFEASIBLE") else "adb"
+        self.state.step_records.append({
+            "step_idx": self.state.step_count,
+            "thought": thought,
+            "raw_response": response_str,
+            "action_type": _action_type,
+            "action_params": {"command": command},
+            "command_output": command_output,
+            "a11y_tree": None,
+            "screenshot_idx": len(self.state.images),
+            "input_tokens": len(_prompt_token_ids),
+            "output_tokens": len(response_token_ids),
+        })
+
         self.state.messages = _append_assistant(self.state.messages, response_str)
 
         if terminated or truncated:
