@@ -164,9 +164,10 @@ class AndroidAgentRunner(AgentRunner):
         save_trajectories = getattr(self.cfg.generator, "save_trajectories", False)
         if save_trajectories:
             save_dir = getattr(self.cfg.generator, "trajectory_save_dir", "/tmp/trajectories")
+            exp_name = getattr(self.cfg.generator, "trajectory_exp_name", "")
             save_screenshots = getattr(self.cfg.generator, "save_screenshots", True)
-            self._trajectory_saver = TrajectorySaver(save_dir=save_dir, save_screenshots=save_screenshots)
-            logger.info(f"Trajectory saving enabled: {save_dir} (screenshots={save_screenshots})")
+            self._trajectory_saver = TrajectorySaver(save_dir=save_dir, exp_name=exp_name, save_screenshots=save_screenshots)
+            logger.info(f"Trajectory saving enabled: {save_dir}/{exp_name} (screenshots={save_screenshots})")
         else:
             self._trajectory_saver = None
 

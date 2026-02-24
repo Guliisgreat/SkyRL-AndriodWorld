@@ -17,10 +17,10 @@ from loguru import logger
 class TrajectorySaver:
     """Saves trajectory data (steps, screenshots, metadata) to disk."""
 
-    def __init__(self, save_dir: str, save_screenshots: bool = True):
-        self.save_dir = save_dir
+    def __init__(self, save_dir: str, exp_name: str = "", save_screenshots: bool = True):
+        self.base_dir = os.path.join(save_dir, exp_name) if exp_name else save_dir
         self.save_screenshots = save_screenshots
-        os.makedirs(save_dir, exist_ok=True)
+        os.makedirs(self.base_dir, exist_ok=True)
 
     def save(
         self,
@@ -30,14 +30,14 @@ class TrajectorySaver:
     ) -> str:
         """Save a single trajectory to disk.
 
-        Creates ``<save_dir>/<instance_id>/trajectory.json`` and optional
-        ``step_<N>.png`` screenshot files.
+        Creates ``<save_dir>/<exp_name>/<instance_id>/trajectory.json``
+        and optional ``step_<N>.png`` screenshot files.
 
         Returns the path to the saved JSON file.
         """
         instance_id = str(traj_result.get("instance_id", "unknown"))
         traj_id = traj_result.get("trajectory_id", 0)
-        traj_dir = os.path.join(self.save_dir, instance_id)
+        traj_dir = os.path.join(self.base_dir, instance_id)
         os.makedirs(traj_dir, exist_ok=True)
 
         step_records: List[Dict] = list(traj_result.get("step_records", []))
