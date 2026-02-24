@@ -298,6 +298,10 @@ class AndroidFullADBAgent(AndroidAgent):
         )
         response_str, stop_reason, _prompt_token_ids, response_token_ids = result
 
+        # Accumulate token counts
+        self.state.total_input_tokens += len(_prompt_token_ids)
+        self.state.total_output_tokens += len(response_token_ids)
+
         if stop_reason == "length":
             self.state.messages = _append_assistant(self.state.messages, response_str)
             self.training.add_step(self.state.messages, response_token_ids)

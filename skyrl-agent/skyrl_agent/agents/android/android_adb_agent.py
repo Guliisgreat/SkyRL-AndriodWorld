@@ -262,6 +262,7 @@ def _parse_adb_command(text: str) -> Tuple[str, str]:
 
     command_section = text.split("Command:")[-1].strip()
     command = command_section.split("\n")[0].strip()
+    command = command.strip("`").strip()
     if not command:
         raise ValueError("Empty command after 'Command:'")
     return command, thought
@@ -350,6 +351,10 @@ class AndroidADBAgent(AndroidAgent):
             return_token_ids=True,
         )
         response_str, stop_reason, _prompt_token_ids, response_token_ids = result
+
+        # Accumulate token counts
+        self.state.total_input_tokens += len(_prompt_token_ids)
+        self.state.total_output_tokens += len(response_token_ids)
 
         if stop_reason == "length":
             self.state.messages = _append_assistant(self.state.messages, response_str)

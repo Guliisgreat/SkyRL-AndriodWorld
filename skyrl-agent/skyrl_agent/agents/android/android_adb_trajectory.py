@@ -61,5 +61,8 @@ class AndroidADBTrajectory(AndroidTrajectory):
             "finish_reason": state.finish_reason,
             "reward": state.reward,
             "format_reward": state.format_reward,
+            "step_count": state.step_count,
+            "total_input_tokens": state.total_input_tokens,
+            "total_output_tokens": state.total_output_tokens,
             "state": {},
         }

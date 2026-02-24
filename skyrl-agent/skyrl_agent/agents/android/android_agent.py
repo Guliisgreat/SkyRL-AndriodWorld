@@ -90,7 +90,9 @@ class TrajectoryState:
     
     # === Tracking ===
     step_count: int = 0
-    
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+
     # === Result ===
     is_done: bool = False
     finish_reason: str = ""
@@ -390,10 +392,14 @@ class AndroidAgent:
         )
         
         response_str, stop_reason, _prompt_token_ids, response_token_ids = result
-        
+
+        # Accumulate token counts
+        self.state.total_input_tokens += len(_prompt_token_ids)
+        self.state.total_output_tokens += len(response_token_ids)
+
         if DEBUG_TIMING:
             vllm_elapsed = time.perf_counter() - vllm_start
-        
+
         # Check for length stop
         if stop_reason == "length":
             print(f"[AndroidAgent] Stopping reason: {stop_reason}. Stopping agent.")

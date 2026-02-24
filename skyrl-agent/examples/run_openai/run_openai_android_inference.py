@@ -175,16 +175,23 @@ def main():
         json.dump(metrics, f, indent=2)
     print(f"\nMetrics saved to: {metrics_file}")
 
-    # Save per-instance rewards
+    # Save per-instance rewards (with step/token metrics when available)
+    step_counts = output.get("step_counts", [])
+    input_token_counts = output.get("input_token_counts", [])
+    output_token_counts = output.get("output_token_counts", [])
     rewards_file = os.path.join(args.output_dir, "rewards.json")
     with open(rewards_file, "w") as f:
         instance_rewards = []
         for i, item in enumerate(data):
-            instance_rewards.append({
+            entry = {
                 "instance_id": item["instance_id"],
                 "task": item["instance"].get("task", ""),
                 "reward": rewards[i] if i < len(rewards) else 0.0,
-            })
+                "step_count": step_counts[i] if i < len(step_counts) else 0,
+                "total_input_tokens": input_token_counts[i] if i < len(input_token_counts) else 0,
+                "total_output_tokens": output_token_counts[i] if i < len(output_token_counts) else 0,
+            }
+            instance_rewards.append(entry)
         json.dump(instance_rewards, f, indent=2)
     print(f"Per-instance rewards saved to: {rewards_file}")
 
