@@ -2,7 +2,7 @@
 AndroidADBTrajectory - Trajectory for ADB agent using AndroidAPIScreenADBAgent and step_adb.
 
 Subclass of AndroidTrajectory; overrides generate_trajectory to instantiate
-AndroidAPIScreenADBAgent. env_handle must be RuntimeClient (set by AndroidADBAgentRunner).
+AndroidAPIScreenADBAgent. env_handle must be RuntimeClient (set by AndroidAgentRunner).
 """
 
 from typing import Any, Optional

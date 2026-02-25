@@ -248,7 +248,10 @@ class SkyAgentLoopManager:
                     "  4. See logs above for specific error details"
                 )
         else:
-            position_ids = (attention_mask.cumsum(dim=1) - 1) * attention_mask
+            text_position = (attention_mask.cumsum(dim=1) - 1) * attention_mask  # [batch, seq]
+            # Qwen2-VL M-RoPE requires (batch, 4, seq) even for text-only input:
+            # dims = (text_pos, temporal_pos, height_pos, width_pos)
+            position_ids = text_position.unsqueeze(1).expand(-1, 4, -1).contiguous()
         
         # Add position_ids metrics to rollout_metrics
         rollout_metrics = inputs.get("rollout_metrics", {})
