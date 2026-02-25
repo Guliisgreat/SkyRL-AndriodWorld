@@ -58,15 +58,15 @@ def __getattr__(name):
         return AndroidAgentRunner
     
     if name == "AndroidAPIScreenADBAgent":
-        from skyrl_agent.agents.android.android_adb_agent import AndroidAPIScreenADBAgent
+        from skyrl_agent.agents.android.android_api_screen_adb_agent import AndroidAPIScreenADBAgent
         return AndroidAPIScreenADBAgent
     
     if name == "AndroidAPITreeADBAgent":
-        from skyrl_agent.agents.android.android_full_adb_agent import AndroidAPITreeADBAgent
+        from skyrl_agent.agents.android.android_api_tree_adb_agent import AndroidAPITreeADBAgent
         return AndroidAPITreeADBAgent
     
     if name == "AndroidAPIScreenAgent":
-        from skyrl_agent.agents.android.android_gpt_gui_agent import AndroidAPIScreenAgent
+        from skyrl_agent.agents.android.android_api_screen_agent import AndroidAPIScreenAgent
         return AndroidAPIScreenAgent
     
     if name == "AndroidAPIComboAgent":

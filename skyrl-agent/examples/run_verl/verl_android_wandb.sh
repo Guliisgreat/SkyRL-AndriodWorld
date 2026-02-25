@@ -35,8 +35,8 @@ uv run --frozen --extra verl --env-file .env -m skyrl_agent.integrations.verl.ve
    data.custom_cls.path=pkg://skyrl_agent.integrations.verl.android_dataset \
    data.custom_cls.name=AndroidWorldDataset \
    data.dataloader_num_workers=0 \
-   data.train_batch_size=2 \
-   data.max_prompt_length=24576 \
+   data.train_batch_size=1 \
+   data.max_prompt_length=16384 \
    data.max_response_length=4096 \
    data.filter_overlong_prompts=False \
    data.truncation=error \
@@ -68,11 +68,11 @@ uv run --frozen --extra verl --env-file .env -m skyrl_agent.integrations.verl.ve
    actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
    actor_rollout_ref.rollout.enforce_eager=False \
    actor_rollout_ref.rollout.free_cache_engine=True \
-   actor_rollout_ref.rollout.enable_chunked_prefill=False \
+   actor_rollout_ref.rollout.enable_chunked_prefill=True \
    actor_rollout_ref.rollout.name=vllm \
    actor_rollout_ref.rollout.mode=async \
-   actor_rollout_ref.rollout.gpu_memory_utilization=0.3 \
-   actor_rollout_ref.rollout.n=8 \
+   actor_rollout_ref.rollout.gpu_memory_utilization=0.25 \
+   actor_rollout_ref.rollout.n=4 \
    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
    actor_rollout_ref.ref.fsdp_config.param_offload=True \
    algorithm.adv_estimator=grpo \
@@ -94,8 +94,8 @@ uv run --frozen --extra verl --env-file .env -m skyrl_agent.integrations.verl.ve
    trainer.resume_mode=auto \
    trainer.rollout_data_dir=${ROLLOUT_DIR} \
    trainer.validation_data_dir=${VAL_DIR} \
-   +skyrl_agent.task_yaml=/shared/ligu/projects/SkyRL-AndriodWorld/skyrl-agent/examples/run_verl/verl_android.yaml \
-   +skyrl_agent.num_trajectories=8 \
-   +skyrl_agent.env_pool_size=8
+   +skyrl_agent.task_yaml=/shared/ligu/projects/SkyRL-AndriodWorld/skyrl-agent/examples/run_verl/verl_android_2gpu.yaml \
+   +skyrl_agent.num_trajectories=4 \
+   +skyrl_agent.env_pool_size=4
 
 echo "Training exit code: $?"

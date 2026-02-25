@@ -5,7 +5,7 @@ Subclass of AndroidAgent; uses the accessibility tree (ui_elements) as the sole
 observation instead of screenshots. Generates raw ADB commands via step_adb().
 This makes it a pure text-in / text-out agent compatible with non-VLM models.
 
-Reuses parsing and safety validation from android_adb_agent.py.
+Reuses parsing and safety validation from android_api_screen_adb_agent.py.
 """
 
 import copy
@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from skyrl_agent.agents.android.android_agent import AndroidAgent
-from skyrl_agent.agents.android.android_adb_agent import (
+from skyrl_agent.agents.android.android_api_screen_adb_agent import (
     _parse_adb_command,
     _parse_task_control,
     _apply_sliding_window,

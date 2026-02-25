@@ -15,13 +15,13 @@ from typing import List, Dict, Any, Tuple, Optional
 
 import numpy as np
 
-from skyrl_agent.agents.android.android_gpt_gui_agent import (
+from skyrl_agent.agents.android.android_api_screen_agent import (
     AndroidAPIScreenAgent,
     parse_gpt_gui_action,
     DEFAULT_SCREEN_WIDTH,
     DEFAULT_SCREEN_HEIGHT,
 )
-from skyrl_agent.agents.android.android_full_adb_agent import format_ui_elements
+from skyrl_agent.agents.android.android_api_tree_adb_agent import format_ui_elements
 from .android_utils import init_messages, load_content, numpy_to_base64
 
 DEBUG_TIMING = os.environ.get("DEBUG_TIMING", "0") == "1"
