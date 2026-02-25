@@ -76,6 +76,7 @@ class ContainerConfig:
     train_task_family: str = "android_world"
     val_task_family: str = "android_world"
     initial_wait: float = 45.0
+    skip_screenshot: bool = False
 
 
 # Re-export for backward compatibility
@@ -301,6 +302,7 @@ class ContainerFactory:
             "ENV_SAMPLE_MODE": config.sample_mode, "ENV_SAVE_IMAGES": "False",
             "ENV_ID": str(env_id), "ENV_SNAPSHOT": config.snapshot,
             "ENV_TASK_FAMILY": config.train_task_family,
+            "ENV_SKIP_SCREENSHOT": str(config.skip_screenshot),
             "SERVER_PORT": str(server_port), "EMULATOR_PORT": str(emulator_port), "GRPC_PORT": str(grpc_port),
         }
         if use_host_network:
@@ -914,6 +916,7 @@ class ContainerManager:
         val_task_family: str = "android_world",
         buffer_size: int = 0,
         use_host_network: bool = False,
+        skip_screenshot: bool = False,
     ) -> List[ContainerInstance]:
         """
         Create pool of N containers with bounded parallel creation.
@@ -948,6 +951,7 @@ class ContainerManager:
             "val_task_family": val_task_family,
             "initial_wait": initial_wait,
             "use_host_network": use_host_network,
+            "skip_screenshot": skip_screenshot,
         }
         
         self.available_queue = asyncio.Queue()
@@ -974,6 +978,7 @@ class ContainerManager:
             train_task_family=train_task_family,
             val_task_family=val_task_family,
             initial_wait=initial_wait,
+            skip_screenshot=skip_screenshot,
         )
         
         # Create semaphore for bounded concurrency
@@ -1546,6 +1551,7 @@ class ContainerManager:
             train_task_family=self._pool_config["train_task_family"],
             val_task_family=self._pool_config["val_task_family"],
             initial_wait=self._pool_config.get("initial_wait", 45.0),
+            skip_screenshot=self._pool_config.get("skip_screenshot", False),
         )
     
     async def _create_container_internal(self, env_id: Optional[int] = None) -> ContainerInstance:

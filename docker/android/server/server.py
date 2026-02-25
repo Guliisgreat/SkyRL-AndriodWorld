@@ -64,8 +64,15 @@ class LogInput(BaseModel):
 def str_to_bool(value):
     return str(value).lower() in ("true", "1", "yes", "y")
 
+SKIP_SCREENSHOT = str_to_bool(os.getenv("ENV_SKIP_SCREENSHOT", "false"))
+
 def prepare_observation_for_transfer(observation):
     obs_copy = dict(observation)
+    if SKIP_SCREENSHOT:
+        obs_copy.pop("image", None)
+        obs_copy.pop("image_shape", None)
+        obs_copy.pop("image_dtype", None)
+        return obs_copy
     img = obs_copy["image"]
     obs_copy["image"] = base64.b64encode(img.tobytes()).decode("utf-8")
     obs_copy["image_shape"] = img.shape
@@ -97,12 +104,16 @@ async def lifespan(app: FastAPI):
 
     logger.info("Server started, verifying emulator responsiveness...")
     
-    # Verify emulator is truly ready by getting a screenshot
+    # Verify emulator is truly ready
     try:
         for attempt in range(3):
             try:
                 observation, info = app.state.env.get_raw_observation()
-                if observation is not None and np.sum(observation) > 0:
+                if SKIP_SCREENSHOT:
+                    verified = info.get("ui_elements") is not None
+                else:
+                    verified = observation is not None and np.sum(observation) > 0
+                if verified:
                     container_state.startup_verified = True
                     container_state.ready = True
                     logger.info(f"Emulator verified ready after {attempt + 1} attempt(s)")
