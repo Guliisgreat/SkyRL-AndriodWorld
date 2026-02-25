@@ -12,8 +12,8 @@ AGENT_TRAJECTORY_REGISTRY = {
     "skyrl_agent.agents.oh_codeact.OHCodeActAgent": "skyrl_agent.agents.oh_codeact.CodeActTrajectory",
     "skyrl_agent.agents.react.ReActAgent": "skyrl_agent.agents.react.ReActTrajectory",
     "skyrl_agent.agents.android.AndroidAgent": "skyrl_agent.agents.android.AndroidTrajectory",
-    "skyrl_agent.agents.android.AndroidAPIScreenADBAgent": "skyrl_agent.agents.android.android_adb_trajectory.AndroidADBTrajectory",
-    "skyrl_agent.agents.android.AndroidAPITreeADBAgent": "skyrl_agent.agents.android.android_full_adb_trajectory.AndroidFullADBTrajectory",
+    "skyrl_agent.agents.android.AndroidAPIScreenADBAgent": "skyrl_agent.agents.android.android_trajectory.AndroidTrajectory",
+    "skyrl_agent.agents.android.AndroidAPITreeADBAgent": "skyrl_agent.agents.android.android_trajectory.AndroidTrajectory",
     "skyrl_agent.agents.android.AndroidAPIScreenAgent": "skyrl_agent.agents.android.android_trajectory.AndroidTrajectory",
     "skyrl_agent.agents.android.AndroidAPIComboAgent": "skyrl_agent.agents.android.android_trajectory.AndroidTrajectory",
 }

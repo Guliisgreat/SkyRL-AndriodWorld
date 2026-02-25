@@ -16,4 +16,4 @@ AGENT_GENERATOR_REGISTRY[
 
 AGENT_TRAJECTORY_REGISTRY[
     "skyrl_agent.agents.android.AndroidAPIScreenADBAgent"
-] = "skyrl_agent.agents.android.android_adb_trajectory.AndroidADBTrajectory"
+] = "skyrl_agent.agents.android.android_trajectory.AndroidTrajectory"
