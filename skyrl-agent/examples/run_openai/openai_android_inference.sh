@@ -54,7 +54,7 @@ if [ -z "${OPENAI_API_KEY:-}" ]; then
 fi
 
 # === Output ===
-OUTPUT_DIR=${OUTPUT_DIR:-/tmp/openai_android_results}
+OUTPUT_DIR=${OUTPUT_DIR:-./results}
 mkdir -p "$OUTPUT_DIR"
 
 echo ""

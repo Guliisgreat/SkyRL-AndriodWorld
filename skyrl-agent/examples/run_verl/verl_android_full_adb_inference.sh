@@ -59,7 +59,7 @@ SP_SIZE=1
 TP_SIZE=1
 N_GPUS_PER_NODE=$NUM_GPUS
 
-OUTPUT_DIR=/shared/ligu/projects/SkyRL-AndriodWorld/tmp_inference/full_adb
+OUTPUT_DIR=./results
 RESULTS_DIR=${OUTPUT_DIR}/results
 ROLLOUTS_DIR=${OUTPUT_DIR}/rollouts
 mkdir -p ${RESULTS_DIR} ${ROLLOUTS_DIR}

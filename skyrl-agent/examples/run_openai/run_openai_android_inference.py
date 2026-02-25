@@ -226,7 +226,7 @@ def main():
     parser.add_argument("--model", default=None, help="Override API model name")
     parser.add_argument("--api-url", default=None, help="Override API URL")
     parser.add_argument("--api-type", default=None, choices=["chat", "completions"], help="Override API type")
-    parser.add_argument("--output-dir", default="/tmp/openai_android_results", help="Output directory")
+    parser.add_argument("--output-dir", default="./results", help="Output directory")
     parser.add_argument("--max-instances", type=int, default=None, help="Limit number of instances (for debugging)")
     args = parser.parse_args()
 

@@ -78,9 +78,9 @@ bash examples/run_verl/verl_android_inference.sh
 ### Output
 
 Results are saved to:
-- **Metrics**: `/tmp_inference/results/final_metrics.json`
-- **Trajectories**: `/tmp_inference/results/0.jsonl`
-- **Rollout data**: `/tmp_inference/rollouts/`
+- **Metrics**: `./results/final_metrics.json`
+- **Trajectories**: `./results/0.jsonl`
+- **Rollout data**: `./results/rollouts/`
 
 ### Config File
 
