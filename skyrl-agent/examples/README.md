@@ -116,7 +116,7 @@ Agent classes follow the `Android{Model}{Input}{Output}Agent` convention:
 | **API Screen Touch** | — | `run_openai/openai_android_gpt_gui.yaml` |
 | **API Combo Touch** | — | `run_openai/openai_android_api_combo.yaml` |
 | **API Screen ADB** | `run_verl/verl_android_adb_inference.yaml` | `run_openai/openai_android_adb_inference.yaml` |
-| **API Tree ADB** | `run_verl/verl_android_full_adb_inference.yaml` | `run_openai/openai_android_full_adb_inference.yaml` |
+| **API Tree ADB** | `run_verl/verl_android_full_adb_inference.yaml` | `run_openai/openai_android_tree_adb_inference.yaml` |
 
 #### Prerequisites
 
@@ -130,7 +130,7 @@ docker build -f docker/android/Dockerfile.full_adb_agent \
 2. **Data** -- AndroidWorld test instances:
 
 ```bash
-ls ./data/androidworld_generalization/unseen_task_instance/test.jsonl
+ls ./data/androidworld_generalization/unseen_task_instance/test_seed7.jsonl
 ```
 
 #### Running with VERL (local model, e.g. Qwen3-VL-7B)
@@ -168,15 +168,15 @@ OPENAI_API_KEY=sk-... bash ./examples/run_openai/openai_android_inference.sh \
 
 # Full ADB Agent with GPT-4o (text-only, most cost-effective)
 OPENAI_API_KEY=sk-... bash ./examples/run_openai/openai_android_inference.sh \
-    --yaml examples/run_openai/openai_android_full_adb_inference.yaml
+    --yaml examples/run_openai/openai_android_tree_adb_inference.yaml
 ```
 
 Or use the Python script directly for more control:
 
 ```bash
 OPENAI_API_KEY=sk-... python ./examples/run_openai/run_openai_android_inference.py \
-    --data ./data/androidworld_generalization/unseen_task_instance/test.jsonl \
-    --yaml ./examples/run_openai/openai_android_full_adb_inference.yaml \
+    --data ./data/androidworld_generalization/unseen_task_instance/test_seed7.jsonl \
+    --yaml ./examples/run_openai/openai_android_tree_adb_inference.yaml \
     --model gpt-4o \
     --max-instances 4
 ```

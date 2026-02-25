@@ -384,6 +384,11 @@ class RuntimeClient:
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=self.HTTP_TIMEOUT),
                 ) as response:
+                    if response.status == 400:
+                        body = await response.json()
+                        error_detail = body.get("detail", "Unknown validation error")
+                        logger.warning(f"Command rejected by server: {error_detail}")
+                        return {}, f"ERROR: {error_detail}", 0.0, False, False, {}
                     if response.status != 200:
                         body = await response.text()
                         raise Exception(
@@ -435,13 +440,15 @@ class RuntimeClient:
         Deserialize observation (reuse from androidworld_env.py lines 114-117, 148-151).
         
         Converts base64-encoded image back to numpy array.
+        When ENV_SKIP_SCREENSHOT is active on the container, the image key is absent.
         """
         if 'image' in obs_dict and isinstance(obs_dict['image'], str):
-            # Image is base64-encoded string
             img_bytes = base64.b64decode(obs_dict['image'])
             shape = tuple(obs_dict['image_shape'])
             dtype = np.dtype(obs_dict['image_dtype'])
             obs_dict['image'] = np.frombuffer(img_bytes, dtype=dtype).reshape(shape)
+        elif 'image' not in obs_dict:
+            obs_dict['image'] = None
         
         return obs_dict
     

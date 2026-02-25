@@ -57,6 +57,30 @@ def _patch_get_controller_for_adb_port():
     android_world_controller.get_controller = _patched_get_controller
     android_world_controller._adb_port_patched = True
 
+
+SKIP_SCREENSHOT = os.getenv("ENV_SKIP_SCREENSHOT", "false").lower() in ("true", "1", "yes")
+
+if SKIP_SCREENSHOT:
+    from android_env.components import coordinator as _coordinator
+
+    def _gather_no_screenshot(self):
+        now = time.time()
+        delta = (
+            0 if self._latest_observation_time == 0
+            else (now - self._latest_observation_time) * 1e6
+        )
+        self._latest_observation_time = now
+        h = self._device_settings.screen_height()
+        w = self._device_settings.screen_width()
+        return {
+            'pixels': np.zeros((h, w, 3), dtype=np.uint8),
+            'orientation': self._device_settings.get_orientation(),
+            'timedelta': np.array(delta, dtype=np.int64),
+        }
+
+    _coordinator.Coordinator._gather_simulator_signals = _gather_no_screenshot
+
+
 # Global flag to track if KVM check has been performed
 _KVM_CHECK_PERFORMED = threading.Event()
 
@@ -152,6 +176,7 @@ class AndroidWorldEnv(gym.Env):
         self.no_window = no_window
         self.sample_mode = sample_mode
         self.save_images = save_images
+        self.skip_screenshot = SKIP_SCREENSHOT
         self.emulator_setup = emulator_setup
         self.snapshot = snapshot
         self.render_mode = render_mode
@@ -295,6 +320,77 @@ class AndroidWorldEnv(gym.Env):
             data["bbox_pixels"] = self._bounding_box_to_dict(data["bbox_pixels"])
         return data
     
+    def _get_raw_observation_no_screenshot(self):
+        """Fast observation path: skip white-screen loop and image capture, return only a11y tree."""
+        _error_obs = lambda: (
+            np.zeros((self.screen_height, self.screen_width, 3), dtype=np.uint8),
+            {"task": "Error getting observation", "env_id": self.env_id},
+        )
+        for attempt in range(3):
+            try:
+                state = self.env.get_state(wait_to_stabilize=True, stablize_timeout=3.0)
+                task = getattr(self, "task", None)
+                info = {
+                    "task": task.goal if task else "",
+                    "env_id": self.env_id,
+                    "max_steps": self.max_steps,
+                    "task_name": task.name if task else "",
+                }
+                try:
+                    info["ui_elements"] = [
+                        self._ui_element_to_dict(el) for el in state.ui_elements
+                    ]
+                except Exception:
+                    info["ui_elements"] = []
+
+                if self.save_images and self.image_folder:
+                    ui_element_path = os.path.join(
+                        self.image_folder, f"{self.image_id}_{self.steps}_ui_element.json"
+                    )
+                    with open(ui_element_path, "w", encoding="utf-8") as file:
+                        json.dump(info["ui_elements"], file, ensure_ascii=False, indent=4)
+                    try:
+                        ally_tree_path = os.path.join(
+                            self.image_folder, f"{self.image_id}_{self.steps}_ally_tree.json"
+                        )
+                        json_data = json_format.MessageToDict(state.forest, preserving_proto_field_name=True)
+                        with open(ally_tree_path, "w", encoding="utf-8") as f:
+                            json.dump(json_data, f, ensure_ascii=False, indent=4)
+                    except Exception:
+                        ally_tree_path = os.path.join(
+                            self.image_folder, f"{self.image_id}_{self.steps}_ally_tree.txt"
+                        )
+                        with open(ally_tree_path, "w", encoding="utf-8") as file:
+                            file.write(str(state.forest))
+
+                info["image_path"] = None
+                dummy_image = np.zeros((self.screen_height, self.screen_width, 3), dtype=np.uint8)
+                return dummy_image, info
+            except Exception as e:
+                self.env_logger.error(f"Exception in get_raw_observation (no-screenshot) env {self.env_id}")
+                self.env_logger.error(e)
+                import traceback
+                self.env_logger.error(traceback.format_exc())
+                time.sleep(3)
+                if not self._check_emulator_running():
+                    if not self._restart_emulator():
+                        self.env_logger.info(f"Failed to restart emulator {self.avd_name} (ID: {self.env_id})")
+                        if self.task_logger:
+                            self.task_logger.info(f"Failed to restart emulator {self.avd_name} (ID: {self.env_id})")
+                        return _error_obs()
+                    if not self._restore_env():
+                        self.env_logger.info(f"Failed to restore emulator {self.avd_name} (ID: {self.env_id})")
+                        if self.task_logger:
+                            self.task_logger.info(f"Failed to restore emulator {self.avd_name} (ID: {self.env_id})")
+                        return _error_obs()
+                self.env = env_launcher.load_and_setup_env(
+                    console_port=self.console_port,
+                    adb_path=self.adb_path,
+                    grpc_port=self.grpc_port)
+                time.sleep(10)
+                continue
+        return _error_obs()
+
     def get_raw_observation(self):
         """
         Get the raw observation from the environment.
@@ -302,6 +398,9 @@ class AndroidWorldEnv(gym.Env):
         Returns:
             tuple: (observation, info) where observation is the screen image and info is a dictionary with metadata
         """
+        if self.skip_screenshot:
+            return self._get_raw_observation_no_screenshot()
+
         for attempt in range(3):
             try:
                 is_white = True

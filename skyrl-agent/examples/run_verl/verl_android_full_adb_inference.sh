@@ -24,7 +24,7 @@ mkdir -p ${RAY_TMPDIR}
 export RAY_object_spilling_threshold=0.99
 
 DATA_DIR="./data/androidworld_generalization/unseen_task_instance"
-test_data="${DATA_DIR}/test.jsonl"
+test_data="${DATA_DIR}/test_seed7.jsonl"
 
 if [ -n "$1" ] && [ -f "$1" ]; then
     test_data="$1"
@@ -59,7 +59,7 @@ SP_SIZE=1
 TP_SIZE=1
 N_GPUS_PER_NODE=$NUM_GPUS
 
-OUTPUT_DIR=/shared/ligu/projects/SkyRL-AndriodWorld/tmp_inference/full_adb
+OUTPUT_DIR=./results
 RESULTS_DIR=${OUTPUT_DIR}/results
 ROLLOUTS_DIR=${OUTPUT_DIR}/rollouts
 mkdir -p ${RESULTS_DIR} ${ROLLOUTS_DIR}

@@ -10,7 +10,7 @@ export RAY_TMPDIR=/shared/tmp/ray
 mkdir -p ${RAY_TMPDIR}
 export RAY_object_spilling_threshold=0.99
 
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=0,1,4,5
 
 # Wandb configuration
 export WANDB_DIR=/shared/ligu/projects/SkyRL-AndriodWorld/skyrl-agent/wandb
@@ -21,9 +21,9 @@ MODEL=ByteDance-Seed/UI-TARS-7B-SFT
 DATA_DIR="./data/androidworld_generalization/unseen_task_instance"
 
 OUTPUT_BASE=/shared/ligu/projects/SkyRL-AndriodWorld/tmp_training
-CKPT_DIR="${OUTPUT_BASE}/ckpts/skyagent-android-2gpu"
-ROLLOUT_DIR="${OUTPUT_BASE}/rollouts/skyagent-android-2gpu"
-VAL_DIR="${OUTPUT_BASE}/rollouts/skyagent-android-2gpu-val"
+CKPT_DIR="${OUTPUT_BASE}/ckpts/skyagent-android-4gpu"
+ROLLOUT_DIR="${OUTPUT_BASE}/rollouts/skyagent-android-4gpu"
+VAL_DIR="${OUTPUT_BASE}/rollouts/skyagent-android-4gpu-val"
 mkdir -p "${CKPT_DIR}" "${ROLLOUT_DIR}" "${VAL_DIR}"
 
 echo "Training with Wandb logging"
@@ -36,7 +36,7 @@ uv run --frozen --extra verl --env-file .env -m skyrl_agent.integrations.verl.ve
    data.custom_cls.name=AndroidWorldDataset \
    data.dataloader_num_workers=0 \
    data.train_batch_size=1 \
-   data.max_prompt_length=16384 \
+   data.max_prompt_length=8192 \
    data.max_response_length=4096 \
    data.filter_overlong_prompts=False \
    data.truncation=error \
@@ -49,6 +49,7 @@ uv run --frozen --extra verl --env-file .env -m skyrl_agent.integrations.verl.ve
    actor_rollout_ref.actor.loss_agg_mode=seq-mean-token-sum \
    actor_rollout_ref.actor.optim.lr=1e-6 \
    actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.05 \
+   +actor_rollout_ref.actor.optim.override_optimizer_config.foreach=false \
    actor_rollout_ref.actor.ppo_epochs=1 \
    actor_rollout_ref.actor.ppo_mini_batch_size=1 \
    actor_rollout_ref.actor.use_dynamic_bsz=False \
@@ -83,8 +84,8 @@ uv run --frozen --extra verl --env-file .env -m skyrl_agent.integrations.verl.ve
    trainer.critic_warmup=0 \
    trainer.logger='["console","wandb"]' \
    trainer.project_name='skyagent-android' \
-   trainer.experiment_name='skyagent-android-2gpu' \
-   trainer.n_gpus_per_node=2 \
+   trainer.experiment_name='skyagent-android-4gpu' \
+   trainer.n_gpus_per_node=4 \
    trainer.nnodes=1 \
    trainer.max_actor_ckpt_to_keep=5 \
    trainer.save_freq=5 \

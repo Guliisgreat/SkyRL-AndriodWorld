@@ -126,10 +126,25 @@ ALLOWED_PREFIXES = [
     "adb shell wm density",
     "adb shell date",
     "adb shell whoami",
+    "adb shell mkdir",
+    "adb shell rm",
+    "adb shell mv",
+    "adb shell cp",
+    "adb shell find",
+    "adb shell echo",
+    "adb shell printf",
+    "adb shell touch",
+    "adb shell sleep",
+    "adb shell svc",
+    "adb shell sh",
+    "adb shell cmd",
+    "adb shell pm grant",
+    "adb shell pm clear",
+    "adb shell sed",
 ]
 
 BLOCKED_PATTERNS = [
-    r"\brm\s", r"\brm$", r"\brmdir\b",
+    r"\brmdir\b",
     r"\breboot\b", r"\bshutdown\b",
     r"\bformat\b", r"\bmkfs\b", r"\bdd\b", r"\bwipe\b",
     r";\s*rm", r"&&\s*rm", r"\|\s*rm",
@@ -269,8 +284,12 @@ def _parse_adb_command(text: str) -> Tuple[str, str]:
 
 
 def _parse_task_control(command: str) -> Dict:
-    """Convert FINISH/INFEASIBLE string to action dict."""
+    """Convert FINISH/INFEASIBLE/answer string to action dict."""
     if command.startswith("FINISH"):
+        m = re.search(r"content=['\"]?(.*?)['\"]?\)", command)
+        return {"action_type": "status", "goal_status": "complete",
+                "text": m.group(1) if m else ""}
+    if command.startswith("answer"):
         m = re.search(r"content=['\"]?(.*?)['\"]?\)", command)
         return {"action_type": "status", "goal_status": "complete",
                 "text": m.group(1) if m else ""}
@@ -370,7 +389,7 @@ class AndroidAPIScreenADBAgent(AndroidAgent):
             command = "INFEASIBLE(content='parse error')"
             thought = str(e)[:200]
 
-        if command.startswith("FINISH") or command.startswith("INFEASIBLE"):
+        if command.startswith("FINISH") or command.startswith("INFEASIBLE") or command.startswith("answer"):
             action_dict = _parse_task_control(command)
             payload = {"action": action_dict, "thought": thought}
             observation, reward, terminated, truncated, info = await self.env_handle.step(
@@ -391,7 +410,7 @@ class AndroidAPIScreenADBAgent(AndroidAgent):
         self.state.reward = reward
 
         # Record step for trajectory saving
-        _action_type = "task_control" if command.startswith("FINISH") or command.startswith("INFEASIBLE") else "adb"
+        _action_type = "task_control" if command.startswith("FINISH") or command.startswith("INFEASIBLE") or command.startswith("answer") else "adb"
         self.state.step_records.append({
             "step_idx": self.state.step_count,
             "thought": thought,
