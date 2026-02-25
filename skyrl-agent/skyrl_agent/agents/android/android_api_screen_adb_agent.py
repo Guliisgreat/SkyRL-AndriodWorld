@@ -1,5 +1,5 @@
 """
-AndroidADBAgent - ADB command agent for the VERL pipeline.
+AndroidAPIScreenADBAgent - ADB command agent for the VERL pipeline.
 
 Subclass of AndroidAgent; overrides prompt, action parsing, and step execution
 to use raw ADB commands via step_adb() / step() for task control.
@@ -262,6 +262,7 @@ def _parse_adb_command(text: str) -> Tuple[str, str]:
 
     command_section = text.split("Command:")[-1].strip()
     command = command_section.split("\n")[0].strip()
+    command = command.strip("`").strip()
     if not command:
         raise ValueError("Empty command after 'Command:'")
     return command, thought
@@ -284,7 +285,7 @@ def _parse_task_control(command: str) -> Dict:
 # Agent class
 # ---------------------------------------------------------------------------
 
-class AndroidADBAgent(AndroidAgent):
+class AndroidAPIScreenADBAgent(AndroidAgent):
     """
     Android agent that generates raw ADB commands and uses step_adb() for execution.
 
@@ -351,6 +352,10 @@ class AndroidADBAgent(AndroidAgent):
         )
         response_str, stop_reason, _prompt_token_ids, response_token_ids = result
 
+        # Accumulate token counts
+        self.state.total_input_tokens += len(_prompt_token_ids)
+        self.state.total_output_tokens += len(response_token_ids)
+
         if stop_reason == "length":
             self.state.messages = _append_assistant(self.state.messages, response_str)
             self.training.add_step(self.state.messages, response_token_ids)
@@ -384,6 +389,22 @@ class AndroidADBAgent(AndroidAgent):
             ) = await self.env_handle.step_adb(payload)
 
         self.state.reward = reward
+
+        # Record step for trajectory saving
+        _action_type = "task_control" if command.startswith("FINISH") or command.startswith("INFEASIBLE") else "adb"
+        self.state.step_records.append({
+            "step_idx": self.state.step_count,
+            "thought": thought,
+            "raw_response": response_str,
+            "action_type": _action_type,
+            "action_params": {"command": command},
+            "command_output": command_output,
+            "a11y_tree": None,
+            "screenshot_idx": len(self.state.images),
+            "input_tokens": len(_prompt_token_ids),
+            "output_tokens": len(response_token_ids),
+        })
+
         self.state.messages = _append_assistant(self.state.messages, response_str)
 
         if terminated or truncated:

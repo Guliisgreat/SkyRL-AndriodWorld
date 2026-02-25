@@ -90,7 +90,12 @@ class TrajectoryState:
     
     # === Tracking ===
     step_count: int = 0
-    
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+
+    # === Per-step records (for trajectory saving) ===
+    step_records: List[Dict] = field(default_factory=list)
+
     # === Result ===
     is_done: bool = False
     finish_reason: str = ""
@@ -386,13 +391,18 @@ class AndroidAgent:
             request_id=self.agent_id,
             image_data=image_data,
             return_token_ids=True,
+            messages=selected_messages,  # Chat API backends use this directly
         )
         
         response_str, stop_reason, _prompt_token_ids, response_token_ids = result
-        
+
+        # Accumulate token counts
+        self.state.total_input_tokens += len(_prompt_token_ids)
+        self.state.total_output_tokens += len(response_token_ids)
+
         if DEBUG_TIMING:
             vllm_elapsed = time.perf_counter() - vllm_start
-        
+
         # Check for length stop
         if stop_reason == "length":
             print(f"[AndroidAgent] Stopping reason: {stop_reason}. Stopping agent.")
@@ -431,6 +441,20 @@ class AndroidAgent:
         self.state.reward = output.get("reward", 0.0)
         terminated = output.get("terminated", False)
         truncated = output.get("truncated", False)
+        
+        # Record step for trajectory saving
+        self.state.step_records.append({
+            "step_idx": self.state.step_count,
+            "thought": thought,
+            "raw_response": response_str,
+            "action_type": action_dict.get("action_type", "unknown"),
+            "action_params": {k: v for k, v in action_dict.items() if k != "action_type"},
+            "command_output": None,
+            "a11y_tree": None,
+            "screenshot_idx": len(self.state.images),
+            "input_tokens": len(_prompt_token_ids),
+            "output_tokens": len(response_token_ids),
+        })
         
         # 6. Update messages (EXPLICIT assignment)
         self.state.messages = self.append_assistant(self.state.messages, response_str)

@@ -78,11 +78,128 @@ Launch an OpenAI API-compatible serving (e.g., vLLM or similar), then configure 
   bash ./examples/run_verl/web_research_hle.sh
   ```
 
-### 4) OSWorld
+### 4) AndroidWorld
+
+Five agent types and two inference backends are supported.
+
+#### Naming Convention
+
+Agent classes follow the `Android{Model}{Input}{Output}Agent` convention:
+- **Model**: `Open` (open-source, e.g. UI-TARS) / `API` (proprietary, e.g. GPT)
+- **Input**: `Screen` (screenshot) / `Tree` (a11y tree) / `Combo` (both)
+- **Output**: Touch (default, omitted) / `ADB` (ADB shell commands)
+
+`AndroidAgent` (the original UI-TARS agent) is a special case and keeps its name.
+
+#### Agent Types
+
+| Agent | Class | Input | Output | Vision |
+|-------|-------|-------|--------|--------|
+| **Open Screen Touch** (UI-TARS) | `AndroidAgent` | Screenshot | GUI actions | Required (VLM) |
+| **API Screen Touch** | `AndroidAPIScreenAgent` | Screenshot | GUI actions (JSON) | Required (VLM) |
+| **API Combo Touch** | `AndroidAPIComboAgent` | Screenshot + A11y tree | GUI actions (JSON) | Required (VLM) |
+| **API Screen ADB** | `AndroidAPIScreenADBAgent` | Screenshot | ADB shell commands | Required (VLM) |
+| **API Tree ADB** | `AndroidAPITreeADBAgent` | A11y tree text | ADB shell commands | Not needed (text LLM) |
+
+#### Inference Backends
+
+| Backend | Engine | Use case |
+|---------|--------|----------|
+| **VERL** | Local vLLM + Ray (GPU) | Training and inference with local models (e.g. Qwen3-VL-7B) |
+| **OpenAI** | Any OpenAI-compatible API | Inference with API models (e.g. GPT-4o, Claude) or remote vLLM |
+
+#### Configuration Matrix
+
+| | VERL (local GPU) | OpenAI API |
+|---|---|---|
+| **Open Screen Touch** (UI-TARS) | `run_verl/verl_android_inference.yaml` | `run_openai/openai_android_inference.yaml` |
+| **API Screen Touch** | — | `run_openai/openai_android_gpt_gui.yaml` |
+| **API Combo Touch** | — | `run_openai/openai_android_api_combo.yaml` |
+| **API Screen ADB** | `run_verl/verl_android_adb_inference.yaml` | `run_openai/openai_android_adb_inference.yaml` |
+| **API Tree ADB** | `run_verl/verl_android_full_adb_inference.yaml` | `run_openai/openai_android_full_adb_inference.yaml` |
+
+#### Prerequisites
+
+1. **Docker image** -- Build the unified Android container (supports all agent types):
+
+```bash
+docker build -f docker/android/Dockerfile.full_adb_agent \
+    -t androidworld:full_adb_agent docker/android
+```
+
+2. **Data** -- AndroidWorld test instances:
+
+```bash
+ls ./data/androidworld_generalization/unseen_task_instance/test.jsonl
+```
+
+#### Running with VERL (local model, e.g. Qwen3-VL-7B)
+
+Requires GPUs. Each script handles Ray setup, model loading, container creation, and evaluation.
+
+```bash
+# GUI Agent
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash ./examples/run_verl/verl_android_inference.sh
+
+# ADB Agent (screenshot + ADB commands)
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash ./examples/run_verl/verl_android_adb_inference.sh
+
+# Full ADB Agent (a11y tree text + ADB commands, no vision)
+CUDA_VISIBLE_DEVICES=4,5,6,7 bash ./examples/run_verl/verl_android_full_adb_inference.sh
+```
+
+Override environment pool size and data file:
+
+```bash
+ENV_POOL_SIZE=4 bash ./examples/run_verl/verl_android_full_adb_inference.sh data/test_4_instances.jsonl
+```
+
+#### Running with OpenAI API (e.g. GPT-4o)
+
+No GPUs required. Set `OPENAI_API_KEY` and optionally override `MODEL`, `API_URL`, `API_TYPE`.
+
+```bash
+# GUI Agent with GPT-4o
+OPENAI_API_KEY=sk-... bash ./examples/run_openai/openai_android_inference.sh
+
+# ADB Agent with GPT-4o
+OPENAI_API_KEY=sk-... bash ./examples/run_openai/openai_android_inference.sh \
+    --yaml examples/run_openai/openai_android_adb_inference.yaml
+
+# Full ADB Agent with GPT-4o (text-only, most cost-effective)
+OPENAI_API_KEY=sk-... bash ./examples/run_openai/openai_android_inference.sh \
+    --yaml examples/run_openai/openai_android_full_adb_inference.yaml
+```
+
+Or use the Python script directly for more control:
+
+```bash
+OPENAI_API_KEY=sk-... python ./examples/run_openai/run_openai_android_inference.py \
+    --data ./data/androidworld_generalization/unseen_task_instance/test.jsonl \
+    --yaml ./examples/run_openai/openai_android_full_adb_inference.yaml \
+    --model gpt-4o \
+    --max-instances 4
+```
+
+#### Using a Local vLLM Server via OpenAI Backend
+
+You can serve a local model with vLLM and use the OpenAI backend to call it:
+
+```bash
+# Terminal 1: Start vLLM server
+vllm serve Qwen/Qwen2-VL-7B-Instruct --port 8000
+
+# Terminal 2: Run inference via OpenAI backend
+OPENAI_API_KEY=dummy MODEL=Qwen/Qwen2-VL-7B-Instruct \
+    API_URL=http://localhost:8000 API_TYPE=completions \
+    bash ./examples/run_openai/openai_android_inference.sh
+```
+
+### 5) OSWorld
 
 Placeholder for now. 
 
-### 5) BrowseComp-Plus (Dense Retrieval)
+### 6) BrowseComp-Plus (Dense Retrieval)
 
 - Prepare dataset/index. First download the decrypted dataset following [official instruction](https://github.com/texttron/BrowseComp-Plus?tab=readme-ov-file#-downloading-the-dataset). Then run:
   ```bash

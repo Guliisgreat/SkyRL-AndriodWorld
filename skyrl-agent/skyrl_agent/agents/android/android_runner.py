@@ -15,6 +15,7 @@ from omegaconf import OmegaConf
 import torch
 
 from skyrl_agent.agents.base import AgentRunner
+from skyrl_agent.agents.android.trajectory_saver import TrajectorySaver
 from skyrl_agent.dispatcher.dispatchers import DISPATCHER_REGISTRY
 from skyrl_agent.integrations.base import build_generator_input, build_generator_output
 from skyrl_agent.config.configuration_utils import TrajectoryConfig
@@ -71,11 +72,10 @@ class AndroidAgentRunner(AgentRunner):
         """
         Initialize trajectory instances.
         
-        Overrides base to use AndroidTrajectory and set processor.
+        Uses self.traj_cls (resolved from AGENT_TRAJECTORY_REGISTRY in
+        AgentRunner.__init__) so the same runner works with any trajectory
+        class registered for the current agent_cls.
         """
-        # Import here to avoid circular dependency
-        from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
-        
         for batch_id, content in enumerate(self.batch):
             data = self._get_data(content)
             instance_id = data["instance_id"] if data["instance_id"] else batch_id
@@ -118,7 +118,7 @@ class AndroidAgentRunner(AgentRunner):
                 if hasattr(self.cfg, 'generator'):
                     traj_cfg.max_history_steps = getattr(self.cfg.generator, 'max_history_steps', 10)
                 
-                traj = AndroidTrajectory(
+                traj = self.traj_cls(
                     cfg=traj_cfg,
                     data=data,
                     tokenizer=self.tokenizer,
@@ -159,6 +159,25 @@ class AndroidAgentRunner(AgentRunner):
             self.env_pool = await self.task.initialize_runtime(env_config)
             logger.info(f"Environment pool initialized with {len(self.env_pool)} environments")
         
+        # 1b. Initialize trajectory saver if configured
+        save_trajectories = getattr(self.cfg.generator, "save_trajectories", False)
+        if save_trajectories:
+            save_dir = getattr(self.cfg.generator, "trajectory_save_dir", "/tmp/trajectories")
+            exp_name = getattr(self.cfg.generator, "trajectory_exp_name", "")
+            save_screenshots = getattr(self.cfg.generator, "save_screenshots", True)
+            agent_cls = getattr(self.cfg, "agent_cls", "")
+            task_name = getattr(self.cfg, "task", "")
+            self._trajectory_saver = TrajectorySaver(
+                save_dir=save_dir,
+                exp_name=exp_name,
+                save_screenshots=save_screenshots,
+                agent_cls=agent_cls,
+                task_name=task_name,
+            )
+            logger.info(f"Trajectory saving enabled: {self._trajectory_saver.base_dir} (screenshots={save_screenshots})")
+        else:
+            self._trajectory_saver = None
+
         # 2. Initialize trajectories
         self._initialize_trajectories(val_mode=val_mode)
         
@@ -221,6 +240,21 @@ class AndroidAgentRunner(AgentRunner):
                     "format_reward": 0.0,
                 }
                 logger.error(f"Trajectory {instance_id}/{trajectory_id} failed: {error}")
+            
+            # Save trajectory to disk if configured
+            if self._trajectory_saver and traj.result is not None:
+                task_text = ""
+                if batch_idx < len(self.batch):
+                    raw_prompt = self.batch[batch_idx].get("raw_prompt", [])
+                    if raw_prompt:
+                        task_text = raw_prompt[0].get("content", "")
+                model_name = getattr(
+                    self.cfg.generator.backend_config, "model_name", ""
+                )
+                try:
+                    self._trajectory_saver.save(traj.result, task_text, model_name)
+                except Exception as e:
+                    logger.warning(f"Failed to save trajectory {instance_id}/{trajectory_id}: {e}")
         
         dispatcher_cfg = {
             "container_manager": container_manager,
@@ -296,6 +330,9 @@ class AndroidAgentRunner(AgentRunner):
         image_grid_thw_list = []
         position_ids_list = []
         finish_reason_list = []
+        per_traj_step_counts = []
+        per_traj_input_tokens = []
+        per_traj_output_tokens = []
 
         # Reasons to mask out loss
         mask_out_reason = [
@@ -320,6 +357,9 @@ class AndroidAgentRunner(AgentRunner):
                 position_ids_list.append(None)
                 finish_reason_list.append("error_null_result")
                 rewards.append(0.0)
+                per_traj_step_counts.append(0)
+                per_traj_input_tokens.append(0)
+                per_traj_output_tokens.append(0)
                 continue
             
             # Handle error result (trajectory failed after all retries)
@@ -339,6 +379,9 @@ class AndroidAgentRunner(AgentRunner):
                 position_ids_list.append(None)
                 finish_reason_list.append(f"error_max_retries_{retry_count}")
                 rewards.append(0.0)
+                per_traj_step_counts.append(0)
+                per_traj_input_tokens.append(0)
+                per_traj_output_tokens.append(0)
                 continue
             
             # Log retry info if trajectory succeeded after retries
@@ -354,6 +397,9 @@ class AndroidAgentRunner(AgentRunner):
 
             finish_reason_list.append(finish_reason)
             rewards.append(reward)
+            per_traj_step_counts.append(result.get("step_count", 0))
+            per_traj_input_tokens.append(result.get("total_input_tokens", 0))
+            per_traj_output_tokens.append(result.get("total_output_tokens", 0))
 
             if not train_dict or "input_ids" not in train_dict:
                 # Fallback: use empty tensors if train_dict missing
@@ -423,6 +469,14 @@ class AndroidAgentRunner(AgentRunner):
         avg_turn_assistant = sum(num_turns) / len(num_turns) if num_turns else 0.0
         rollout_metrics["rollout_metrics/avg_turn_assistant"] = avg_turn_assistant
 
+        # Step count and token usage metrics
+        n = max(len(per_traj_step_counts), 1)
+        rollout_metrics["rollout_metrics/avg_step_count"] = sum(per_traj_step_counts) / n
+        rollout_metrics["rollout_metrics/avg_input_tokens"] = sum(per_traj_input_tokens) / n
+        rollout_metrics["rollout_metrics/avg_output_tokens"] = sum(per_traj_output_tokens) / n
+        rollout_metrics["rollout_metrics/total_input_tokens"] = sum(per_traj_input_tokens)
+        rollout_metrics["rollout_metrics/total_output_tokens"] = sum(per_traj_output_tokens)
+
         # Finish reason metrics
         rollout_metrics["rollout_metrics/finish_tool_ratio"] = sum(
             1 for r in finish_reason_list if r == "FINISH"
@@ -470,6 +524,10 @@ class AndroidAgentRunner(AgentRunner):
             "pixel_values": pixel_values_list,
             "image_grid_thw": image_grid_thw_list,
             "position_ids": position_ids_list,
+            # Per-trajectory metrics
+            "step_counts": per_traj_step_counts,
+            "input_token_counts": per_traj_input_tokens,
+            "output_token_counts": per_traj_output_tokens,
         }
 
         return output

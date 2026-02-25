@@ -2,9 +2,9 @@
 """
 Inference entry point for AndroidWorld with ADB agent.
 
-Registers the ADB agent (AndroidADBAgent -> AndroidADBAgentRunner) via mapping_adb
+Registers the ADB agent (AndroidAPIScreenADBAgent -> AndroidAgentRunner) via mapping_adb
 before running the same inference flow as verl_main_inference. Use with
-+skyrl_agent.task_yaml=.../verl_android_adb_inference.yaml so agent_cls is AndroidADBAgent.
++skyrl_agent.task_yaml=.../verl_android_adb_inference.yaml so agent_cls is AndroidAPIScreenADBAgent.
 Containers must expose POST /step_adb (e.g. use the androidworld-adb image).
 """
 

@@ -15,8 +15,12 @@ Note: Uses lazy imports to avoid requiring all dependencies at import time.
 __all__ = [
     # Classes
     "AndroidAgent",
+    "AndroidAPIScreenAgent",
     "AndroidTrajectory",
     "AndroidAgentRunner",
+    "AndroidAPIScreenADBAgent",
+    "AndroidAPITreeADBAgent",
+    "AndroidAPIComboAgent",
     "TrajectoryState",
     # Prompt template (agent-specific)
     "UITARS_USR_PROMPT_THOUGHT",
@@ -52,6 +56,22 @@ def __getattr__(name):
     if name == "AndroidAgentRunner":
         from skyrl_agent.agents.android.android_runner import AndroidAgentRunner
         return AndroidAgentRunner
+    
+    if name == "AndroidAPIScreenADBAgent":
+        from skyrl_agent.agents.android.android_api_screen_adb_agent import AndroidAPIScreenADBAgent
+        return AndroidAPIScreenADBAgent
+    
+    if name == "AndroidAPITreeADBAgent":
+        from skyrl_agent.agents.android.android_api_tree_adb_agent import AndroidAPITreeADBAgent
+        return AndroidAPITreeADBAgent
+    
+    if name == "AndroidAPIScreenAgent":
+        from skyrl_agent.agents.android.android_api_screen_agent import AndroidAPIScreenAgent
+        return AndroidAPIScreenAgent
+    
+    if name == "AndroidAPIComboAgent":
+        from skyrl_agent.agents.android.android_api_combo_agent import AndroidAPIComboAgent
+        return AndroidAPIComboAgent
     
     if name in ("init_messages", "select_messages", "load_content", 
                 "numpy_to_base64", "parse_uitars_action", "add_box_token"):

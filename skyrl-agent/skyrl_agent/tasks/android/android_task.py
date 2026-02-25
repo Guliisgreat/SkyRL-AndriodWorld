@@ -74,7 +74,7 @@ class AndroidTask(BaseTask):
         containers = await cls._container_manager.create_pool_parallel(
             pool_size=pool_size,
             base_env_id=base_env_id,
-            max_concurrent=min(pool_size + buffer_size, 8),  # Bound parallelism
+            max_concurrent=min(pool_size + buffer_size, 4),  # Bound parallelism
             initial_wait=30.0,  # Reduced wait for parallel
             max_retries=2,
             sample_mode=env_config.get("sample_mode", "sequential"),

@@ -108,13 +108,16 @@ class AndroidEnvTool(BaseTool):
                 "info": {"error": str(e)},
             }
         
-        # Extract image from observation
+        # Extract image and ui_elements from observation
         image = None
+        ui_elements = []
         if observation is not None:
             image = observation.get("image")
+            ui_elements = observation.get("ui_elements", [])
         
         return {
             "image": image,
+            "ui_elements": ui_elements,
             "reward": reward,
             "terminated": terminated,
             "truncated": truncated,
@@ -191,13 +194,16 @@ class AndroidEnvTool(BaseTool):
                 "info": {"error": str(e)},
             }
         
-        # Extract image from observation
+        # Extract image and ui_elements from observation
         image = None
+        ui_elements = []
         if observation is not None:
             image = observation.get("image")
+            ui_elements = observation.get("ui_elements", [])
         
         return {
             "image": image,
+            "ui_elements": ui_elements,
             "reward": reward,
             "terminated": terminated,
             "truncated": truncated,

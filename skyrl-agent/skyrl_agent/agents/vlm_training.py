@@ -556,6 +556,19 @@ def build_vlm_train_dict(
         Dict ready for training with input_ids, labels, position_ids,
         attention_mask, multi_modal_inputs
     """
+    if processor is None:
+        data = {
+            'input_ids': train_input_ids,
+            'labels': train_labels,
+            'attention_mask': train_attention_mask,
+        }
+        if train_pixel_values is not None:
+            data['multi_modal_inputs'] = {
+                'pixel_values': train_pixel_values,
+                'image_grid_thw': train_image_grid_thw,
+            }
+        return data
+
     try:
         from verl.models.transformers.qwen2_vl import get_rope_index
         import verl.utils.torch_functional as VF
