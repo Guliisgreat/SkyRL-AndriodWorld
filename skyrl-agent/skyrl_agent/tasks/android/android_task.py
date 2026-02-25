@@ -83,6 +83,7 @@ class AndroidTask(BaseTask):
             val_task_family=env_config.get("val_task_family", "android_world"),
             buffer_size=buffer_size,
             use_host_network=env_config.get("use_host_network", False),
+            skip_screenshot=env_config.get("skip_screenshot", False),
         )
 
         # Wrap each container in a RuntimeClient (for backward compatibility)

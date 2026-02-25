@@ -37,7 +37,7 @@ ENV_POOL_SIZE=${ENV_POOL_SIZE:-16}
 
 # === Data ===
 DATA_DIR="./data/androidworld_generalization/unseen_task_instance"
-DATA_FILE="${1:-${DATA_DIR}/test.jsonl}"
+DATA_FILE="${1:-${DATA_DIR}/test_seed7.jsonl}"
 
 if [ ! -f "$DATA_FILE" ]; then
     echo "ERROR: Data file not found: $DATA_FILE"

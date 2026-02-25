@@ -4,15 +4,15 @@ Standalone AndroidWorld inference using any OpenAI-compatible API.
 
 No vLLM, no Ray, no verl required — just an API key.
 
-A HuggingFace tokenizer is still loaded because the agent framework needs it
-for context-length management, but the OpenAI chat backend sends the original
-messages directly to the API — no tokenize/decode roundtrip.
+For OpenAI models (gpt-*, o1-*, o3-*), tiktoken is used automatically for
+accurate token counting. For open-source models served via vLLM/SGLang,
+pass --tokenizer to load the matching HuggingFace tokenizer.
 
 Usage:
-    # With OpenAI API (GPT-5-mini) — uses Qwen tokenizer for the agent internals:
+    # With OpenAI API (GPT-5-mini) — tiktoken used automatically:
     OPENAI_API_KEY=sk-... python run_openai_android_inference.py \
-        --data ../../data/androidworld_generalization/unseen_task_instance/test.jsonl \
-        --model gpt-5-mini --tokenizer Qwen/Qwen2-VL-7B-Instruct
+        --data ../../data/androidworld_generalization/unseen_task_instance/test_seed7.jsonl \
+        --model gpt-5-mini
 
     # With local vLLM server (completions mode, token IDs):
     OPENAI_API_KEY=dummy python run_openai_android_inference.py \
@@ -60,6 +60,160 @@ def load_jsonl(filepath: str) -> list:
     return items
 
 
+_OPENAI_MODEL_PREFIXES = ("gpt-", "o1-", "o3-", "o4-", "chatgpt-")
+
+
+def _is_openai_model(model_name: str) -> bool:
+    return any(model_name.startswith(p) for p in _OPENAI_MODEL_PREFIXES)
+
+
+class TiktokenWrapper:
+    """Wraps tiktoken to expose the subset of HuggingFace tokenizer API used by the agent."""
+
+    def __init__(self, model_name: str):
+        import tiktoken
+        try:
+            self._enc = tiktoken.encoding_for_model(model_name)
+        except KeyError:
+            self._enc = tiktoken.get_encoding("o200k_base")
+        self._model = model_name
+        print(f"Using tiktoken for {model_name} (encoding={self._enc.name}, vocab={self._enc.n_vocab})")
+
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+        return self._enc.encode(text)
+
+    def decode(self, token_ids: list[int], skip_special_tokens: bool = True) -> str:
+        return self._enc.decode(token_ids)
+
+    def apply_chat_template(
+        self,
+        messages,
+        add_generation_prompt: bool = False,
+        tokenize: bool = True,
+        return_dict: bool = False,
+        **kwargs,
+    ):
+        """Approximate token count by serializing messages to text and encoding.
+
+        This is used only for context-length budgeting -- the actual API call
+        sends the original messages, not these token IDs.
+        """
+        parts = []
+        for msg in (messages if isinstance(messages, list) else [messages]):
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                text_parts = [p.get("text", "") for p in content if p.get("type") == "text"]
+                content = "\n".join(text_parts)
+            parts.append(f"<|{role}|>\n{content}")
+        if add_generation_prompt:
+            parts.append("<|assistant|>\n")
+        text = "\n".join(parts)
+
+        if not tokenize:
+            return text
+
+        ids = self._enc.encode(text)
+        if return_dict:
+            return {"input_ids": ids}
+        return ids
+
+
+def _load_tokenizer(model_name: str, tokenizer_override: str = None):
+    """Load the appropriate tokenizer: tiktoken for OpenAI models, HuggingFace otherwise."""
+    if tokenizer_override:
+        print(f"Loading HuggingFace tokenizer: {tokenizer_override}")
+        from transformers import AutoTokenizer
+        return AutoTokenizer.from_pretrained(tokenizer_override, trust_remote_code=True)
+
+    if _is_openai_model(model_name):
+        return TiktokenWrapper(model_name)
+
+    print(f"Loading HuggingFace tokenizer: {model_name}")
+    from transformers import AutoTokenizer
+    return AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+
+
+def _setup_wandb(cfg, model_name: str):
+    """Initialize wandb if configured in trainer.logger. Returns the wandb module or None."""
+    loggers = cfg.get("trainer", {}).get("logger", ["console"])
+    if isinstance(loggers, str):
+        loggers = [loggers]
+    if "wandb" not in loggers:
+        return None
+
+    try:
+        import wandb
+
+        project = cfg.get("trainer", {}).get("project_name", "skyrl-androidworld")
+        experiment = cfg.get("trainer", {}).get("experiment_name", "")
+        if not experiment:
+            experiment = f"{model_name}_{time.strftime('%m%d_%H%M')}"
+
+        entity = os.environ.get("WANDB_ENTITY", None)
+        wandb.init(
+            project=project,
+            name=experiment,
+            entity=entity,
+            config={
+                "model": model_name,
+                "agent": cfg.get("agent_cls", ""),
+                "max_iterations": cfg.get("generator", {}).get("max_iterations", 0),
+                "max_prompt_length": cfg.get("generator", {}).get("max_prompt_length", 0),
+                "pool_size": cfg.get("env", {}).get("pool_size", 0),
+                "skip_screenshot": cfg.get("env", {}).get("skip_screenshot", False),
+            },
+        )
+        print(f"WandB logging enabled: {wandb.run.url}")
+        return wandb
+    except ImportError:
+        print("Warning: wandb not installed, skipping wandb logging")
+        return None
+    except Exception as e:
+        print(f"Warning: Failed to setup wandb: {e}")
+        return None
+
+
+def _log_wandb(wb, metrics: dict, instance_rewards: list, output_dir: str):
+    """Log metrics, results table, and artifacts to wandb."""
+    if wb is None:
+        return
+
+    # Scalar metrics (filter out non-numeric for wandb.log)
+    scalar_metrics = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+    wb.log(scalar_metrics, step=0)
+
+    # Per-instance results table
+    columns = ["instance_id", "task", "reward", "step_count", "input_tokens", "output_tokens"]
+    table = wb.Table(columns=columns)
+    for entry in instance_rewards:
+        table.add_data(
+            entry["instance_id"],
+            entry["task"][:200],
+            entry["reward"],
+            entry["step_count"],
+            entry["total_input_tokens"],
+            entry["total_output_tokens"],
+        )
+    wb.log({"results": table}, step=0)
+
+    # Save output files as artifact
+    metrics_file = os.path.join(output_dir, "final_metrics.json")
+    rewards_file = os.path.join(output_dir, "rewards.json")
+    artifact = wb.Artifact(
+        name=f"inference-{metrics.get('model', 'unknown')}-{time.strftime('%m%d_%H%M')}",
+        type="results",
+    )
+    if os.path.exists(metrics_file):
+        artifact.add_file(metrics_file)
+    if os.path.exists(rewards_file):
+        artifact.add_file(rewards_file)
+    wb.log_artifact(artifact)
+
+    wb.finish()
+    print("WandB run finished.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="AndroidWorld inference via OpenAI API")
     parser.add_argument("--data", required=True, help="Path to test JSONL file")
@@ -97,10 +251,11 @@ def main():
         cfg.generator.backend_config.api_type = args.api_type
 
     # --- Load tokenizer ---
-    tokenizer_name = args.tokenizer or cfg.generator.backend_config.model_name
-    print(f"Loading tokenizer: {tokenizer_name}")
-    from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
+    model_name = args.model or cfg.generator.backend_config.model_name
+    tokenizer = _load_tokenizer(model_name, args.tokenizer)
+
+    # --- Setup wandb ---
+    wb = _setup_wandb(cfg, model_name)
 
     # --- Register backend + build runner ---
     # Importing the module triggers register_backend("openai_server", ...)
@@ -194,6 +349,9 @@ def main():
             instance_rewards.append(entry)
         json.dump(instance_rewards, f, indent=2)
     print(f"Per-instance rewards saved to: {rewards_file}")
+
+    # --- Log to wandb ---
+    _log_wandb(wb, metrics, instance_rewards, args.output_dir)
 
     return 0 if mean_reward >= 0 else 1
 

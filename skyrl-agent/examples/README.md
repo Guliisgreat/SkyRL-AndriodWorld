@@ -130,7 +130,7 @@ docker build -f docker/android/Dockerfile.full_adb_agent \
 2. **Data** -- AndroidWorld test instances:
 
 ```bash
-ls ./data/androidworld_generalization/unseen_task_instance/test.jsonl
+ls ./data/androidworld_generalization/unseen_task_instance/test_seed7.jsonl
 ```
 
 #### Running with VERL (local model, e.g. Qwen3-VL-7B)
@@ -175,7 +175,7 @@ Or use the Python script directly for more control:
 
 ```bash
 OPENAI_API_KEY=sk-... python ./examples/run_openai/run_openai_android_inference.py \
-    --data ./data/androidworld_generalization/unseen_task_instance/test.jsonl \
+    --data ./data/androidworld_generalization/unseen_task_instance/test_seed7.jsonl \
     --yaml ./examples/run_openai/openai_android_tree_adb_inference.yaml \
     --model gpt-4o \
     --max-instances 4

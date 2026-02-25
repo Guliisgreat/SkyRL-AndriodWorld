@@ -36,7 +36,7 @@ export RAY_object_spilling_threshold=0.99
 # Note: AndroidWorldDataset expects JSONL format (one JSON object per line)
 DATA_DIR="./data/androidworld_generalization/unseen_task_instance"
 train_data="${DATA_DIR}/train.jsonl"
-test_data="${DATA_DIR}/test.jsonl"
+test_data="${DATA_DIR}/test_seed7.jsonl"
 
 # Validate data files exist
 if [ ! -f "$train_data" ]; then

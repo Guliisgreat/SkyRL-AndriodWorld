@@ -37,9 +37,9 @@ mkdir -p ${RAY_TMPDIR}
 export RAY_object_spilling_threshold=0.99
 
 # === Data Configuration ===
-# Default: Use test.jsonl from unseen_task_instance
+# Default: Use test_seed7.jsonl (78 unique tasks, seed=7)
 DATA_DIR="./data/androidworld_generalization/unseen_task_instance"
-test_data="${DATA_DIR}/test.jsonl"
+test_data="${DATA_DIR}/test_seed7.jsonl"
 
 # Override with command line argument if provided
 if [ -n "$1" ] && [ -f "$1" ]; then
