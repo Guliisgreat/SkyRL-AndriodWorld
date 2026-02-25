@@ -9,10 +9,14 @@ Reuses parsing and safety validation from android_api_screen_adb_agent.py.
 """
 
 import copy
+import os
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+
+DEBUG_TIMING = os.environ.get("DEBUG_TIMING", "0") == "1"
 
 from skyrl_agent.agents.android.android_agent import AndroidAgent
 from skyrl_agent.agents.android.android_api_screen_adb_agent import (
@@ -295,6 +299,10 @@ class AndroidAPITreeADBAgent(AndroidAgent):
         if remaining < _cfg_max:
             sampling_params["max_tokens"] = remaining
 
+        if DEBUG_TIMING:
+            print(f"[Context] step={self.state.step_count} tokens={len(inference_input_ids)}")
+            llm_start = time.perf_counter()
+
         result = await self.infer_engine.async_generate_ids(
             input_ids=inference_input_ids,
             sampling_params=sampling_params,
@@ -307,6 +315,9 @@ class AndroidAPITreeADBAgent(AndroidAgent):
         # Accumulate token counts
         self.state.total_input_tokens += len(_prompt_token_ids)
         self.state.total_output_tokens += len(response_token_ids)
+
+        if DEBUG_TIMING:
+            llm_elapsed = time.perf_counter() - llm_start
 
         if stop_reason == "length":
             self.state.messages = _append_assistant(self.state.messages, response_str)
@@ -321,6 +332,9 @@ class AndroidAPITreeADBAgent(AndroidAgent):
             self.state.format_reward = -1.0
             command = "INFEASIBLE(content='parse error')"
             thought = f"parse error: {response_str[:200]}"
+
+        if DEBUG_TIMING:
+            env_start = time.perf_counter()
 
         if command.startswith("FINISH") or command.startswith("INFEASIBLE") or command.startswith("answer"):
             action_dict = _parse_task_control(command)
@@ -340,6 +354,10 @@ class AndroidAPITreeADBAgent(AndroidAgent):
                 info,
             ) = await self.env_handle.step_adb(payload)
 
+        if DEBUG_TIMING:
+            env_elapsed = time.perf_counter() - env_start
+            print(f"[Timing] step={self.state.step_count} LLM={llm_elapsed:.2f}s env={env_elapsed:.2f}s total={llm_elapsed+env_elapsed:.2f}s")
+
         self.state.reward = reward
 
         # Extract a11y tree for step record
@@ -348,7 +366,7 @@ class AndroidAPITreeADBAgent(AndroidAgent):
 
         # Record step for trajectory saving
         _action_type = "task_control" if command.startswith("FINISH") or command.startswith("INFEASIBLE") or command.startswith("answer") else "adb"
-        self.state.step_records.append({
+        step_record = {
             "step_idx": self.state.step_count,
             "thought": thought,
             "raw_response": response_str,
@@ -359,7 +377,11 @@ class AndroidAPITreeADBAgent(AndroidAgent):
             "screenshot_idx": None,
             "input_tokens": len(_prompt_token_ids),
             "output_tokens": len(response_token_ids),
-        })
+        }
+        if DEBUG_TIMING:
+            step_record["llm_time"] = round(llm_elapsed, 3)
+            step_record["env_time"] = round(env_elapsed, 3)
+        self.state.step_records.append(step_record)
 
         self.state.messages = _append_assistant(self.state.messages, response_str)
 
