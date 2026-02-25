@@ -384,6 +384,11 @@ class RuntimeClient:
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=self.HTTP_TIMEOUT),
                 ) as response:
+                    if response.status == 400:
+                        body = await response.json()
+                        error_detail = body.get("detail", "Unknown validation error")
+                        logger.warning(f"Command rejected by server: {error_detail}")
+                        return {}, f"ERROR: {error_detail}", 0.0, False, False, {}
                     if response.status != 200:
                         body = await response.text()
                         raise Exception(

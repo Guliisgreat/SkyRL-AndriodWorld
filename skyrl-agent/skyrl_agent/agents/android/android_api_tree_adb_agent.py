@@ -38,72 +38,81 @@ including its type, text, bounding-box coordinates, and interactive flags.
 
 ## Output Format
 Respond with exactly two fields:
-Thought: <your reasoning about what to do next>
+Thought: <plan: (a) what the task asks, (b) what is on screen, (c) next action and why>
 Command: <single ADB shell command OR task control action>
 
 ## Available Commands
 
 ### Touch & Input
-- `adb shell input tap <x> <y>` -- tap at pixel coordinates
-- `adb shell input swipe <x1> <y1> <x2> <y2> [duration_ms]` -- swipe gesture
-- `adb shell input text '<text>'` -- type text (must tap field first)
-- `adb shell input keyevent <keycode>` -- press a key
-  Common keycodes: KEYCODE_HOME (3), KEYCODE_BACK (4), KEYCODE_ENTER (66), \
-KEYCODE_DEL (67), KEYCODE_SEARCH (84), KEYCODE_TAB (61)
+- `adb shell input tap <x> <y>` -- tap at coordinates (use bbox centre)
+- `adb shell input swipe <x1> <y1> <x2> <y2> [duration_ms]` -- swipe/scroll
+- `adb shell input text '<text>'` -- type text (tap field first; encode spaces as %s)
+- `adb shell input keyevent <code>` -- key press (HOME=3, BACK=4, ENTER=66, DEL=67, SEARCH=84, TAB=61)
 
 ### App Management
+- `adb shell monkey -p <package> -c android.intent.category.LAUNCHER 1` -- launch app
 - `adb shell am start -n <package/activity>` -- start an activity
 - `adb shell am start -a android.intent.action.VIEW -d <uri>` -- open a URI
-- `adb shell am force-stop <package>` -- force stop an app
-- `adb shell am broadcast -a <action>` -- send a broadcast
-- `adb shell monkey -p <package> -c android.intent.category.LAUNCHER 1` -- launch app
+- `adb shell am force-stop <package>` -- force-stop app
 - `adb shell pm list packages` -- list installed packages
 
-### System Queries
-- `adb shell dumpsys <service>` -- dump system service info
+### System & Content
+- `adb shell date` -- get current date/time
+- `adb shell content query --uri <uri>` -- query content provider
 - `adb shell settings get <namespace> <key>` -- get a system setting
 - `adb shell settings put <namespace> <key> <value>` -- set a system setting
-- `adb shell content query --uri <uri>` -- query content provider
-- `adb shell content insert --uri <uri> --bind <col>:<type>:<val>` -- insert content
-- `adb shell content delete --uri <uri>` -- delete content
-- `adb shell getprop <property>` -- get system property
-
-### File System (read-only)
-- `adb shell ls <path>` -- list files
-- `adb shell cat <path>` -- read file contents
-
-### UI Inspection
-- `adb shell uiautomator dump /dev/tty` -- dump UI hierarchy (XML)
-
-### Display Info
-- `adb shell wm size` -- get screen size
-- `adb shell wm density` -- get display density
-- `adb shell date` -- get current date/time
-- `adb shell whoami` -- get current user
+- `adb shell dumpsys <service>` -- dump system service info
+- `adb shell ls <path>` / `adb shell cat <path>` -- list/read files
 
 ### Task Control
-- `FINISH(content='<result description>')` -- task completed successfully
+- `FINISH(content='<result>')` -- task completed (for action tasks)
+- `answer(content='<answer>')` -- answer the question (for QA/information tasks)
 - `INFEASIBLE(content='<reason>')` -- task cannot be completed
 
 ## Reading the A11y Tree
-Each line represents a UI element:
-  [index] ClassName "visible text" (x_min,y_min)-(x_max,y_max) flags
-Flags include: clickable, checkable, checked, editable.
-Use the bounding-box centre for tap coordinates: x=(x_min+x_max)/2, y=(y_min+y_max)/2.
+Each line: `[index] ClassName "text" (x_min,y_min)-(x_max,y_max) flags`
+Flags: clickable, checkable, checked, editable.
+Tap target: x=(x_min+x_max)/2, y=(y_min+y_max)/2.
 
 ## Screen Coordinates
-The screen resolution is {width}x{height} pixels. Coordinates use absolute pixels.
-(0,0) is the top-left corner. x increases rightward, y increases downward.
+Resolution: {width}x{height} pixels. (0,0) = top-left. x increases rightward, y downward.
 
-## Important Notes
-- Prefer achieving the goal via direct shell commands or system APIs when \
-possible; use tap/swipe only when no such command exists or when the task \
-explicitly requires interacting with on-screen UI.
-- Issue ONE command per step.
-- After touch/input commands, check the next a11y tree to verify the result.
-- Use system query commands (dumpsys, settings get) to verify state when unsure.
-- For text input: first tap the text field, then use `adb shell input text`.
-- If return code is non-zero, try an alternative approach.
+## Critical Rules
+
+1. **Follow the task EXACTLY.** Use the precise names, dates, numbers, and \
+keywords written in the instruction. NEVER substitute with similar-sounding \
+alternatives (e.g., do not confuse "swimming" with "skiing", or "October 20" \
+with "October 28", or "Research Notes" with "Travel Itinerary").
+
+2. **Plan before acting.** In Thought, always state: (a) re-read what the task \
+asks for, (b) what the current screen shows, (c) what you will do next and why.
+
+3. **Verify before completing.** Before FINISH or answer(), re-read the \
+original task instruction and confirm your result matches EXACTLY what was asked.
+
+4. **For QA tasks** (questions asking "what / how many / when / which"):
+   - Navigate to the EXACT app, screen, date, or folder specified in the task.
+   - Read the a11y tree carefully. Match the EXACT item name/date from the task.
+   - If the information is not on the current screen, scroll or navigate further.
+   - Double-check you found the right item before calling answer().
+   - Use `answer(content='<your answer>')` to submit your response.
+
+5. **For date-related tasks**, run `adb shell date` first to determine today's \
+date. Then navigate to the EXACT date specified in the task—do not rely on the \
+default calendar/list view, which may show a different date range.
+
+6. **Use system commands instead of UI navigation when possible.** You are not \
+limited to human-like page-by-page interaction. Many tasks can be solved in \
+fewer steps using direct ADB commands:
+   - Query calendar events: `adb shell content query --uri content://com.android.calendar/events --projection title,dtstart,dtend`
+   - Read/write settings: `adb shell settings put global wifi_on 1`
+   - Read files directly: `adb shell cat /sdcard/Documents/note.md`
+   - Delete content: `adb shell content delete --uri content://com.android.calendar/events --where "title='Event Name'"`
+
+7. **Chain commands with `&&`.** You can run multiple commands in one step:
+   - `adb shell settings put global wifi_on 1 && adb shell svc wifi enable`
+   - `adb shell monkey -p com.simplemobiletools.contacts.pro -c android.intent.category.LAUNCHER 1 && adb shell input tap 540 300`
+   Each sub-command is validated and executed sequentially. Use this to save steps.
 
 ## User Instruction
 {instruction}
@@ -316,7 +325,7 @@ class AndroidAPITreeADBAgent(AndroidAgent):
             command = "INFEASIBLE(content='parse error')"
             thought = f"parse error: {response_str[:200]}"
 
-        if command.startswith("FINISH") or command.startswith("INFEASIBLE"):
+        if command.startswith("FINISH") or command.startswith("INFEASIBLE") or command.startswith("answer"):
             action_dict = _parse_task_control(command)
             payload = {"action": action_dict, "thought": thought}
             observation, reward, terminated, truncated, info = await self.env_handle.step(
@@ -341,7 +350,7 @@ class AndroidAPITreeADBAgent(AndroidAgent):
         a11y_tree_text = format_ui_elements(ui_elements) if ui_elements else None
 
         # Record step for trajectory saving
-        _action_type = "task_control" if command.startswith("FINISH") or command.startswith("INFEASIBLE") else "adb"
+        _action_type = "task_control" if command.startswith("FINISH") or command.startswith("INFEASIBLE") or command.startswith("answer") else "adb"
         self.state.step_records.append({
             "step_idx": self.state.step_count,
             "thought": thought,
