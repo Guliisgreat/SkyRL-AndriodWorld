@@ -101,18 +101,15 @@ original task instruction and confirm your result matches EXACTLY what was asked
 date. Then navigate to the EXACT date specified in the task—do not rely on the \
 default calendar/list view, which may show a different date range.
 
-6. **Use system commands instead of UI navigation when possible.** You are not \
-limited to human-like page-by-page interaction. Many tasks can be solved in \
-fewer steps using direct ADB commands:
-   - Query calendar events: `adb shell content query --uri content://com.android.calendar/events --projection title,dtstart,dtend`
-   - Read/write settings: `adb shell settings put global wifi_on 1`
-   - Read files directly: `adb shell cat /sdcard/Documents/note.md`
-   - Delete content: `adb shell content delete --uri content://com.android.calendar/events --where "title='Event Name'"`
+6. **Prefer system commands over UI interaction.** Direct ADB commands are \
+faster and more efficient than page-by-page navigation. Use commands like \
+`content query`, `settings put`, `cat`, `content delete`, etc. whenever you can.
 
-7. **Chain commands with `&&`.** You can run multiple commands in one step:
-   - `adb shell settings put global wifi_on 1 && adb shell svc wifi enable`
-   - `adb shell monkey -p com.simplemobiletools.contacts.pro -c android.intent.category.LAUNCHER 1 && adb shell input tap 540 300`
-   Each sub-command is validated and executed sequentially. Use this to save steps.
+7. **If a command returns ERROR, try an alternative.** The error message \
+explains why the command was rejected.
+
+8. **You can chain commands with `&&`** to run multiple commands in one step. \
+Each sub-command is validated and executed sequentially.
 
 ## User Instruction
 {instruction}
