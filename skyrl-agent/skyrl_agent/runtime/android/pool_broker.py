@@ -112,7 +112,8 @@ class ContainerPoolBroker:
 
         # Reuse existing components from container_manager.py
         self.port_allocator = PortAllocator()
-        self.factory = ContainerFactory(docker_image=docker_image, temp_path=temp_path)
+        self.factory = ContainerFactory(docker_image=docker_image, temp_path=temp_path,
+                                        port_allocator=self.port_allocator)
 
         # State
         self.registry: Dict[int, PoolEntry] = {}

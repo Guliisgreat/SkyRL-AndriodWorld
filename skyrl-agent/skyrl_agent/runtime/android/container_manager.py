@@ -237,6 +237,44 @@ class PortAllocator:
         
         return system_ports | docker_ports
     
+    def verify_ports(self, ports: Tuple[int, int, int]) -> Tuple[int, int, int]:
+        """Re-check allocated ports just before container launch.
+
+        If any port in the tuple (server, emulator, grpc) is now occupied,
+        allocate a replacement.  Emulator port must remain even, and its
+        companion ADB port (emulator+1) must also be free.
+
+        Returns a (possibly updated) port tuple.
+        """
+        server_port, emulator_port, grpc_port = ports
+        used = self.get_used_ports()
+        changed = False
+
+        if server_port in used:
+            server_port = self.allocate_port(server_port + 1)
+            changed = True
+
+        if emulator_port in used or (emulator_port + 1) in used:
+            candidate = emulator_port + 1
+            while (candidate in used
+                   or (candidate + 1) in used
+                   or candidate % 2 != 0):
+                candidate += 1
+            emulator_port = candidate
+            changed = True
+
+        if grpc_port in used:
+            grpc_port = self.allocate_port(grpc_port + 1)
+            changed = True
+
+        if changed:
+            logger.warning(
+                f"[PortAllocator] Ports re-allocated: "
+                f"server={server_port}, emulator={emulator_port}, grpc={grpc_port}"
+            )
+
+        return server_port, emulator_port, grpc_port
+
     def preallocate_ports(self, pool_size: int, base_env_id: int = 0) -> List[Tuple[int, int, int]]:
         lock = FileLock(str(self.lock_file))
         port_tuples = []
@@ -280,11 +318,13 @@ class PortAllocator:
 
 class ContainerFactory:
     """Creates and initializes Docker containers for AndroidWorld environments."""
-    
-    def __init__(self, docker_image: str, temp_path: str, docker_client: Optional[Any] = None):
+
+    def __init__(self, docker_image: str, temp_path: str, docker_client: Optional[Any] = None,
+                 port_allocator: Optional[PortAllocator] = None):
         self.docker_image = docker_image
         self.temp_path = temp_path
         self._docker_client = docker_client
+        self.port_allocator = port_allocator
         os.makedirs(temp_path, exist_ok=True)
     
     @property
@@ -296,8 +336,10 @@ class ContainerFactory:
     async def create(
         self, env_id: int, ports: Tuple[int, int, int], config: ContainerConfig, use_host_network: bool = False
     ) -> ContainerInstance:
+        if self.port_allocator:
+            ports = self.port_allocator.verify_ports(ports)
         server_port, emulator_port, grpc_port = ports
-        
+
         environment = {
             "ENV_SAMPLE_MODE": config.sample_mode, "ENV_SAVE_IMAGES": "False",
             "ENV_ID": str(env_id), "ENV_SNAPSHOT": config.snapshot,
@@ -760,6 +802,7 @@ class ContainerManager:
             docker_image=docker_image,
             temp_path=temp_path,
             docker_client=self.client,
+            port_allocator=self._port_allocator,
         )
         
         # Container pools
