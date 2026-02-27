@@ -234,6 +234,9 @@ class BrokerContainerManager:
             "pool_size": len(self.containers),
             "buffer_size": 0,
             "healthy": len(self.containers),
+            "unhealthy": 0,
+            "idle": 0,
+            "in_use": len(self.containers),
             "failed_trajectories": len(self.failed_trajectories),
         }
 

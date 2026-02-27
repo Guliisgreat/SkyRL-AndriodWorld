@@ -95,9 +95,11 @@ class ContainerPoolBroker:
         health_check_interval: float = 30.0,
         gc_interval: float = 60.0,
         base_env_id: int = 0,
+        parallel: int = 4,
     ):
         self.pool_size = pool_size
         self.base_env_id = base_env_id
+        self.parallel = parallel
         self.use_host_network = use_host_network
         self.health_check_interval = health_check_interval
         self.gc_interval = gc_interval
@@ -134,10 +136,11 @@ class ContainerPoolBroker:
         logger.info(f"Creating {self.pool_size} containers...")
 
         port_tuples = self.port_allocator.preallocate_ports(
-            pool_size=self.pool_size, base_env_id=self.base_env_id
+            pool_size=self.pool_size, base_env_id=self.base_env_id,
+            use_host_network=self.use_host_network,
         )
 
-        sem = asyncio.Semaphore(4)
+        sem = asyncio.Semaphore(self.parallel)
 
         async def create_one(env_id: int, ports):
             async with sem:
@@ -356,7 +359,8 @@ class ContainerPoolBroker:
                 self._next_env_id += 1
 
             ports = self.port_allocator.preallocate_ports(
-                pool_size=1, base_env_id=new_env_id
+                pool_size=1, base_env_id=new_env_id,
+                use_host_network=self.use_host_network,
             )[0]
             new_container = await self.factory.create(
                 env_id=new_env_id,
@@ -508,6 +512,7 @@ def main():
     parser.add_argument("--health-interval", type=float, default=30.0)
     parser.add_argument("--gc-interval", type=float, default=60.0)
     parser.add_argument("--skip-screenshot", action="store_true")
+    parser.add_argument("--parallel", type=int, default=4, help="Max concurrent container creations")
     args = parser.parse_args()
 
     global broker
@@ -521,6 +526,7 @@ def main():
         gc_interval=args.gc_interval,
         skip_screenshot=args.skip_screenshot,
         base_env_id=args.base_env_id,
+        parallel=args.parallel,
     )
     uvicorn.run(app, host=args.host, port=args.port)
 
