@@ -72,7 +72,7 @@ docker run --rm -it --name env1_debug \
   -e ENV_TASK_FAMILY=android_world \
   --network=host \
   --device /dev/kvm \
-  androidworld:v9
+  androidworld:full_adb_agent
 ```
 
 Watch for emulator startup, ADB, or Python/server errors. In another terminal, after the server is up: `curl -s http://localhost:5002/health`.
@@ -93,5 +93,5 @@ for i in $(seq 0 15); do docker rm -f env$i 2>/dev/null; done
 
 ## Requirements for host network
 
-- Docker image must support per-container ADB port (e.g. **androidworld:v9**): entrypoint uses `adb -P ${ADB_SERVER_PORT:-5037} devices`, and `server/env.py` uses `ADB_SERVER_PORT` / `-P` in all adb calls.
-- Task YAML: `env.use_host_network: true` and `env.docker_image: androidworld:v9` (or a similarly updated image).
+- Docker image must support per-container ADB port (e.g. **androidworld:full_adb_agent**): entrypoint uses `adb -P ${ADB_SERVER_PORT:-5037} devices`, and `server/env.py` uses `ADB_SERVER_PORT` / `-P` in all adb calls.
+- Task YAML: `env.use_host_network: true` and `env.docker_image: androidworld:full_adb_agent` (or a similarly updated image).

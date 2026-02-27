@@ -99,7 +99,7 @@ volumes = {
 
 ## Related Files
 
-- Docker image: `androidworld:v8`
+- Docker image: `androidworld:full_adb_agent`
 - Container manager: `skyrl_agent/runtime/android/container_manager.py`
 - Test data: `data/androidworld_generalization/unseen_task_instance/`
 - Debug data: `data/debug/debug_failing_tasks.jsonl`

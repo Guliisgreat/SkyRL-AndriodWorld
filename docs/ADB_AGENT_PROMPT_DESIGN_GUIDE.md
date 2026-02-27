@@ -1,6 +1,6 @@
 # ADB Agent Prompt Design Guide
 
-A practical guide to understanding, modifying, and extending the prompt for the ADB command agent (`android_adb_agent.py`).
+A practical guide to understanding, modifying, and extending the prompt for the ADB command agent (`android_api_screen_adb_agent.py`).
 
 ---
 
@@ -37,13 +37,13 @@ The ADB agent has a simple loop:
                     └───────────────────┘
 ```
 
-**Key insight:** There are zero translation layers between the model's output and the device. The model generates an exact ADB command string, and that string is executed directly. This is the core advantage over the GUI agent, which has [4 rule-based translation layers](../docs/CLI%20agent/UITARS_TO_ADB_MAPPING.md) between model output and ADB execution.
+**Key insight:** There are zero translation layers between the model's output and the device. The model generates an exact ADB command string, and that string is executed directly. This is the core advantage over the GUI agent, which has 4 rule-based translation layers between model output and ADB execution.
 
 ---
 
 ## 2. Prompt Structure
 
-The full prompt lives in `skyrl_agent/agents/android/android_adb_agent.py` as `ADB_AGENT_PROMPT`. It has 7 sections:
+The full prompt lives in `skyrl_agent/agents/android/android_api_screen_adb_agent.py` as `ADB_AGENT_PROMPT`. It has 7 sections:
 
 ### 2.1 Role Statement (1 sentence)
 
@@ -221,7 +221,7 @@ BLOCKED_PATTERNS = [
 
 ### Adding a New Command
 
-1. **Add to `ALLOWED_PREFIXES`** in `android_adb_agent.py`:
+1. **Add to `ALLOWED_PREFIXES`** in `android_api_screen_adb_agent.py`:
    ```python
    "adb shell screencap",  # new: screen capture to file
    ```
@@ -255,9 +255,9 @@ The most effective levers are the **behavioral guidelines** in "Important Notes"
 ### Changing the Output Format
 
 If you change the format (e.g., adding a `Plan:` field), you must also update:
-- `_parse_adb_command()` in `android_adb_agent.py` — the parser
+- `_parse_adb_command()` in `android_api_screen_adb_agent.py` — the parser
 - `_append_assistant()` — how the response is stored
-- `AndroidADBAgent.step()` — the VERL agent step method
+- `AndroidAPIScreenADBAgent.step()` — the VERL agent step method
 
 ---
 
@@ -279,7 +279,7 @@ The ADB prompt is larger because it documents exact command syntax, but this inv
 
 ## 7. Evaluation Results
 
-From the [GUI vs ADB evaluation](../skyrl-agent/docs/EXPERIMENT_GUI_VS_ADB_EVAL.md) on 10 tasks:
+From the GUI vs ADB evaluation on 10 tasks:
 
 | Metric | GUI Agent | ADB Agent |
 |--------|-----------|-----------|
@@ -300,7 +300,7 @@ On 5 easy open-app tasks, ADB agent achieves **5/5 (100%)** vs GUI agent's **3/5
 
 | File | Role |
 |------|------|
-| `skyrl_agent/agents/android/android_adb_agent.py` | Prompt, parser, message building, sliding window, safety validation, and VERL agent class (self-contained) |
+| `skyrl_agent/agents/android/android_api_screen_adb_agent.py` | Prompt, parser, message building, sliding window, safety validation, and VERL agent class (self-contained) |
 | `docker/android/server/server_adb.py` | Docker container endpoint for `/step_adb` |
 | `tests/unit/agent/androidworld/test_adb_agent.py` | Unit tests for parser and validation |
 

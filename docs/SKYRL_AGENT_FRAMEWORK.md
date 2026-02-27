@@ -1216,7 +1216,7 @@ dispatcher:
 
 env:
   pool_size: 4              # Number of Docker containers to create
-  docker_image: androidworld:v8
+  docker_image: androidworld:full_adb_agent
   snapshot: clean           # Reset strategy for env reuse
 
 generator:
@@ -1534,7 +1534,7 @@ data:
 
 env:
   pool_size: 2
-  docker_image: androidworld:v8
+  docker_image: androidworld:full_adb_agent
 
 generator:
   infer_backend: verl

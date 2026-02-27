@@ -304,7 +304,7 @@ def _start_emulator(self):
 
 ```yaml
 docker:
-  image: androidworld:v8
+  image: androidworld:full_adb_agent
 
 emulator:
   avd_name: AWAvd
@@ -406,7 +406,7 @@ from skyrl_agent.runtime.android import ContainerManager, RuntimeClient
 
 async def main():
     # 1. Create container manager
-    manager = ContainerManager(docker_image="androidworld:v8")
+    manager = ContainerManager(docker_image="androidworld:full_adb_agent")
     
     # 2. Create pool of containers
     await manager.create_pool(
