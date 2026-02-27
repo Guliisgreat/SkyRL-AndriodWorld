@@ -107,6 +107,7 @@ class AndroidAgentRunner(AgentRunner):
                     # Must match actor_rollout_ref.rollout.max_model_len in shell script
                     max_model_len=self.cfg.generator.get("max_model_len", 32768),
                     context_buffer=self.cfg.generator.get("context_buffer", 4096),
+                    prompt_version=self.cfg.generator.get("prompt_version", ""),
                 )
                 
                 # Add Android-specific config
