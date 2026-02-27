@@ -62,10 +62,11 @@ def mock_port_allocator(tmp_path):
     allocator.lock_file = tmp_path / "test.lck"
     allocator.get_used_ports.return_value = set()
     allocator.allocate_port.side_effect = lambda start: start
-    allocator.preallocate_ports.side_effect = lambda pool_size, base_env_id: [
+    allocator.preallocate_ports.side_effect = lambda pool_size, base_env_id, **kwargs: [
         (5000 + 2 * (base_env_id + i), 5574 + 2 * (base_env_id + i), 8574 + 2 * (base_env_id + i))
         for i in range(pool_size)
     ]
+    allocator._reserved_ports = set()
     return allocator
 
 
