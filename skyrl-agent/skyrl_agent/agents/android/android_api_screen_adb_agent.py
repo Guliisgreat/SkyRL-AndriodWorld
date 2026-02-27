@@ -255,11 +255,59 @@ def _apply_sliding_window(
 # Parsing
 # ---------------------------------------------------------------------------
 
+_SHELL_COMMANDS = (
+    "input", "am", "pm", "monkey", "dumpsys", "settings", "content",
+    "getprop", "ls", "cat", "uiautomator", "wm", "date", "whoami",
+    "mkdir", "rm", "mv", "cp", "find", "echo", "printf", "touch",
+    "sleep", "svc", "sh", "cmd", "sed",
+)
+
+
+def _normalize_adb_command(command: str) -> str:
+    """Fix common model formatting mistakes before sending to server.
+
+    Handles:
+      - Stray outer quotes: adb shell "input tap 100 200" -> adb shell input tap 100 200
+      - Missing 'adb shell' prefix: input tap 100 200 -> adb shell input tap 100 200
+      - Shell-only command: sleep 3 -> adb shell sleep 3
+      - Backtick wrapping (already stripped by caller, but double-check)
+    """
+    cmd = command.strip().strip("`").strip()
+    if not cmd:
+        return cmd
+
+    # Strip outer quotes around the argument part of 'adb shell "..."' or "adb shell '...'"
+    m = re.match(r'^adb\s+shell\s+(["\'])(.+)\1$', cmd, re.DOTALL)
+    if m:
+        cmd = f"adb shell {m.group(2).strip()}"
+
+    # If it already starts with 'adb shell', return as-is
+    if cmd.startswith("adb shell ") or cmd == "adb shell":
+        return cmd
+
+    # If it starts with 'adb' but not 'adb shell', leave it (could be 'adb push', etc.)
+    if cmd.startswith("adb "):
+        return cmd
+
+    # Auto-prepend 'adb shell' if the first word is a known shell command
+    first_word = cmd.split()[0] if cmd.split() else ""
+    if first_word in _SHELL_COMMANDS:
+        return f"adb shell {cmd}"
+
+    return cmd
+
+
 def _parse_adb_command(text: str) -> Tuple[str, str]:
     """
     Extract (command, thought) from model output.
 
-    Expected: Thought: <reasoning>\\nCommand: <adb shell ... | FINISH | INFEASIBLE>
+    Expected format: exactly one pair per response:
+      Thought: <reasoning>
+      Command: <adb shell ... | FINISH | INFEASIBLE | answer(...)>
+
+    Only the first Thought and first Command are used. If the model outputs
+    multiple Thought/Command pairs, we take the first so we execute one
+    action per step and get feedback before continuing.
     Raises ValueError if no Command: field or command is empty.
     """
     thought = ""
@@ -275,11 +323,16 @@ def _parse_adb_command(text: str) -> Tuple[str, str]:
     if "Command:" not in text:
         raise ValueError(f"No 'Command:' found in model output: {text[:200]}")
 
-    command_section = text.split("Command:")[-1].strip()
+    # Use the first Command only (one action per step)
+    command_section = text.split("Command:", 1)[1].strip()
     command = command_section.split("\n")[0].strip()
     command = command.strip("`").strip()
     if not command:
         raise ValueError("Empty command after 'Command:'")
+
+    if not (command.startswith("FINISH") or command.startswith("INFEASIBLE") or command.startswith("answer")):
+        command = _normalize_adb_command(command)
+
     return command, thought
 
 

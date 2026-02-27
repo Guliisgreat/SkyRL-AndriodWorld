@@ -410,7 +410,7 @@ Static class providing task interface methods for AndroidWorld.
 │                                                                             │
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
 │   │  pool_size: 8              # Number of parallel containers          │   │
-│   │  docker_image: "androidworld:v8"                                    │   │
+│   │  docker_image: "androidworld:full_adb_agent"                                    │   │
 │   │  snapshot: "clean"         # Emulator snapshot to load              │   │
 │   │  sample_mode: "sequential" # Task sampling strategy                 │   │
 │   │  train_task_family: "android_world"                                 │   │
@@ -1199,7 +1199,7 @@ data:
 # Environment Configuration
 env:
   pool_size: 8               # Number of Docker containers
-  docker_image: androidworld:v8
+  docker_image: androidworld:full_adb_agent
   snapshot: clean            # Emulator snapshot name
   sample_mode: sequential    # Task sampling: "random" or "sequential"
   train_task_family: android_world

@@ -41,6 +41,7 @@ class TrajectoryConfig:
     max_history_steps: int = 10
     # Training memory strategy: "early" (stop on budget), "recent" (sliding window), "full" (error on budget)
     training_strategy: str = "early"
+    prompt_version: str = ""
     
     @property
     def context_limit_threshold(self) -> int:
