@@ -134,6 +134,19 @@ def _load_tokenizer(model_name: str, tokenizer_override: str = None):
     return AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
 
+def _default_experiment_name(cfg) -> str:
+    """Default experiment name: {AgentClass}_{TaskClass}_{mmdd}_{HHMM}.
+
+    Matches TrajectorySaver convention so results and trajectories use the same folder
+    (e.g. AndroidT3AAgent_AndroidTask_0226_0231).
+    """
+    agent_cls = cfg.get("agent_cls", "")
+    task_cls = cfg.get("task", "")
+    agent_short = agent_cls.rsplit(".", 1)[-1] if agent_cls else "AndroidAgent"
+    task_short = task_cls.rsplit(".", 1)[-1] if task_cls else "AndroidTask"
+    return f"{agent_short}_{task_short}_{time.strftime('%m%d_%H%M')}"
+
+
 def _setup_wandb(cfg, model_name: str):
     """Initialize wandb if configured in trainer.logger. Returns the wandb module or None."""
     loggers = cfg.get("trainer", {}).get("logger", ["console"])
@@ -226,7 +239,9 @@ def main():
     parser.add_argument("--model", default=None, help="Override API model name")
     parser.add_argument("--api-url", default=None, help="Override API URL")
     parser.add_argument("--api-type", default=None, choices=["chat", "completions"], help="Override API type")
-    parser.add_argument("--output-dir", default="./results", help="Output directory")
+    parser.add_argument("--experiment-name", default=None, help="Experiment name (default: AgentClass_TaskClass_mmdd_HHMM from config)")
+    parser.add_argument("--output-dir", default=None, help="Output directory (default: results/<experiment-name>)")
+    parser.add_argument("--pool-size", type=int, default=None, help="Override env pool size (default: from YAML or ENV_POOL_SIZE)")
     parser.add_argument("--max-instances", type=int, default=None, help="Limit number of instances (for debugging)")
     args = parser.parse_args()
 
@@ -243,6 +258,22 @@ def main():
     cfg = OmegaConf.load(args.yaml)
     OmegaConf.set_struct(cfg, False)
 
+    experiment_name = args.experiment_name or _default_experiment_name(cfg)
+    output_dir = args.output_dir or os.path.join("./results", experiment_name)
+    output_dir = os.path.abspath(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
+    pool_size = args.pool_size
+    if pool_size is None and os.environ.get("ENV_POOL_SIZE"):
+        try:
+            pool_size = int(os.environ["ENV_POOL_SIZE"])
+        except ValueError:
+            pass
+    if pool_size is not None:
+        if "env" not in cfg:
+            cfg.env = {}
+        cfg.env.pool_size = pool_size
+
     if args.model:
         cfg.generator.backend_config.model_name = args.model
     if args.api_url:
@@ -254,7 +285,11 @@ def main():
     model_name = args.model or cfg.generator.backend_config.model_name
     tokenizer = _load_tokenizer(model_name, args.tokenizer)
 
-    # --- Setup wandb ---
+    # --- Setup wandb (use same experiment name as results folder) ---
+    if "trainer" not in cfg:
+        cfg.trainer = {}
+    if not cfg.trainer.get("experiment_name"):
+        cfg.trainer.experiment_name = experiment_name
     wb = _setup_wandb(cfg, model_name)
 
     # --- Register backend + build runner ---
@@ -272,6 +307,27 @@ def main():
     if args.api_type:
         runner.cfg.generator.backend_config.api_type = args.api_type
 
+    if pool_size is not None:
+        runner.cfg.env.pool_size = pool_size
+        runner.cfg.dispatcher.max_parallel_agents = pool_size
+        runner.cfg.dispatcher.max_eval_parallel_agents = pool_size
+        if hasattr(runner.cfg.dispatcher, "val_config") and runner.cfg.dispatcher.val_config:
+            runner.cfg.dispatcher.val_config.max_parallel_agents = pool_size
+            runner.cfg.dispatcher.val_config.max_eval_parallel_agents = pool_size
+
+    # Use same folder convention as results/ (AgentClass_TaskClass_mmdd_HHMM) for trajectory saves
+    runner.cfg.generator.trajectory_exp_name = experiment_name
+    runner.cfg.generator.trajectory_save_dir = os.path.dirname(output_dir) or os.path.abspath(".")
+    if getattr(runner.cfg.generator, "save_trajectories", False) and getattr(runner, "_trajectory_saver", None) is not None:
+        from skyrl_agent.agents.android.trajectory_saver import TrajectorySaver
+        runner._trajectory_saver = TrajectorySaver(
+            save_dir=runner.cfg.generator.trajectory_save_dir,
+            exp_name=experiment_name,
+            save_screenshots=getattr(runner.cfg.generator, "save_screenshots", True),
+            agent_cls=getattr(runner.cfg, "agent_cls", ""),
+            task_name=getattr(runner.cfg, "task", ""),
+        )
+
     # Also update the already-constructed backend
     if args.model:
         runner.infer_engine.model_name = args.model
@@ -288,7 +344,9 @@ def main():
     print(f"  API URL:     {runner.infer_engine.api_url}")
     print(f"  API type:    {runner.infer_engine.api_type}")
     print(f"  Instances:   {len(data)}")
-    print(f"  Output:      {args.output_dir}")
+    print(f"  Pool size:   {runner.cfg.env.pool_size}")
+    print(f"  Output:      {output_dir}")
+    print(f"  (Results:    final_metrics.json, rewards.json, <instance_id>/trajectory.json)")
     print(f"{'='*60}\n")
 
     start = time.time()
@@ -324,8 +382,7 @@ def main():
     print(f"{'='*60}")
 
     # --- Save ---
-    os.makedirs(args.output_dir, exist_ok=True)
-    metrics_file = os.path.join(args.output_dir, "final_metrics.json")
+    metrics_file = os.path.join(output_dir, "final_metrics.json")
     with open(metrics_file, "w") as f:
         json.dump(metrics, f, indent=2)
     print(f"\nMetrics saved to: {metrics_file}")
@@ -334,7 +391,7 @@ def main():
     step_counts = output.get("step_counts", [])
     input_token_counts = output.get("input_token_counts", [])
     output_token_counts = output.get("output_token_counts", [])
-    rewards_file = os.path.join(args.output_dir, "rewards.json")
+    rewards_file = os.path.join(output_dir, "rewards.json")
     with open(rewards_file, "w") as f:
         instance_rewards = []
         for i, item in enumerate(data):
@@ -351,7 +408,7 @@ def main():
     print(f"Per-instance rewards saved to: {rewards_file}")
 
     # --- Log to wandb ---
-    _log_wandb(wb, metrics, instance_rewards, args.output_dir)
+    _log_wandb(wb, metrics, instance_rewards, output_dir)
 
     return 0 if mean_reward >= 0 else 1
 

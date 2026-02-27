@@ -196,25 +196,36 @@ class OpenAIBackend(AsyncInferBackend):
         if self.api_type == "chat":
             if messages is not None:
                 # Direct path: send messages to chat API (no tokenizer needed)
-                response_text, finish_reason = await self._chat_generate_from_messages(
+                response_text, finish_reason, data = await self._chat_generate_from_messages(
                     messages, sampling_params,
                 )
+                # Use API usage so image + text tokens are counted (e.g. for Combo agent)
+                api_usage = (data or {}).get("usage") or {}
             else:
                 # Fallback: decode input_ids (requires tokenizer)
                 response_text, finish_reason = await self._chat_generate_from_ids(
                     input_ids, sampling_params, image_data,
                 )
+                api_usage = {}
         else:
             response_text, finish_reason = await self._completions_generate(
                 input_ids, sampling_params,
             )
+            api_usage = {}
 
         if return_token_ids:
+            # Prefer API-reported prompt_tokens (includes image tokens for vision models)
+            prompt_tokens = api_usage.get("prompt_tokens")
+            if prompt_tokens is not None:
+                prompt_token_ids = [0] * int(prompt_tokens)
+            else:
+                prompt_token_ids = list(input_ids)
             if self.tokenizer is None:
-                # No tokenizer: return empty lists (inference-only, no training)
-                return response_text, finish_reason, list(input_ids), []
+                completion_tokens = api_usage.get("completion_tokens")
+                response_ids = [0] * int(completion_tokens) if completion_tokens is not None else []
+                return response_text, finish_reason, prompt_token_ids, response_ids
             response_ids = self.tokenizer.encode(response_text, add_special_tokens=False)
-            return response_text, finish_reason, list(input_ids), list(response_ids)
+            return response_text, finish_reason, prompt_token_ids, list(response_ids)
 
         return response_text, finish_reason
 
@@ -252,8 +263,12 @@ class OpenAIBackend(AsyncInferBackend):
         self,
         messages: List[Dict],
         sampling_params: Dict[str, Any],
-    ) -> Tuple[str, str]:
-        """Convert agent messages to OpenAI format and call chat completions."""
+    ) -> Tuple[str, str, Dict[str, Any]]:
+        """Convert agent messages to OpenAI format and call chat completions.
+
+        Returns:
+            (response_text, finish_reason, data) so callers can read usage (e.g. prompt_tokens).
+        """
         openai_messages = _convert_messages_for_openai(messages)
 
         payload = self._base_sampling_payload(sampling_params)
@@ -265,7 +280,7 @@ class OpenAIBackend(AsyncInferBackend):
             choice = data["choices"][0]
             response_text = choice["message"]["content"]
             finish_reason = choice.get("finish_reason", "stop") or "stop"
-            return response_text, finish_reason
+            return response_text, finish_reason, data
         except (KeyError, IndexError, TypeError) as e:
             logger.error(f"Unexpected chat response: {data} — {e}")
             raise RuntimeError(f"OpenAI chat completion failed: {data}") from e
