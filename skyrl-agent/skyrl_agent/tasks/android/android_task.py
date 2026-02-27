@@ -12,6 +12,7 @@ from typing import List, Dict, Any, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from skyrl_agent.runtime.android import ContainerManager
 from PIL import Image
+from loguru import logger
 
 from skyrl_agent.tasks.base import BaseTask
 
@@ -37,8 +38,14 @@ class AndroidTask(BaseTask):
         Called once by AndroidAgentRunner on first run().
         Creates Docker containers via ContainerManager and wraps them in RuntimeClients.
 
+        When broker_url is set in env_config, uses a remote container pool broker
+        instead of creating containers locally. The BrokerContainerManager adapter
+        implements the same interface as ContainerManager, so the dispatcher and
+        runner work unchanged.
+
         Args:
             env_config: Environment configuration dict containing:
+                - broker_url: URL of container pool broker (optional, activates Mode B)
                 - pool_size: Number of environments to create (default: 8)
                 - docker_image: Docker image for Android emulator (default: "androidworld:v8")
                 - snapshot: Snapshot name (default: "clean")
@@ -52,6 +59,24 @@ class AndroidTask(BaseTask):
         Returns:
             List of RuntimeClient instances for async_fix_pool dispatcher
         """
+        # ── Mode B: Broker ────────────────────────────────────────────────
+        broker_url = env_config.get("broker_url")
+        if broker_url:
+            from skyrl_agent.runtime.android.pool_client import (
+                PoolClient,
+                BrokerContainerManager,
+            )
+
+            pool_client = PoolClient(broker_url)
+            if not await pool_client.check_broker_health():
+                raise RuntimeError(f"Broker not reachable at {broker_url}")
+            broker_manager = BrokerContainerManager(pool_client)
+            await broker_manager.initialize()
+            cls._container_manager = broker_manager
+            logger.info(f"Connected to container pool broker at {broker_url}")
+            return []  # No pre-created RuntimeClients; containers acquired per-task
+
+        # ── Mode A: Local (existing code, completely unchanged) ───────────
         from skyrl_agent.runtime.android import ContainerManager, RuntimeClient
 
         pool_size = env_config.get("pool_size", 8)
