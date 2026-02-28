@@ -108,6 +108,7 @@ class ContainerPoolBroker:
         self.health_check_interval = health_check_interval
         self.gc_interval = gc_interval
         self.reconcile_interval = reconcile_interval
+        self.max_lease_duration = 600.0  # seconds; reclaim leaked leases
         self.adopt = adopt
 
         self.config = ContainerConfig(
@@ -343,7 +344,13 @@ class ContainerPoolBroker:
             }
 
     async def return_container(self, env_id: int, healthy: bool = True):
-        """Return a container to the pool."""
+        """Return a container to the pool.
+
+        When caller reports healthy=True, trust it and skip the blocking health
+        check — the periodic _health_loop will catch problems later.  This keeps
+        return latency low and avoids client-side timeouts that cause container
+        leaks.
+        """
         async with self._registry_lock:
             entry = self.registry.get(env_id)
             if entry is None:
@@ -362,21 +369,8 @@ class ContainerPoolBroker:
                 asyncio.create_task(self._replace_container(env_id))
                 return
 
-        # Health check outside lock for healthy returns
-        is_healthy = await asyncio.to_thread(
-            self._check_health_sync, entry.container
-        )
-
-        async with self._registry_lock:
-            if env_id not in self.registry:
-                return
-            if not is_healthy:
-                logger.warning(
-                    f"env{env_id} unhealthy on return (health check failed), replacing"
-                )
-                entry.state = BrokerContainerState.REPLACING
-                asyncio.create_task(self._replace_container(env_id))
-                return
+            # Trust caller's healthy=True — return immediately without blocking
+            # health check.  The _health_loop will verify idle containers later.
             entry.state = BrokerContainerState.IDLE
 
         await self.available_queue.put(env_id)
@@ -503,31 +497,57 @@ class ContainerPoolBroker:
                     asyncio.create_task(self._replace_container(env_id))
 
     async def _gc_loop(self):
-        """Reclaim containers from dead processes (PID reuse safe)."""
+        """Reclaim containers from dead processes or expired leases.
+
+        Two reclamation strategies:
+        1. Dead PID: The leasing process no longer exists (PID reuse safe).
+        2. Lease timeout: The container has been leased longer than
+           max_lease_duration.  This catches the case where a worker finished
+           its task but the return HTTP POST failed (container leaked).
+        """
         while True:
             await asyncio.sleep(self.gc_interval)
+            now = time.time()
             async with self._registry_lock:
                 leased = [
                     (eid, e)
                     for eid, e in self.registry.items()
-                    if e.state == BrokerContainerState.LEASED and e.pid
+                    if e.state == BrokerContainerState.LEASED
                 ]
             for env_id, entry in leased:
                 should_reclaim = False
-                try:
-                    proc = psutil.Process(entry.pid)
-                    if (
-                        entry.pid_create_time is not None
-                        and proc.create_time() != entry.pid_create_time
-                    ):
-                        # PID was reused by a different process
+                reason = ""
+
+                # Strategy 1: dead PID
+                if entry.pid:
+                    try:
+                        proc = psutil.Process(entry.pid)
+                        if (
+                            entry.pid_create_time is not None
+                            and proc.create_time() != entry.pid_create_time
+                        ):
+                            should_reclaim = True
+                            reason = f"pid {entry.pid} reused"
+                    except psutil.NoSuchProcess:
                         should_reclaim = True
-                except psutil.NoSuchProcess:
+                        reason = f"pid {entry.pid} gone"
+
+                # Strategy 2: lease timeout (catches failed returns)
+                if (
+                    not should_reclaim
+                    and entry.leased_at
+                    and (now - entry.leased_at) > self.max_lease_duration
+                ):
                     should_reclaim = True
+                    elapsed = now - entry.leased_at
+                    reason = (
+                        f"lease expired ({elapsed:.0f}s > "
+                        f"{self.max_lease_duration:.0f}s)"
+                    )
 
                 if should_reclaim:
                     logger.warning(
-                        f"GC: pid {entry.pid} gone, reclaiming env{env_id}"
+                        f"GC: reclaiming env{env_id} — {reason}"
                     )
                     async with self._registry_lock:
                         entry.state = BrokerContainerState.IDLE

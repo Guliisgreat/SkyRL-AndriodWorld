@@ -49,6 +49,9 @@ class PoolClient:
 
     ACQUIRE_RETRIES = 3
     ACQUIRE_RETRY_BASE_DELAY = 1.0
+    RELEASE_RETRIES = 3
+    RELEASE_RETRY_BASE_DELAY = 1.0
+    RELEASE_TIMEOUT = 30.0  # seconds; must exceed broker's health-check time
 
     def __init__(self, broker_url: str):
         self.broker_url = broker_url.rstrip("/")
@@ -111,18 +114,34 @@ class PoolClient:
         )
 
     async def release(self, env_id: int, healthy: bool = True):
-        """Return a container to the broker."""
+        """Return a container to the broker. Retries on transient errors."""
         await self._ensure_session()
-        try:
-            async with self._session.post(
-                f"{self.broker_url}/return",
-                json={"env_id": env_id, "healthy": healthy},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                resp.raise_for_status()
-        except Exception as e:
-            logger.warning(f"Failed to return env{env_id} to broker: {e}")
-        logger.debug(f"Returned env{env_id} to broker (healthy={healthy})")
+
+        for attempt in range(self.RELEASE_RETRIES):
+            try:
+                async with self._session.post(
+                    f"{self.broker_url}/return",
+                    json={"env_id": env_id, "healthy": healthy},
+                    timeout=aiohttp.ClientTimeout(total=self.RELEASE_TIMEOUT),
+                ) as resp:
+                    resp.raise_for_status()
+                logger.debug(f"Returned env{env_id} to broker (healthy={healthy})")
+                return
+            except Exception as e:
+                if attempt < self.RELEASE_RETRIES - 1:
+                    delay = self.RELEASE_RETRY_BASE_DELAY * (attempt + 1)
+                    logger.warning(
+                        f"Failed to return env{env_id} to broker (attempt "
+                        f"{attempt + 1}/{self.RELEASE_RETRIES}): {e}. "
+                        f"Retrying in {delay}s..."
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        f"Failed to return env{env_id} to broker after "
+                        f"{self.RELEASE_RETRIES} attempts: {e}. "
+                        f"Container may be leaked — broker GC will reclaim it."
+                    )
 
     async def get_status(self) -> Dict[str, Any]:
         """Get broker pool status."""
