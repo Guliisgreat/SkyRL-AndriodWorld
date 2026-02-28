@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from contextlib import asynccontextmanager
 
+import docker as docker_lib
+
 import psutil
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -96,6 +98,7 @@ class ContainerPoolBroker:
         gc_interval: float = 60.0,
         base_env_id: int = 0,
         parallel: int = 4,
+        adopt: bool = False,
     ):
         self.pool_size = pool_size
         self.base_env_id = base_env_id
@@ -103,6 +106,7 @@ class ContainerPoolBroker:
         self.use_host_network = use_host_network
         self.health_check_interval = health_check_interval
         self.gc_interval = gc_interval
+        self.adopt = adopt
 
         self.config = ContainerConfig(
             sample_mode=sample_mode,
@@ -132,7 +136,14 @@ class ContainerPoolBroker:
     # ── Pool Initialization ──────────────────────────────────────────────
 
     async def initialize_pool(self):
-        """Create all containers at startup (parallel, bounded concurrency)."""
+        """Create or adopt containers at startup."""
+        if self.adopt:
+            await self.adopt_existing_pool()
+        else:
+            await self._create_pool()
+
+    async def _create_pool(self):
+        """Create all containers from scratch (parallel, bounded concurrency)."""
         logger.info(f"Creating {self.pool_size} containers...")
 
         port_tuples = self.port_allocator.preallocate_ports(
@@ -165,6 +176,91 @@ class ContainerPoolBroker:
         logger.info(
             f"Pool ready: {len(self.registry)}/{self.pool_size} containers, "
             f"{self.available_queue.qsize()} available"
+        )
+
+    async def adopt_existing_pool(self):
+        """Adopt already-running Docker containers into the broker pool.
+
+        Discovers containers named env{base_env_id}..env{base_env_id+pool_size-1},
+        reads their port configuration from environment variables, health-checks them,
+        and registers healthy ones in the broker registry.
+        """
+        import requests
+
+        client = docker_lib.from_env()
+        adopted = 0
+        failed = 0
+
+        logger.info(
+            f"Adopting {self.pool_size} existing containers "
+            f"(env{self.base_env_id}..env{self.base_env_id + self.pool_size - 1})..."
+        )
+
+        for i in range(self.pool_size):
+            env_id = self.base_env_id + i
+            container_name = f"env{env_id}"
+
+            try:
+                container = client.containers.get(container_name)
+            except docker_lib.errors.NotFound:
+                logger.warning(f"Container {container_name} not found, skipping")
+                failed += 1
+                continue
+
+            if container.status != "running":
+                logger.warning(f"Container {container_name} status={container.status}, skipping")
+                failed += 1
+                continue
+
+            # Read port config from container env vars
+            env_vars = {}
+            for var in container.attrs["Config"]["Env"]:
+                key, _, val = var.partition("=")
+                env_vars[key] = val
+
+            server_port = int(env_vars.get("SERVER_PORT", 0))
+            emulator_port = int(env_vars.get("EMULATOR_PORT", 0))
+            grpc_port = int(env_vars.get("GRPC_PORT", 0))
+
+            if not server_port:
+                logger.warning(f"{container_name}: missing SERVER_PORT env var, skipping")
+                failed += 1
+                continue
+
+            # Quick HTTP health check
+            try:
+                resp = requests.get(
+                    f"http://localhost:{server_port}/health", timeout=(3, 10)
+                )
+                healthy = resp.status_code == 200
+            except Exception:
+                healthy = False
+
+            if not healthy:
+                logger.warning(f"{container_name}: health check failed (port {server_port}), skipping")
+                failed += 1
+                continue
+
+            instance = ContainerInstance(
+                container_id=container.id,
+                container=container,
+                server_port=server_port,
+                emulator_port=emulator_port,
+                grpc_port=grpc_port,
+                env_id=env_id,
+                state="ready",
+                last_health_check=time.time(),
+                is_healthy=True,
+            )
+
+            self.registry[env_id] = PoolEntry(container=instance)
+            await self.available_queue.put(env_id)
+            adopted += 1
+
+        self._next_env_id = self.base_env_id + self.pool_size
+        logger.info(
+            f"Adopt complete: {adopted}/{self.pool_size} adopted, "
+            f"{failed} failed, {self.available_queue.qsize()} available"
         )
 
     async def start_background_tasks(self):
@@ -437,14 +533,17 @@ class ContainerPoolBroker:
                     await self.available_queue.put(env_id)
 
     async def shutdown(self):
-        """Stop background tasks and all containers."""
+        """Stop background tasks and optionally stop containers."""
         await self.stop_background_tasks()
-        logger.info(f"Stopping {len(self.registry)} containers...")
-        for entry in self.registry.values():
-            try:
-                entry.container.container.stop()
-            except Exception:
-                pass
+        if self.adopt:
+            logger.info(f"Broker shutdown (adopt mode: leaving {len(self.registry)} containers running)")
+        else:
+            logger.info(f"Stopping {len(self.registry)} containers...")
+            for entry in self.registry.values():
+                try:
+                    entry.container.container.stop()
+                except Exception:
+                    pass
         logger.info("Broker shutdown complete")
 
 
@@ -513,6 +612,8 @@ def main():
     parser.add_argument("--gc-interval", type=float, default=60.0)
     parser.add_argument("--skip-screenshot", action="store_true")
     parser.add_argument("--parallel", type=int, default=4, help="Max concurrent container creations")
+    parser.add_argument("--adopt", action="store_true",
+                        help="Adopt already-running containers instead of creating new ones")
     args = parser.parse_args()
 
     global broker
@@ -527,6 +628,7 @@ def main():
         skip_screenshot=args.skip_screenshot,
         base_env_id=args.base_env_id,
         parallel=args.parallel,
+        adopt=args.adopt,
     )
     uvicorn.run(app, host=args.host, port=args.port)
 

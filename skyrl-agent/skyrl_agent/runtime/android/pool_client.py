@@ -158,21 +158,29 @@ class BrokerContainerManager:
     This eliminates the need to modify the dispatcher or runner code.
     """
 
-    def __init__(self, pool_client: PoolClient):
+    def __init__(self, pool_client: PoolClient, pool_size: Optional[int] = None):
         self._client = pool_client
+        self._requested_pool_size = pool_size
         self.containers: List[RemoteContainerInfo] = []
         self.backup_containers: List = []
         self.failed_trajectories: List[Tuple[int, int, str]] = []
         self._recovery_callback: Optional[Callable] = None
 
     async def initialize(self):
-        """Fetch pool size from broker and pre-populate containers list."""
+        """Connect to broker and set local pool size.
+
+        Uses the per-experiment pool_size passed at construction (from yaml env.pool_size)
+        rather than the broker's total, so the dispatcher only spawns the correct number
+        of workers for this experiment.
+        """
         status = await self._client.get_status()
-        pool_size = status.get("total", 0)
-        # Create placeholder entries so len(self.containers) reflects pool size.
-        # These are replaced with real RemoteContainerInfo on allocate().
+        broker_total = status.get("total", 0)
+        pool_size = self._requested_pool_size or broker_total
         self.containers = [None] * pool_size
-        logger.info(f"BrokerContainerManager: connected, pool_size={pool_size}")
+        logger.info(
+            f"BrokerContainerManager: connected, broker_total={broker_total}, "
+            f"local_pool_size={pool_size}"
+        )
 
     async def allocate_container(
         self,

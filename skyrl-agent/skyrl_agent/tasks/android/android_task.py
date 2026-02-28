@@ -70,7 +70,8 @@ class AndroidTask(BaseTask):
             pool_client = PoolClient(broker_url)
             if not await pool_client.check_broker_health():
                 raise RuntimeError(f"Broker not reachable at {broker_url}")
-            broker_manager = BrokerContainerManager(pool_client)
+            pool_size = env_config.get("pool_size")
+            broker_manager = BrokerContainerManager(pool_client, pool_size=pool_size)
             await broker_manager.initialize()
             cls._container_manager = broker_manager
             logger.info(f"Connected to container pool broker at {broker_url}")
