@@ -196,6 +196,7 @@ class PortAllocator:
         self.lock_file = lock_file
         self.lock_file.parent.mkdir(parents=True, exist_ok=True)
         self._docker_client = docker_client
+        self._reserved_ports: Set[int] = set()
     
     @property
     def docker_client(self) -> Any:
@@ -237,40 +238,99 @@ class PortAllocator:
         
         return system_ports | docker_ports
     
-    def preallocate_ports(self, pool_size: int, base_env_id: int = 0) -> List[Tuple[int, int, int]]:
+    def verify_ports(
+        self, ports: Tuple[int, int, int], reserved: Optional[Set[int]] = None,
+    ) -> Tuple[int, int, int]:
+        """Re-check allocated ports just before container launch.
+
+        If any port in the tuple (server, emulator, grpc) is now occupied,
+        allocate a replacement while avoiding *reserved* (other pre-allocated
+        ports in the same batch).  Emulator port must remain even, and its
+        companion ADB port (emulator+1) must also be free.
+
+        Returns a (possibly updated) port tuple.
+        """
+        server_port, emulator_port, grpc_port = ports
+        used = self.get_used_ports()
+        avoid = used | (reserved or set())
+        changed = False
+
+        if server_port in used:
+            candidate = server_port + 1
+            while candidate in avoid:
+                candidate += 1
+            server_port = candidate
+            changed = True
+
+        if emulator_port in used or (emulator_port + 1) in used:
+            candidate = emulator_port + 1
+            while (candidate in avoid
+                   or (candidate + 1) in avoid
+                   or candidate % 2 != 0):
+                candidate += 1
+            emulator_port = candidate
+            changed = True
+
+        if grpc_port in used:
+            candidate = grpc_port + 1
+            while candidate in avoid:
+                candidate += 1
+            grpc_port = candidate
+            changed = True
+
+        if changed:
+            logger.warning(
+                f"[PortAllocator] Ports re-allocated: "
+                f"server={server_port}, emulator={emulator_port}, grpc={grpc_port}"
+            )
+
+        return server_port, emulator_port, grpc_port
+
+    def preallocate_ports(
+        self, pool_size: int, base_env_id: int = 0, use_host_network: bool = True,
+    ) -> List[Tuple[int, int, int]]:
         lock = FileLock(str(self.lock_file))
         port_tuples = []
         allocated_ports: Set[int] = set()
-        
+
         with lock:
             used_ports = self.get_used_ports()
-            
+
+            # Pre-reserve ADB server ports (5037 + env_id) that containers
+            # will bind on the host when using host network mode.
+            if use_host_network:
+                for i in range(pool_size):
+                    allocated_ports.add(5037 + base_env_id + i)
+
             for i in range(pool_size):
                 env_id = base_env_id + i
-                
+
                 server_port = 5000 + 2 * env_id
                 while server_port in used_ports or server_port in allocated_ports:
                     server_port += 1
                 allocated_ports.add(server_port)
-                
+
                 emulator_port = 5574 + 2 * env_id
                 while emulator_port in used_ports or emulator_port in allocated_ports or (emulator_port % 2 != 0) or (emulator_port + 1) in used_ports or (emulator_port + 1) in allocated_ports:
                     emulator_port += 1
                 # Reserve both the console port and the ADB port (console+1)
                 allocated_ports.add(emulator_port)
                 allocated_ports.add(emulator_port + 1)
-                
+
                 grpc_port = emulator_port + 3000
                 while grpc_port in used_ports or grpc_port in allocated_ports:
                     grpc_port += 1
                 allocated_ports.add(grpc_port)
-                
+
                 port_tuples.append((server_port, emulator_port, grpc_port))
                 logger.debug(
                     f"[PortAllocator] Pre-allocated ports for env{env_id}: "
                     f"server={server_port}, emulator={emulator_port}, grpc={grpc_port}"
                 )
-        
+
+        # Store full reserved set so verify_ports() can avoid collisions
+        self._reserved_ports = allocated_ports
+
         return port_tuples
 
 
@@ -280,11 +340,13 @@ class PortAllocator:
 
 class ContainerFactory:
     """Creates and initializes Docker containers for AndroidWorld environments."""
-    
-    def __init__(self, docker_image: str, temp_path: str, docker_client: Optional[Any] = None):
+
+    def __init__(self, docker_image: str, temp_path: str, docker_client: Optional[Any] = None,
+                 port_allocator: Optional[PortAllocator] = None):
         self.docker_image = docker_image
         self.temp_path = temp_path
         self._docker_client = docker_client
+        self.port_allocator = port_allocator
         os.makedirs(temp_path, exist_ok=True)
     
     @property
@@ -296,8 +358,10 @@ class ContainerFactory:
     async def create(
         self, env_id: int, ports: Tuple[int, int, int], config: ContainerConfig, use_host_network: bool = False
     ) -> ContainerInstance:
+        if self.port_allocator:
+            ports = self.port_allocator.verify_ports(ports, self.port_allocator._reserved_ports)
         server_port, emulator_port, grpc_port = ports
-        
+
         environment = {
             "ENV_SAMPLE_MODE": config.sample_mode, "ENV_SAVE_IMAGES": "False",
             "ENV_ID": str(env_id), "ENV_SNAPSHOT": config.snapshot,
@@ -760,6 +824,7 @@ class ContainerManager:
             docker_image=docker_image,
             temp_path=temp_path,
             docker_client=self.client,
+            port_allocator=self._port_allocator,
         )
         
         # Container pools
@@ -970,6 +1035,7 @@ class ContainerManager:
         port_tuples = self._port_allocator.preallocate_ports(
             pool_size=total_containers,
             base_env_id=base_env_id,
+            use_host_network=use_host_network,
         )
         
         config = ContainerConfig(
@@ -1580,8 +1646,10 @@ class ContainerManager:
                 self._next_env_id += 1
         
         # Allocate ports for this env_id
-        ports = self._port_allocator.preallocate_ports(pool_size=1, base_env_id=env_id)[0]
-        
+        ports = self._port_allocator.preallocate_ports(
+            pool_size=1, base_env_id=env_id, use_host_network=use_host_network,
+        )[0]
+
         # Create container via factory
         return await self._factory.create(
             env_id=env_id,

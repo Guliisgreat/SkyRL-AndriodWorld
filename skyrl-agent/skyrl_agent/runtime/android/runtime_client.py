@@ -212,7 +212,8 @@ class RuntimeClient:
         This ensures we use the current port after container restarts,
         since the port may change when a container is restarted.
         """
-        return f"http://localhost:{self.container.server_port}"
+        host = getattr(self.container, 'host', 'localhost')
+        return f"http://{host}:{self.container.server_port}"
     
     async def _ensure_session(self):
         """Ensure HTTP session is created."""
