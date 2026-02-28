@@ -96,6 +96,7 @@ class ContainerPoolBroker:
         skip_screenshot: bool = False,
         health_check_interval: float = 30.0,
         gc_interval: float = 60.0,
+        reconcile_interval: float = 180.0,
         base_env_id: int = 0,
         parallel: int = 4,
         adopt: bool = False,
@@ -106,6 +107,7 @@ class ContainerPoolBroker:
         self.use_host_network = use_host_network
         self.health_check_interval = health_check_interval
         self.gc_interval = gc_interval
+        self.reconcile_interval = reconcile_interval
         self.adopt = adopt
 
         self.config = ContainerConfig(
@@ -131,6 +133,7 @@ class ContainerPoolBroker:
         # Background tasks
         self._health_task: Optional[asyncio.Task] = None
         self._gc_task: Optional[asyncio.Task] = None
+        self._reconcile_task: Optional[asyncio.Task] = None
         self._start_time: float = time.time()
 
     # ── Pool Initialization ──────────────────────────────────────────────
@@ -264,13 +267,14 @@ class ContainerPoolBroker:
         )
 
     async def start_background_tasks(self):
-        """Start health monitor and dead-process GC loops."""
+        """Start health monitor, dead-process GC, and pool reconciliation loops."""
         self._health_task = asyncio.create_task(self._health_loop())
         self._gc_task = asyncio.create_task(self._gc_loop())
+        self._reconcile_task = asyncio.create_task(self._reconcile_loop())
 
     async def stop_background_tasks(self):
         """Cancel background tasks."""
-        for task in [self._health_task, self._gc_task]:
+        for task in [self._health_task, self._gc_task, self._reconcile_task]:
             if task:
                 task.cancel()
                 try:
@@ -532,6 +536,47 @@ class ContainerPoolBroker:
                         entry.leased_at = None
                     await self.available_queue.put(env_id)
 
+    async def _reconcile_loop(self):
+        """Maintain pool at target size by replacing containers lost to failed replacements."""
+        while True:
+            await asyncio.sleep(self.reconcile_interval)
+            current = len(self.registry)
+            if current >= self.pool_size:
+                continue
+
+            deficit = self.pool_size - current
+            logger.info(f"Reconcile: pool at {current}/{self.pool_size}, creating {deficit} containers")
+            created = 0
+
+            for _ in range(deficit):
+                try:
+                    async with self._env_id_lock:
+                        new_env_id = self._next_env_id
+                        self._next_env_id += 1
+
+                    ports = self.port_allocator.preallocate_ports(
+                        pool_size=1, base_env_id=new_env_id,
+                        use_host_network=self.use_host_network,
+                    )[0]
+                    new_container = await self.factory.create(
+                        env_id=new_env_id,
+                        ports=ports,
+                        config=self.config,
+                        use_host_network=self.use_host_network,
+                    )
+
+                    async with self._registry_lock:
+                        self.registry[new_env_id] = PoolEntry(container=new_container)
+                    await self.available_queue.put(new_env_id)
+                    created += 1
+                except Exception as e:
+                    logger.error(f"Reconcile: failed to create container: {e}")
+
+            logger.info(
+                f"Reconcile: {created}/{deficit} restored, "
+                f"pool now {len(self.registry)}/{self.pool_size}"
+            )
+
     async def shutdown(self):
         """Stop background tasks and optionally stop containers."""
         await self.stop_background_tasks()
@@ -610,6 +655,8 @@ def main():
     parser.add_argument("--temp-path", type=str, default="/tmp")
     parser.add_argument("--health-interval", type=float, default=30.0)
     parser.add_argument("--gc-interval", type=float, default=60.0)
+    parser.add_argument("--reconcile-interval", type=float, default=180.0,
+                        help="Seconds between pool size reconciliation checks")
     parser.add_argument("--skip-screenshot", action="store_true")
     parser.add_argument("--parallel", type=int, default=4, help="Max concurrent container creations")
     parser.add_argument("--adopt", action="store_true",
@@ -625,6 +672,7 @@ def main():
         sample_mode=args.sample_mode,
         health_check_interval=args.health_interval,
         gc_interval=args.gc_interval,
+        reconcile_interval=args.reconcile_interval,
         skip_screenshot=args.skip_screenshot,
         base_env_id=args.base_env_id,
         parallel=args.parallel,
