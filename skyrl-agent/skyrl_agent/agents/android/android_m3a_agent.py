@@ -165,6 +165,62 @@ def generate_ui_elements_description(
     return "\n".join(lines) if lines else "Not available"
 
 
+def _generate_ui_element_description_full(el: Dict, index: int) -> str:
+    """Produce a T3A-style full text description for one UI element.
+
+    Includes class_name, resource_id, and bbox_pixels in addition to the
+    standard M3A fields.  Matches the original T3A's str(ui_element) output.
+    """
+    desc = f'UI element {index}: {{"index": {index}, '
+    cn = el.get("class_name") or ""
+    if cn:
+        desc += f'"class_name": "{cn}", '
+    rid = el.get("resource_id") or ""
+    if rid:
+        desc += f'"resource_id": "{rid}", '
+    text = el.get("text") or ""
+    if text:
+        desc += f'"text": "{text}", '
+    cd = el.get("content_description") or ""
+    if cd:
+        desc += f'"content_description": "{cd}", '
+    ht = el.get("hint_text") or ""
+    if ht:
+        desc += f'"hint_text": "{ht}", '
+    tp = el.get("tooltip") or ""
+    if tp:
+        desc += f'"tooltip": "{tp}", '
+    bbox = el.get("bbox_pixels")
+    if bbox and isinstance(bbox, dict):
+        desc += (
+            f'"bbox_pixels": {{"x_min": {bbox.get("x_min", 0)}, '
+            f'"x_max": {bbox.get("x_max", 0)}, '
+            f'"y_min": {bbox.get("y_min", 0)}, '
+            f'"y_max": {bbox.get("y_max", 0)}}}, '
+        )
+    desc += f'"is_clickable": {"True" if el.get("is_clickable") else "False"}, '
+    desc += f'"is_long_clickable": {"True" if el.get("is_long_clickable") else "False"}, '
+    desc += f'"is_editable": {"True" if el.get("is_editable") else "False"}, '
+    if el.get("is_scrollable"):
+        desc += '"is_scrollable": True, '
+    if el.get("is_focusable"):
+        desc += '"is_focusable": True, '
+    desc += f'"is_selected": {"True" if el.get("is_selected") else "False"}, '
+    desc += f'"is_checked": {"True" if el.get("is_checked") else "False"}, '
+    return desc[:-2] + "}"
+
+
+def generate_ui_elements_description_full(
+    ui_elements: List[Dict], screen_size: Tuple[int, int],
+) -> str:
+    """Generate the full UI-element list string with all fields (for T3A)."""
+    lines: List[str] = []
+    for index, el in enumerate(ui_elements):
+        if validate_ui_element(el, screen_size):
+            lines.append(_generate_ui_element_description_full(el, index))
+    return "\n".join(lines) if lines else "Not available"
+
+
 # ---------------------------------------------------------------------------
 # Prompt templates (faithful to original M3A)
 # ---------------------------------------------------------------------------

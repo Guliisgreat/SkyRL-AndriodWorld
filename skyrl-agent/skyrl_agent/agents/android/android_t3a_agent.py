@@ -23,8 +23,7 @@ import numpy as np
 
 from skyrl_agent.agents.android.android_agent import AndroidAgent
 from skyrl_agent.agents.android.android_m3a_agent import (
-    validate_ui_element,
-    generate_ui_elements_description,
+    generate_ui_elements_description_full,
     parse_m3a_action,
 )
 
@@ -281,7 +280,7 @@ class AndroidT3AAgent(AndroidAgent):
             pass  # keep defaults
 
         screen_size = (self.screen_width, self.screen_height)
-        ui_text = generate_ui_elements_description(ui_elements, screen_size)
+        ui_text = generate_ui_elements_description_full(ui_elements, screen_size)
         self._current_ui_elements = ui_elements
 
         prompt_text = _build_action_selection_prompt(
@@ -359,71 +358,106 @@ class AndroidT3AAgent(AndroidAgent):
             return True, "CONTEXT_WINDOW_EXCEEDED", None
 
         # 4. Parse Reason + Action
-        try:
-            action_dict, reason = parse_m3a_action(response_str)
-            self.state.format_reward = 0.0
-        except Exception as e:
+        action_dict = None
+        reason = ""
+        error_summary = None
+
+        if "Action:" not in response_str:
             if DEBUG_TIMING:
-                print(f"[T3AAgent] Parse error: {e}")
+                print("[T3AAgent] No 'Action:' found in response")
+                print(f"[T3AAgent] Raw response: {response_str[:500]}")
             self.state.format_reward = -1.0
-            action_dict = {"action_type": "status", "goal_status": "infeasible"}
-            reason = f"Parse error: {response_str[:200]}"
+            error_summary = (
+                "Output for action selection is not in the correct format,"
+                " so no action is performed."
+            )
+        else:
+            try:
+                action_dict, reason = parse_m3a_action(response_str)
+                self.state.format_reward = 0.0
+            except Exception as e:
+                if DEBUG_TIMING:
+                    print(f"[T3AAgent] Parse error: {e}")
+                    print(f"[T3AAgent] Raw response: {response_str[:500]}")
+                self.state.format_reward = -1.0
+                error_summary = (
+                    "Can not parse the output to a valid action. Please"
+                    " make sure to pick the action from the list with"
+                    " required parameters (if any) in the correct JSON"
+                    " format!"
+                )
 
-        action_str = json.dumps(action_dict)
-
-        # We need current ui_elements for index validation and for before_elements in summarization.
-        # They come from the last user message's context: we stored the prompt that contained them.
-        # On the first step, we had initial observation; after that, from the previous step's output.
-        # So we must keep "current" ui_elements. The last user message text contains the UI list;
-        # we don't have a direct reference. So we need to track current_ui_elements in the agent.
-        # Set at end of format_initial_instruction and at end of each step from tool output.
         current_ui_elements = getattr(self, "_current_ui_elements", [])
 
-        # 5. Index validation for click, long_press, input_text
+        # 4b. Index validation for click, long_press, input_text, scroll
+        if error_summary is None and action_dict is not None:
+            action_type = action_dict.get("action_type", "")
+            idx = action_dict.get("index")
+            if action_type in ("click", "long_press", "input_text", "scroll") and idx is not None:
+                if idx >= len(current_ui_elements):
+                    if DEBUG_TIMING:
+                        print(
+                            f"[T3AAgent] Index out of range: {idx}"
+                            f" >= {len(current_ui_elements)}"
+                        )
+                    error_summary = (
+                        "The parameter index is out of range. Remember"
+                        " the index must be in the UI element list!"
+                    )
+
+        # 4c. Handle error: no action executed, rebuild observation, continue
+        if error_summary is not None:
+            self.history.append(f"Step {self.state.step_count}: {error_summary}")
+            self.state.step_records.append({
+                "step_idx": self.state.step_count,
+                "thought": reason,
+                "raw_response": response_str,
+                "action_type": (
+                    action_dict.get("action_type", "parse_error")
+                    if action_dict else "parse_error"
+                ),
+                "action_params": (
+                    {k: v for k, v in action_dict.items() if k != "action_type"}
+                    if action_dict else {}
+                ),
+                "command_output": None,
+                "a11y_tree": None,
+                "screenshot_idx": None,
+                "input_tokens": len(_prompt_token_ids),
+                "output_tokens": len(response_token_ids),
+            })
+            self.state.messages = self.append_assistant(self.state.messages, response_str)
+
+            # Rebuild observation with same UI state (no action was executed)
+            screen_size = (self.screen_width, self.screen_height)
+            ui_text = generate_ui_elements_description_full(
+                current_ui_elements, screen_size,
+            )
+            next_prompt = _build_action_selection_prompt(
+                self.goal, self.history, ui_text, self.additional_guidelines,
+            )
+            self.state.messages = self.state.messages + [
+                {"role": "user", "content": [{"type": "text", "text": next_prompt}]},
+            ]
+
+            _should_add, should_continue = self.training.add_step(
+                self.state.messages, response_token_ids,
+            )
+            if not should_continue:
+                self.state.is_done = True
+                return True, "TRAINING_BUDGET_EXCEEDED", None
+
+            return False, None, None
+
+        action_str = json.dumps(action_dict)
         action_type = action_dict.get("action_type", "")
-        idx = action_dict.get("index")
-        if action_type in ("click", "long_press", "input_text") and idx is not None:
-            if idx >= len(current_ui_elements):
-                summary = (
-                    "The parameter index is out of range. Remember the index must be in"
-                    " the UI element list!"
-                )
-                self.history.append(f"Step {self.state.step_count}- {summary}")
-                self.state.messages = self.append_assistant(self.state.messages, response_str)
-                next_prompt = _build_action_selection_prompt(
-                    self.goal, self.history,
-                    generate_ui_elements_description(current_ui_elements, (self.screen_width, self.screen_height)),
-                    self.additional_guidelines,
-                )
-                self.state.messages = self.state.messages + [
-                    {"role": "user", "content": [{"type": "text", "text": next_prompt}]},
-                ]
-                self.state.step_records.append({
-                    "step_idx": self.state.step_count,
-                    "thought": reason,
-                    "raw_response": response_str,
-                    "action_type": action_type,
-                    "action_params": {k: v for k, v in action_dict.items() if k != "action_type"},
-                    "command_output": None,
-                    "a11y_tree": None,
-                    "screenshot_idx": None,
-                    "input_tokens": len(_prompt_token_ids),
-                    "output_tokens": len(response_token_ids),
-                })
-                _should_add, should_continue = self.training.add_step(
-                    self.state.messages, response_token_ids,
-                )
-                if not should_continue:
-                    self.state.is_done = True
-                    return True, "TRAINING_BUDGET_EXCEEDED", None
-                return False, None, None
 
         if action_type == "answer" and DEBUG_TIMING:
             print("Agent answered with:", action_dict.get("text", "")[:80])
 
         # 6. Execute via android_env tool (includes status/answer; env returns terminated for status)
         tool = self.tools["android_env"]
-        before_elements_text = generate_ui_elements_description(
+        before_elements_text = generate_ui_elements_description_full(
             current_ui_elements, (self.screen_width, self.screen_height),
         )
 
@@ -452,9 +486,9 @@ class AndroidT3AAgent(AndroidAgent):
         # 7. Execution error handling
         if output.get("error"):
             summary = f"Some error happened executing the action {action_type}: {output.get('error', '')[:100]}"
-            self.history.append(f"Step {self.state.step_count}- {summary}")
+            self.history.append(f"Step {self.state.step_count}: {summary}")
             self.state.messages = self.append_assistant(self.state.messages, response_str)
-            after_elements_text = generate_ui_elements_description(
+            after_elements_text = generate_ui_elements_description_full(
                 after_ui_elements, (self.screen_width, self.screen_height),
             )
             next_prompt = _build_action_selection_prompt(
@@ -488,7 +522,7 @@ class AndroidT3AAgent(AndroidAgent):
             return False, None, None
 
         # 8. Summarization: mandatory for non-terminal steps (text-only)
-        after_elements_text = generate_ui_elements_description(
+        after_elements_text = generate_ui_elements_description_full(
             after_ui_elements, (self.screen_width, self.screen_height),
         )
         if terminated or truncated:
@@ -497,7 +531,7 @@ class AndroidT3AAgent(AndroidAgent):
             summary = await self._summarize_step(
                 action_str, reason, before_elements_text, after_elements_text,
             )
-        self.history.append(f"Step {self.state.step_count}- {summary}")
+        self.history.append(f"Step {self.state.step_count}: {summary}")
 
         # 9. Record step
         self.state.step_records.append({
