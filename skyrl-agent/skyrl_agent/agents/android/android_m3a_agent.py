@@ -47,6 +47,8 @@ def validate_ui_element(
     el: Dict, screen_size: Tuple[int, int],
 ) -> bool:
     """Check that a UI element has a valid, on-screen bounding box."""
+    if not el.get("is_visible", True):
+        return False
     bbox = el.get("bbox_pixels")
     if not bbox or not isinstance(bbox, dict):
         return False
@@ -499,7 +501,9 @@ class AndroidM3AAgent(AndroidAgent):
         self.goal = ""
         self.history: List[str] = []
         self.additional_guidelines: Optional[List[str]] = None
-        self.enable_summarization = False
+        self.enable_summarization = True
+        self._current_image: Optional[np.ndarray] = None
+        self._current_ui_elements: List[Dict] = []
 
     # ------------------------------------------------------------------
     # Initial instruction
@@ -522,6 +526,8 @@ class AndroidM3AAgent(AndroidAgent):
             image = np.zeros((self.screen_height, self.screen_width, 3), dtype=np.uint8)
 
         screen_size = (self.screen_width, self.screen_height)
+        self._current_image = image
+        self._current_ui_elements = ui_elements
         ui_text = generate_ui_elements_description(ui_elements, screen_size)
         som_img = draw_som_marks(image, ui_elements, screen_size)
 
@@ -603,15 +609,105 @@ class AndroidM3AAgent(AndroidAgent):
             return True, "CONTEXT_WINDOW_EXCEEDED", None
 
         # 4. Parse M3A action
-        try:
-            action_dict, reason = parse_m3a_action(response_str)
-            self.state.format_reward = 0.0
-        except Exception as e:
-            print(f"[M3AAgent] Parse error: {e}")
+        action_dict = None
+        reason = ""
+        error_summary = None
+
+        if "Action:" not in response_str:
+            print("[M3AAgent] No 'Action:' found in response")
             print(f"[M3AAgent] Raw response: {response_str[:500]}")
             self.state.format_reward = -1.0
-            action_dict = {"action_type": "status", "goal_status": "infeasible"}
-            reason = f"Parse error: {response_str[:200]}"
+            error_summary = (
+                "Output for action selection is not in the correct format,"
+                " so no action is performed."
+            )
+        else:
+            try:
+                action_dict, reason = parse_m3a_action(response_str)
+                self.state.format_reward = 0.0
+            except Exception as e:
+                print(f"[M3AAgent] Parse error: {e}")
+                print(f"[M3AAgent] Raw response: {response_str[:500]}")
+                self.state.format_reward = -1.0
+                error_summary = (
+                    "Can not parse the output to a valid action. Please"
+                    " make sure to pick the action from the list with"
+                    " required parameters (if any) in the correct JSON"
+                    " format!"
+                )
+
+        # 4b. Index validation
+        if error_summary is None and action_dict is not None:
+            if action_dict.get("action_type") in (
+                "click", "long_press", "input_text", "scroll",
+            ):
+                action_index = action_dict.get("index")
+                if (
+                    action_index is not None
+                    and action_index >= len(self._current_ui_elements)
+                ):
+                    print(
+                        f"[M3AAgent] Index out of range: {action_index}"
+                        f" >= {len(self._current_ui_elements)}"
+                    )
+                    error_summary = (
+                        "The parameter index is out of range. Remember"
+                        " the index must be in the UI element list!"
+                    )
+
+        # 4c. Handle error: no action executed, rebuild observation, continue
+        if error_summary is not None:
+            self.history.append(
+                f"Step {self.state.step_count}- {error_summary}"
+            )
+            self.state.step_records.append({
+                "step_idx": self.state.step_count,
+                "thought": reason,
+                "raw_response": response_str,
+                "action_type": (
+                    action_dict.get("action_type", "parse_error")
+                    if action_dict else "parse_error"
+                ),
+                "action_params": (
+                    {k: v for k, v in action_dict.items()
+                     if k != "action_type"}
+                    if action_dict else {}
+                ),
+                "command_output": None,
+                "a11y_tree": None,
+                "screenshot_idx": len(self.state.images),
+                "input_tokens": len(_prompt_token_ids),
+                "output_tokens": len(response_token_ids),
+            })
+            self.state.messages = self.append_assistant(
+                self.state.messages, response_str,
+            )
+
+            # Rebuild observation with same UI state (no action was executed)
+            screen_size = (self.screen_width, self.screen_height)
+            ui_text = generate_ui_elements_description(
+                self._current_ui_elements, screen_size,
+            )
+            som_img = draw_som_marks(
+                self._current_image, self._current_ui_elements, screen_size,
+            )
+            prompt_text = _build_action_selection_prompt(
+                self.goal, self.history, ui_text, self.additional_guidelines,
+            )
+            obs_msgs = _build_observation_messages(
+                prompt_text, self._current_image, som_img,
+                self.min_pixels, self.max_pixels,
+            )
+            self.state.messages = self.state.messages + obs_msgs
+
+            _should_add, should_continue = self.training.add_step(
+                self.state.messages, response_token_ids,
+            )
+            if not should_continue:
+                self.state.is_done = True
+                return True, "TRAINING_BUDGET_EXCEEDED", None
+
+            return False, None, None
 
         action_str = json.dumps(action_dict)
 
@@ -698,6 +794,8 @@ class AndroidM3AAgent(AndroidAgent):
         )
         self.state.messages = self.state.messages + obs_msgs
         self.state.images.append(image)
+        self._current_image = image
+        self._current_ui_elements = after_ui_elements
 
         # 10. Training accumulator
         _should_add, should_continue = self.training.add_step(
