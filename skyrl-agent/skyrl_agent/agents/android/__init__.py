@@ -23,6 +23,8 @@ __all__ = [
     "AndroidAPIComboAgent",
     "AndroidM3AAgent",
     "AndroidT3AAgent",
+    "AndroidT3AADBAgent",
+    "AndroidMobileUseAgent",
     "TrajectoryState",
     # Prompt template (agent-specific)
     "UITARS_USR_PROMPT_THOUGHT",
@@ -82,7 +84,15 @@ def __getattr__(name):
     if name == "AndroidT3AAgent":
         from skyrl_agent.agents.android.android_t3a_agent import AndroidT3AAgent
         return AndroidT3AAgent
-    
+
+    if name == "AndroidT3AADBAgent":
+        from skyrl_agent.agents.android.android_t3a_adb_agent import AndroidT3AADBAgent
+        return AndroidT3AADBAgent
+
+    if name == "AndroidMobileUseAgent":
+        from skyrl_agent.agents.android.mobileuse import AndroidMobileUseAgent
+        return AndroidMobileUseAgent
+
     if name in ("init_messages", "select_messages", "load_content", 
                 "numpy_to_base64", "parse_uitars_action", "add_box_token"):
         from skyrl_agent.agents.android.android_utils import (
