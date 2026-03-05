@@ -135,6 +135,8 @@ class ContainerPoolBroker:
         self._health_task: Optional[asyncio.Task] = None
         self._gc_task: Optional[asyncio.Task] = None
         self._reconcile_task: Optional[asyncio.Task] = None
+        self._init_task: Optional[asyncio.Task] = None
+        self._pool_initializing: bool = False
         self._start_time: float = time.time()
 
     # ── Pool Initialization ──────────────────────────────────────────────
@@ -147,8 +149,13 @@ class ContainerPoolBroker:
             await self._create_pool()
 
     async def _create_pool(self):
-        """Create all containers from scratch (parallel, bounded concurrency)."""
-        logger.info(f"Creating {self.pool_size} containers...")
+        """Create containers incrementally (parallel, bounded concurrency).
+
+        Each container is added to the pool as soon as it passes health checks,
+        so the broker can serve requests before the full pool is ready.
+        """
+        self._pool_initializing = True
+        logger.info(f"Creating {self.pool_size} containers (available incrementally)...")
 
         port_tuples = self.port_allocator.preallocate_ports(
             pool_size=self.pool_size, base_env_id=self.base_env_id,
@@ -159,27 +166,37 @@ class ContainerPoolBroker:
 
         async def create_one(env_id: int, ports):
             async with sem:
-                return await self.factory.create(
+                container = await self.factory.create(
                     env_id=env_id,
                     ports=ports,
                     config=self.config,
                     use_host_network=self.use_host_network,
                 )
+                # Add to pool immediately so it can be acquired
+                self.registry[env_id] = PoolEntry(container=container)
+                await self.available_queue.put(env_id)
+                logger.info(
+                    f"env{env_id}: ready "
+                    f"({len(self.registry)}/{self.pool_size} in pool)"
+                )
 
-        tasks = [create_one(self.base_env_id + i, port_tuples[i]) for i in range(self.pool_size)]
+        tasks = []
+        for i in range(self.pool_size):
+            env_id = self.base_env_id + i
+            tasks.append(create_one(env_id, port_tuples[i]))
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for result in results:
-            if isinstance(result, Exception):
-                logger.error(f"Failed to create container: {result}")
-                continue
-            self.registry[result.env_id] = PoolEntry(container=result)
-            await self.available_queue.put(result.env_id)
+        failed = sum(1 for r in results if isinstance(r, Exception))
+        for r in results:
+            if isinstance(r, Exception):
+                logger.error(f"Failed to create container: {r}")
 
         self._next_env_id = self.base_env_id + self.pool_size
+        self._pool_initializing = False
         logger.info(
-            f"Pool ready: {len(self.registry)}/{self.pool_size} containers, "
-            f"{self.available_queue.qsize()} available"
+            f"Pool creation complete: {len(self.registry)}/{self.pool_size} containers, "
+            f"{failed} failed, {self.available_queue.qsize()} available"
         )
 
     async def adopt_existing_pool(self):
@@ -392,6 +409,8 @@ class ContainerPoolBroker:
             )
         return {
             "total": len(self.registry),
+            "target": self.pool_size,
+            "initializing": self._pool_initializing,
             "idle": counts["IDLE"],
             "leased": counts["LEASED"],
             "replacing": counts["REPLACING"],
@@ -619,11 +638,21 @@ broker: Optional[ContainerPoolBroker] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Modern FastAPI lifespan handler (replaces deprecated on_event)."""
-    await broker.initialize_pool()
+    """Modern FastAPI lifespan handler (replaces deprecated on_event).
+
+    Pool creation runs in the background so the API is available immediately.
+    Containers are added to the pool incrementally as they become ready.
+    """
+    broker._init_task = asyncio.create_task(broker.initialize_pool())
     await broker.start_background_tasks()
     yield
     if broker:
+        if broker._init_task and not broker._init_task.done():
+            broker._init_task.cancel()
+            try:
+                await broker._init_task
+            except asyncio.CancelledError:
+                pass
         await broker.shutdown()
 
 
@@ -654,7 +683,9 @@ async def api_health():
     return {
         "status": "ok",
         "uptime": time.time() - broker._start_time,
-        "pool_size": len(broker.registry),
+        "pool_ready": len(broker.registry),
+        "pool_target": broker.pool_size,
+        "pool_initializing": broker._pool_initializing,
     }
 
 

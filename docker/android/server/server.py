@@ -1,6 +1,7 @@
 import os
 import re
 import base64
+import shlex
 import time
 import subprocess
 import uvicorn
@@ -308,7 +309,16 @@ def _validate_adb_command(command: str) -> None:
             raise ValueError(f"Blocked dangerous pattern in command: {command}")
 
 def _split_chained_commands(command: str) -> list:
-    """Split '&&'-chained commands, validate each, return list of individual commands."""
+    """Split '&&'-chained commands, validate each, return list of individual commands.
+
+    If the command uses 'adb shell sh -c ...' (a subshell), the '&&' inside the
+    quoted argument is part of the shell script, NOT a top-level command separator.
+    In that case we treat the entire command as a single unit.
+    """
+    # sh -c wraps an inline script — don't split its internal &&
+    if re.match(r"adb\s+shell\s+sh\s+-c\s+", command):
+        _validate_adb_command(command)
+        return [command]
     if '&&' not in command:
         return [command]
     sub_commands = [c.strip() for c in command.split('&&') if c.strip()]
@@ -318,7 +328,10 @@ def _split_chained_commands(command: str) -> list:
 
 def _execute_adb(env, command: str) -> str:
     """Execute a single validated ADB command and return its output."""
-    args = command.split()
+    try:
+        args = shlex.split(command)
+    except ValueError:
+        args = command.split()
     if args and args[0] == "adb":
         args = args[1:]
     full_cmd = [env.adb_path, "-P", str(env.adb_server_port),
