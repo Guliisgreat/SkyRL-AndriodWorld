@@ -77,7 +77,7 @@ echo "vision_is_active: false"
 echo "=============================================="
 echo ""
 
-uv run --frozen --extra verl --env-file .env -m skyrl_agent.integrations.verl.verl_android_full_adb_inference \
+uv run --frozen --extra verl --env-file .env -m skyrl_agent.integrations.verl.verl_main_inference \
    data.train_files="$test_data" \
    data.val_files="$test_data" \
    data.custom_cls.path=pkg://skyrl_agent.integrations.verl.android_dataset \
