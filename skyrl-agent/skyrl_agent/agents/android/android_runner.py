@@ -118,6 +118,15 @@ class AndroidAgentRunner(AgentRunner):
                 # Add memory config (sliding window for inference)
                 if hasattr(self.cfg, 'generator'):
                     traj_cfg.max_history_steps = getattr(self.cfg.generator, 'max_history_steps', 10)
+
+                # Pass through agent-specific config sections (e.g. mobileuse)
+                if hasattr(self.cfg, 'generator'):
+                    for section in ('mobileuse',):
+                        if hasattr(self.cfg.generator, section):
+                            section_val = getattr(self.cfg.generator, section)
+                            if hasattr(section_val, '__iter__'):
+                                section_val = OmegaConf.to_container(section_val, resolve=True)
+                            setattr(traj_cfg, section, section_val)
                 
                 traj = self.traj_cls(
                     cfg=traj_cfg,
