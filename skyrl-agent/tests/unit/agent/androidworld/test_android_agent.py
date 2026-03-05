@@ -14,8 +14,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from skyrl_agent.agents.android.android_agent import AndroidAgent, UITARS_USR_PROMPT_THOUGHT
-from skyrl_agent.agents.android.android_utils import parse_uitars_action, add_box_token, numpy_to_base64, init_messages
+from skyrl_agent.agents.android.base import AndroidAgent, UITARS_USR_PROMPT_THOUGHT
+from skyrl_agent.agents.android.utils import parse_uitars_action, add_box_token, numpy_to_base64, init_messages
 
 
 # ==================== Static Method Tests (No Mocking Needed) ====================
@@ -329,7 +329,7 @@ class TestMessageHandling:
               mock_processor, mock_env_handle):
         """Create AndroidAgent with mocked dependencies."""
         # Patch TOOL_REGISTRY to avoid import issues
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -408,7 +408,7 @@ class TestAgentStep:
         )
         mock_infer_engine.async_generate_ids = AsyncMock(return_value=(response, "stop"))
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             # Create mock tool
             mock_tool = Mock()
             mock_tool.name = "android_env"
@@ -440,7 +440,7 @@ class TestAgentStep:
     @pytest.mark.asyncio
     async def test_step_successful_action(self, configured_agent):
         """Full step: generate -> parse -> execute -> update state."""
-        with patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+        with patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
             mock_call.return_value = {
                 "image": np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8),
                 "reward": 0.0,
@@ -458,7 +458,7 @@ class TestAgentStep:
     @pytest.mark.asyncio
     async def test_step_terminated(self, configured_agent):
         """Verify is_done set when terminated=True."""
-        with patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+        with patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
             mock_call.return_value = {
                 "image": None,
                 "reward": 1.0,
@@ -483,7 +483,7 @@ class TestAgentStep:
         invalid_response = "This is not a valid action format"
         mock_infer_engine.async_generate_ids = AsyncMock(return_value=(invalid_response, "stop"))
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -498,7 +498,7 @@ class TestAgentStep:
             )
             agent.state.messages = init_messages(sample_instruction)
         
-        with patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+        with patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
             mock_call.return_value = {
                 "image": None,
                 "reward": 0.0,
@@ -533,7 +533,7 @@ class TestAgentRun:
         mock_infer_engine = AsyncMock()
         mock_infer_engine.async_generate_ids = AsyncMock(side_effect=responses)
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -553,7 +553,7 @@ class TestAgentRun:
             {"image": None, "reward": 1.0, "terminated": True, "truncated": False, "info": {}},
         ]
         
-        with patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+        with patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
             mock_call.side_effect = step_results
             
             finish_reason, result = await agent.run(sample_instruction)
@@ -573,7 +573,7 @@ class TestAgentRun:
         response = ("Thought: Continue.\nAction: click(start_box='(500,300)')", "stop")
         mock_infer_engine.async_generate_ids = AsyncMock(return_value=response)
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -587,7 +587,7 @@ class TestAgentRun:
                 env_handle=mock_env_handle,
             )
         
-        with patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+        with patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
             mock_call.return_value = {
                 "image": np.random.randint(0, 255, (10, 10, 3), dtype=np.uint8),
                 "reward": 0.0,
@@ -609,7 +609,7 @@ class TestAgentGetters:
     def agent_with_history(self, mock_traj_config, mock_infer_engine, mock_tokenizer,
                            mock_processor, mock_env_handle, sample_instruction, small_test_image):
         """Create agent with some history."""
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -670,7 +670,7 @@ class TestProcessForTraining:
     def agent(self, mock_traj_config, mock_infer_engine, mock_tokenizer, 
               mock_processor, mock_env_handle):
         """Create AndroidAgent with mocked dependencies."""
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -870,7 +870,7 @@ class TestTrainingAccumulator:
     def agent(self, mock_traj_config, mock_infer_engine, mock_tokenizer, 
               mock_processor, mock_env_handle):
         """Create AndroidAgent with mocked dependencies."""
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)

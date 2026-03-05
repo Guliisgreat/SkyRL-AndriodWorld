@@ -26,11 +26,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from skyrl_agent.agents.android.android_agent import AndroidAgent
-from skyrl_agent.agents.android.android_m3a_agent import (
+from skyrl_agent.agents.android.base import AndroidAgent
+from skyrl_agent.agents.android.m3a_agent import (
     validate_ui_element,
 )
-from skyrl_agent.agents.android.android_api_screen_adb_agent import (
+from skyrl_agent.agents.android.screen_adb_agent import (
     _parse_task_control,
     _normalize_adb_command,
     MAX_OUTPUT_CHARS,

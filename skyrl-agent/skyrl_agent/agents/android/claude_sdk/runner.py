@@ -194,7 +194,7 @@ class ClaudeSDKRunner:
 
     def _initialize_trajectories(self, data: List[Dict]) -> None:
         """Create ClaudeSDKTrajectory instances for each data item."""
-        _traj_mod = _load_sibling("claude_sdk_trajectory", "claude_sdk_trajectory.py")
+        _traj_mod = _load_sibling("claude_sdk_trajectory", "trajectory.py")
         ClaudeSDKTrajectory = _traj_mod.ClaudeSDKTrajectory
         from skyrl_agent.config.configuration_utils import TrajectoryConfig
 
@@ -216,7 +216,7 @@ class ClaudeSDKRunner:
                 tools=["android_env"],
                 agent_cls=self.cfg.get(
                     "agent_cls",
-                    "skyrl_agent.agents.android.claude_sdk_trajectory.ClaudeAgentSDK",
+                    "skyrl_agent.agents.android.claude_sdk.trajectory.ClaudeAgentSDK",
                 ),
             )
             # Attach SDK config to trajectory config

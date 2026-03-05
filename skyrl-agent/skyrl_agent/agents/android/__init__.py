@@ -40,9 +40,8 @@ __all__ = [
 
 def __getattr__(name):
     """Lazy import for android agent classes to avoid dependency issues at import time."""
-    # Agent classes and prompt (lazy loaded due to heavy dependencies)
     if name in ("AndroidAgent", "TrajectoryState", "UITARS_USR_PROMPT_THOUGHT"):
-        from skyrl_agent.agents.android.android_agent import (
+        from skyrl_agent.agents.android.base import (
             AndroidAgent,
             TrajectoryState,
             UITARS_USR_PROMPT_THOUGHT,
@@ -52,50 +51,50 @@ def __getattr__(name):
             "TrajectoryState": TrajectoryState,
             "UITARS_USR_PROMPT_THOUGHT": UITARS_USR_PROMPT_THOUGHT,
         }[name]
-    
+
     if name == "AndroidTrajectory":
-        from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
+        from skyrl_agent.agents.android.trajectory import AndroidTrajectory
         return AndroidTrajectory
-    
+
     if name == "AndroidAgentRunner":
-        from skyrl_agent.agents.android.android_runner import AndroidAgentRunner
+        from skyrl_agent.agents.android.runner import AndroidAgentRunner
         return AndroidAgentRunner
-    
+
     if name == "AndroidAPIScreenADBAgent":
-        from skyrl_agent.agents.android.android_api_screen_adb_agent import AndroidAPIScreenADBAgent
+        from skyrl_agent.agents.android.screen_adb_agent import AndroidAPIScreenADBAgent
         return AndroidAPIScreenADBAgent
-    
+
     if name == "AndroidAPITreeADBAgent":
-        from skyrl_agent.agents.android.android_api_tree_adb_agent import AndroidAPITreeADBAgent
+        from skyrl_agent.agents.android.tree_adb_agent import AndroidAPITreeADBAgent
         return AndroidAPITreeADBAgent
-    
+
     if name == "AndroidAPIScreenAgent":
-        from skyrl_agent.agents.android.android_api_screen_agent import AndroidAPIScreenAgent
+        from skyrl_agent.agents.android.screen_agent import AndroidAPIScreenAgent
         return AndroidAPIScreenAgent
-    
+
     if name == "AndroidAPIComboAgent":
-        from skyrl_agent.agents.android.android_api_combo_agent import AndroidAPIComboAgent
+        from skyrl_agent.agents.android.combo_agent import AndroidAPIComboAgent
         return AndroidAPIComboAgent
-    
+
     if name == "AndroidM3AAgent":
-        from skyrl_agent.agents.android.android_m3a_agent import AndroidM3AAgent
+        from skyrl_agent.agents.android.m3a_agent import AndroidM3AAgent
         return AndroidM3AAgent
-    
+
     if name == "AndroidT3AAgent":
-        from skyrl_agent.agents.android.android_t3a_agent import AndroidT3AAgent
+        from skyrl_agent.agents.android.t3a_agent import AndroidT3AAgent
         return AndroidT3AAgent
 
     if name == "AndroidT3AADBAgent":
-        from skyrl_agent.agents.android.android_t3a_adb_agent import AndroidT3AADBAgent
+        from skyrl_agent.agents.android.t3a_adb_agent import AndroidT3AADBAgent
         return AndroidT3AADBAgent
 
     if name == "AndroidMobileUseAgent":
         from skyrl_agent.agents.android.mobileuse import AndroidMobileUseAgent
         return AndroidMobileUseAgent
 
-    if name in ("init_messages", "select_messages", "load_content", 
+    if name in ("init_messages", "select_messages", "load_content",
                 "numpy_to_base64", "parse_uitars_action", "add_box_token"):
-        from skyrl_agent.agents.android.android_utils import (
+        from skyrl_agent.agents.android.utils import (
             init_messages,
             select_messages,
             load_content,
@@ -111,5 +110,5 @@ def __getattr__(name):
             "parse_uitars_action": parse_uitars_action,
             "add_box_token": add_box_token,
         }[name]
-    
+
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -21,8 +21,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from skyrl_agent.agents.android.android_agent import AndroidAgent
-from skyrl_agent.agents.android.android_m3a_agent import (
+from skyrl_agent.agents.android.base import AndroidAgent
+from skyrl_agent.agents.android.m3a_agent import (
     generate_ui_elements_description_full,
     parse_m3a_action,
 )

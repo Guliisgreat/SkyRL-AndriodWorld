@@ -18,8 +18,8 @@ import numpy as np
 
 DEBUG_TIMING = os.environ.get("DEBUG_TIMING", "0") == "1"
 
-from skyrl_agent.agents.android.android_agent import AndroidAgent
-from skyrl_agent.agents.android.android_api_screen_adb_agent import (
+from skyrl_agent.agents.android.base import AndroidAgent
+from skyrl_agent.agents.android.screen_adb_agent import (
     _parse_adb_command,
     _parse_task_control,
     _apply_sliding_window,
@@ -28,7 +28,7 @@ from skyrl_agent.agents.android.android_api_screen_adb_agent import (
     DEFAULT_SYSTEM_PROMPT,
     _HEADER_SIZE,
 )
-from skyrl_agent.agents.android.tree_adb_prompts import get_prompt, DEFAULT_PROMPT_VERSION
+from skyrl_agent.agents.android.prompts import get_prompt, DEFAULT_PROMPT_VERSION
 
 
 # ---------------------------------------------------------------------------

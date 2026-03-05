@@ -212,7 +212,7 @@ class ClaudeSDKTrajectory:
         # Path to the stdio MCP server script
         mcp_server_script = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
-            "claude_sdk_mcp_server.py",
+            "mcp_server.py",
         )
 
         # Build prompt with task instruction

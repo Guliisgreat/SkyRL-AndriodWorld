@@ -252,8 +252,8 @@ def mock_infrastructure(infer_engine, input_batch, num_trajectories: int = 1):
     mock_result = create_mock_post_process_result(num_instances, num_trajectories)
     
     with patch('skyrl_agent.agents.base.build_backend') as mock_build, \
-         patch('skyrl_agent.agents.android.android_runner.build_generator_input') as mock_input, \
-         patch('skyrl_agent.agents.android.android_runner.build_generator_output') as mock_output, \
+         patch('skyrl_agent.agents.android.runner.build_generator_input') as mock_input, \
+         patch('skyrl_agent.agents.android.runner.build_generator_output') as mock_output, \
          patch('skyrl_agent.agents.base.AgentRunner._post_process_results') as mock_post:
         
         mock_build.return_value = infer_engine
@@ -321,7 +321,7 @@ class TestE2ERealRunner:
         self, real_tokenizer, real_processor
     ):
         """Runner processes a single batch through full pipeline."""
-        from skyrl_agent.agents.android.android_runner import AndroidAgentRunner
+        from skyrl_agent.agents.android.runner import AndroidAgentRunner
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         # Setup
@@ -361,7 +361,7 @@ class TestE2ERealRunner:
         self, real_tokenizer, real_processor
     ):
         """Verify runner uses real async_fix_pool dispatcher."""
-        from skyrl_agent.agents.android.android_runner import AndroidAgentRunner
+        from skyrl_agent.agents.android.runner import AndroidAgentRunner
         from skyrl_agent.tasks.android.android_task import AndroidTask
         from skyrl_agent.dispatcher.dispatchers import DISPATCHER_REGISTRY
         
@@ -407,7 +407,7 @@ class TestE2ERealRunner:
         self, real_tokenizer, real_processor
     ):
         """Verify runner uses real AndroidEnvTool (not mocked)."""
-        from skyrl_agent.agents.android.android_runner import AndroidAgentRunner
+        from skyrl_agent.agents.android.runner import AndroidAgentRunner
         from skyrl_agent.tasks.android.android_task import AndroidTask
         from skyrl_agent.tools.base import TOOL_REGISTRY
         
@@ -455,7 +455,7 @@ class TestE2EFullPipeline:
         self, real_tokenizer, real_processor
     ):
         """Multi-step trajectory using real tool execution."""
-        from skyrl_agent.agents.android.android_runner import AndroidAgentRunner
+        from skyrl_agent.agents.android.runner import AndroidAgentRunner
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         # Setup with larger iteration count to allow multi-step
@@ -490,7 +490,7 @@ class TestE2EFullPipeline:
         self, real_tokenizer, real_processor
     ):
         """Multiple trajectories share environment pool correctly."""
-        from skyrl_agent.agents.android.android_runner import AndroidAgentRunner
+        from skyrl_agent.agents.android.runner import AndroidAgentRunner
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         cfg = create_runner_config(pool_size=2, num_trajectories=2, max_iterations=3)
@@ -525,7 +525,7 @@ class TestE2EFullPipeline:
         self, real_tokenizer, real_processor
     ):
         """Errors in environment are handled by real components."""
-        from skyrl_agent.agents.android.android_runner import AndroidAgentRunner
+        from skyrl_agent.agents.android.runner import AndroidAgentRunner
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         cfg = create_runner_config(pool_size=1, num_trajectories=1, max_iterations=3)
@@ -578,7 +578,7 @@ class TestE2ETrainingDataFlow:
         self, real_tokenizer, real_processor
     ):
         """Training tensors are collected through full E2E pipeline."""
-        from skyrl_agent.agents.android.android_runner import AndroidAgentRunner
+        from skyrl_agent.agents.android.runner import AndroidAgentRunner
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         cfg = create_runner_config(pool_size=1, num_trajectories=1, max_iterations=3)
@@ -616,7 +616,7 @@ class TestE2EValidationMode:
         self, real_tokenizer, real_processor
     ):
         """Validation mode uses val_config parameters."""
-        from skyrl_agent.agents.android.android_runner import AndroidAgentRunner
+        from skyrl_agent.agents.android.runner import AndroidAgentRunner
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         cfg = create_runner_config(pool_size=1, num_trajectories=2, max_iterations=3)

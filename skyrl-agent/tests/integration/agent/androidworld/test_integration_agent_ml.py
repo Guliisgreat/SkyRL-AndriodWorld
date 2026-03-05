@@ -120,7 +120,7 @@ def sample_messages_text_only():
 @pytest.fixture
 def sample_messages_with_image():
     """Sample messages including an image."""
-    from skyrl_agent.agents.android.android_utils import numpy_to_base64
+    from skyrl_agent.agents.android.utils import numpy_to_base64
     
     image = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
     image_b64 = numpy_to_base64(image)
@@ -153,7 +153,7 @@ def sample_messages_with_image():
 @pytest.fixture
 def sample_multi_image_messages():
     """Sample messages with multiple images (multi-step trajectory)."""
-    from skyrl_agent.agents.android.android_utils import numpy_to_base64
+    from skyrl_agent.agents.android.utils import numpy_to_base64
     
     messages = [
         {
@@ -232,9 +232,9 @@ class TestRealTokenizerIntegration:
         self, real_tokenizer, mock_processor, mock_infer_engine, mock_env_handle, mock_traj_config
     ):
         """Agent.prepare_input_ids() works with real tokenizer."""
-        from skyrl_agent.agents.android.android_agent import AndroidAgent
+        from skyrl_agent.agents.android.base import AndroidAgent
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -343,9 +343,9 @@ class TestProcessForTrainingIntegration:
         mock_infer_engine, mock_env_handle, sample_messages_text_only
     ):
         """process_for_training works with text-only messages."""
-        from skyrl_agent.agents.android.android_agent import AndroidAgent
+        from skyrl_agent.agents.android.base import AndroidAgent
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -379,9 +379,9 @@ class TestProcessForTrainingIntegration:
         mock_infer_engine, mock_env_handle, sample_messages_with_image
     ):
         """process_for_training works with image messages."""
-        from skyrl_agent.agents.android.android_agent import AndroidAgent
+        from skyrl_agent.agents.android.base import AndroidAgent
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -410,9 +410,9 @@ class TestProcessForTrainingIntegration:
         mock_infer_engine, mock_env_handle, sample_multi_image_messages
     ):
         """process_for_training handles multiple images correctly."""
-        from skyrl_agent.agents.android.android_agent import AndroidAgent
+        from skyrl_agent.agents.android.base import AndroidAgent
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -438,9 +438,9 @@ class TestProcessForTrainingIntegration:
         mock_infer_engine, mock_env_handle, sample_messages_text_only
     ):
         """Labels are correctly masked: system/user=-100, assistant=tokens."""
-        from skyrl_agent.agents.android.android_agent import AndroidAgent
+        from skyrl_agent.agents.android.base import AndroidAgent
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -481,9 +481,9 @@ class TestTrainingAccumulatorIntegration:
         mock_infer_engine, mock_env_handle
     ):
         """TrainingAccumulator grows tensors correctly."""
-        from skyrl_agent.agents.android.android_agent import AndroidAgent
+        from skyrl_agent.agents.android.base import AndroidAgent
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -524,10 +524,10 @@ class TestTrainingAccumulatorIntegration:
         mock_infer_engine, mock_env_handle
     ):
         """Tensor accumulation handles images correctly."""
-        from skyrl_agent.agents.android.android_agent import AndroidAgent
-        from skyrl_agent.agents.android.android_utils import numpy_to_base64
+        from skyrl_agent.agents.android.base import AndroidAgent
+        from skyrl_agent.agents.android.utils import numpy_to_base64
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -592,9 +592,9 @@ class TestMLEdgeCases:
         mock_infer_engine, mock_env_handle
     ):
         """Empty message list raises an error (qwen_vl_utils doesn't handle empty input)."""
-        from skyrl_agent.agents.android.android_agent import AndroidAgent
+        from skyrl_agent.agents.android.base import AndroidAgent
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -617,9 +617,9 @@ class TestMLEdgeCases:
         mock_infer_engine, mock_env_handle
     ):
         """Unicode characters in text are handled correctly."""
-        from skyrl_agent.agents.android.android_agent import AndroidAgent
+        from skyrl_agent.agents.android.base import AndroidAgent
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -650,9 +650,9 @@ class TestMLEdgeCases:
         mock_infer_engine, mock_env_handle
     ):
         """Very long text is handled (may be truncated)."""
-        from skyrl_agent.agents.android.android_agent import AndroidAgent
+        from skyrl_agent.agents.android.base import AndroidAgent
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)
@@ -720,10 +720,10 @@ class TestTaskFormatIntegration:
         mock_infer_engine, mock_env_handle, sample_observation
     ):
         """Full initial instruction can be processed by agent."""
-        from skyrl_agent.agents.android.android_agent import AndroidAgent
+        from skyrl_agent.agents.android.base import AndroidAgent
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
             mock_tool = Mock()
             mock_tool.name = "android_env"
             mock_registry.__contains__ = Mock(return_value=True)

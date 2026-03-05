@@ -140,7 +140,7 @@ def main():
     # which pulls in verl/torch dependency chain.
     import importlib.util
     _runner_path = os.path.join(
-        _PROJECT_ROOT, "skyrl_agent", "agents", "android", "claude_sdk_runner.py"
+        _PROJECT_ROOT, "skyrl_agent", "agents", "android", "claude_sdk", "runner.py"
     )
     _runner_spec = importlib.util.spec_from_file_location("claude_sdk_runner", _runner_path)
     _runner_mod = importlib.util.module_from_spec(_runner_spec)

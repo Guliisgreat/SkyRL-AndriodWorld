@@ -378,7 +378,7 @@ def process_messages_for_vlm_training(
     
     # Default load_content if not provided
     if load_content_fn is None:
-        from skyrl_agent.agents.android.android_utils import load_content
+        from skyrl_agent.agents.android.utils import load_content
         load_content_fn = load_content
     
     # === Step 1: Extract images from all messages ===

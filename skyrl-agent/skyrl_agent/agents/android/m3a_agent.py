@@ -23,8 +23,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from skyrl_agent.agents.android.android_agent import AndroidAgent
-from .android_utils import numpy_to_base64
+from skyrl_agent.agents.android.base import AndroidAgent
+from .utils import numpy_to_base64
 
 DEBUG_TIMING = os.environ.get("DEBUG_TIMING", "0") == "1"
 

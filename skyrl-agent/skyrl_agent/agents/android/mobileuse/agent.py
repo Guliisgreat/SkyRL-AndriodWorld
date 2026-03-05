@@ -22,10 +22,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from skyrl_agent.agents.android.android_agent import AndroidAgent, TrajectoryState
+from skyrl_agent.agents.android.base import AndroidAgent, TrajectoryState
 from skyrl_agent.config.configuration_utils import TrajectoryConfig
 from skyrl_agent.integrations.base import AsyncInferBackend
-from ..android_utils import init_messages, load_content, numpy_to_base64
+from ..utils import init_messages, load_content, numpy_to_base64
 
 from .parsers import (
     parse_answer_response,

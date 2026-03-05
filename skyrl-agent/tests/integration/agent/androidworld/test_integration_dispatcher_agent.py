@@ -75,7 +75,7 @@ def mock_trajectories_factory(mock_traj_config, mock_tokenizer, mock_processor):
     """Factory to create mock trajectories."""
     def _factory(num_instances: int, num_trajectories: int):
         """Create nested dict of trajectories: {instance_id: {traj_id: traj}}."""
-        from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
+        from skyrl_agent.agents.android.trajectory import AndroidTrajectory
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         trajectories = {}
@@ -301,7 +301,7 @@ class TestDispatcherWithTrajectories:
             traj = trajectories[batch_idx][trajectory_id]
             traj.env_handle = env_pool[env_id]
             
-            with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry:
+            with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry:
                 mock_tool = Mock()
                 mock_tool.name = "android_env"
                 mock_registry.__contains__ = Mock(return_value=True)
@@ -314,8 +314,8 @@ class TestDispatcherWithTrajectories:
         async def run_fn(batch_idx, trajectory_id, env_id):
             traj = trajectories[batch_idx][trajectory_id]
             
-            with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry, \
-                 patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+            with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry, \
+                 patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
                 
                 mock_tool = Mock()
                 mock_tool.name = "android_env"
@@ -383,8 +383,8 @@ class TestDispatcherWithTrajectories:
         async def run_fn(batch_idx, trajectory_id, env_id):
             traj = trajectories[batch_idx][trajectory_id]
             
-            with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry, \
-                 patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+            with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry, \
+                 patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
                 
                 mock_tool = Mock()
                 mock_tool.name = "android_env"
@@ -431,7 +431,7 @@ class TestAgentEnvInteraction:
         self, mock_traj_config, mock_tokenizer, mock_processor, mock_env_pool_factory
     ):
         """Agent correctly uses the assigned environment handle."""
-        from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
+        from skyrl_agent.agents.android.trajectory import AndroidTrajectory
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         env_pool = mock_env_pool_factory(pool_size=2)
@@ -458,8 +458,8 @@ class TestAgentEnvInteraction:
         traj.env_handle = assigned_env
         traj.processor = mock_processor
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry, \
-             patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry, \
+             patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
             
             mock_tool = Mock()
             mock_tool.name = "android_env"
@@ -485,7 +485,7 @@ class TestAgentEnvInteraction:
         self, mock_traj_config, mock_tokenizer, mock_processor, mock_env_pool_factory
     ):
         """Concurrent trajectories don't interfere with each other's env handles."""
-        from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
+        from skyrl_agent.agents.android.trajectory import AndroidTrajectory
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         env_pool = mock_env_pool_factory(pool_size=2)
@@ -513,8 +513,8 @@ class TestAgentEnvInteraction:
             traj.env_handle = env_pool[env_idx]
             traj.processor = mock_processor
             
-            with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry, \
-                 patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+            with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry, \
+                 patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
                 
                 mock_tool = Mock()
                 mock_tool.name = "android_env"

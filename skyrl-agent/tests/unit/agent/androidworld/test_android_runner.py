@@ -22,7 +22,7 @@ except ImportError:
     OMEGACONF_AVAILABLE = False
     OmegaConf = None
 
-from skyrl_agent.agents.android.android_runner import AndroidAgentRunner
+from skyrl_agent.agents.android.runner import AndroidAgentRunner
 
 
 # ==================== Fixtures ====================
@@ -194,14 +194,14 @@ class TestRunCreatesEnvPool:
         runner.task = mock_task
         
         # Mock other dependencies
-        with patch('skyrl_agent.agents.android.android_runner.build_generator_input') as mock_build_input:
+        with patch('skyrl_agent.agents.android.runner.build_generator_input') as mock_build_input:
             mock_build_input.return_value = Mock(input_batch=mock_input_batch)
             
-            with patch('skyrl_agent.agents.android.android_runner.build_generator_output') as mock_build_output:
+            with patch('skyrl_agent.agents.android.runner.build_generator_output') as mock_build_output:
                 mock_build_output.return_value = Mock(result={})
                 
                 with patch.object(runner, '_initialize_trajectories'):
-                    with patch('skyrl_agent.agents.android.android_runner.DISPATCHER_REGISTRY') as mock_registry:
+                    with patch('skyrl_agent.agents.android.runner.DISPATCHER_REGISTRY') as mock_registry:
                         mock_dispatcher = AsyncMock()
                         mock_registry.get = Mock(return_value=mock_dispatcher)
                         
@@ -226,14 +226,14 @@ class TestRunCreatesEnvPool:
         mock_task = AsyncMock()
         runner.task = mock_task
         
-        with patch('skyrl_agent.agents.android.android_runner.build_generator_input') as mock_build_input:
+        with patch('skyrl_agent.agents.android.runner.build_generator_input') as mock_build_input:
             mock_build_input.return_value = Mock(input_batch=mock_input_batch)
             
-            with patch('skyrl_agent.agents.android.android_runner.build_generator_output') as mock_build_output:
+            with patch('skyrl_agent.agents.android.runner.build_generator_output') as mock_build_output:
                 mock_build_output.return_value = Mock(result={})
                 
                 with patch.object(runner, '_initialize_trajectories'):
-                    with patch('skyrl_agent.agents.android.android_runner.DISPATCHER_REGISTRY') as mock_registry:
+                    with patch('skyrl_agent.agents.android.runner.DISPATCHER_REGISTRY') as mock_registry:
                         mock_dispatcher = AsyncMock()
                         mock_registry.get = Mock(return_value=mock_dispatcher)
                         
@@ -282,10 +282,10 @@ class TestDispatcherIntegration:
         mock_trajectories = [[Mock() for _ in range(mock_runner_cfg.generator.num_trajectories)] 
                               for _ in range(len(mock_input_batch))]
         
-        with patch('skyrl_agent.agents.android.android_runner.build_generator_input') as mock_build_input:
+        with patch('skyrl_agent.agents.android.runner.build_generator_input') as mock_build_input:
             mock_build_input.return_value = Mock(input_batch=mock_input_batch)
             
-            with patch('skyrl_agent.agents.android.android_runner.build_generator_output') as mock_build_output:
+            with patch('skyrl_agent.agents.android.runner.build_generator_output') as mock_build_output:
                 mock_build_output.return_value = Mock(result={})
                 
                 with patch.object(runner, '_initialize_trajectories') as mock_init_traj:
@@ -294,7 +294,7 @@ class TestDispatcherIntegration:
                         runner.trajectories = mock_trajectories
                     mock_init_traj.side_effect = set_trajectories
                     
-                    with patch('skyrl_agent.agents.android.android_runner.DISPATCHER_REGISTRY') as mock_registry:
+                    with patch('skyrl_agent.agents.android.runner.DISPATCHER_REGISTRY') as mock_registry:
                         mock_dispatcher = AsyncMock()
                         mock_registry.get = Mock(return_value=mock_dispatcher)
                         
@@ -322,11 +322,11 @@ class TestDispatcherIntegration:
         mock_task = AsyncMock()
         runner.task = mock_task
         
-        with patch('skyrl_agent.agents.android.android_runner.build_generator_input') as mock_build_input:
+        with patch('skyrl_agent.agents.android.runner.build_generator_input') as mock_build_input:
             mock_build_input.return_value = Mock(input_batch=mock_input_batch)
             
             with patch.object(runner, '_initialize_trajectories'):
-                with patch('skyrl_agent.agents.android.android_runner.DISPATCHER_REGISTRY') as mock_registry:
+                with patch('skyrl_agent.agents.android.runner.DISPATCHER_REGISTRY') as mock_registry:
                     mock_registry.get = Mock(return_value=None)
                     
                     with pytest.raises(ValueError, match="async_fix_pool_retry dispatcher not found"):
@@ -389,10 +389,10 @@ class TestRunCleanup:
         mock_task = AsyncMock()
         runner.task = mock_task
         
-        with patch('skyrl_agent.agents.android.android_runner.build_generator_input') as mock_build_input:
+        with patch('skyrl_agent.agents.android.runner.build_generator_input') as mock_build_input:
             mock_build_input.return_value = Mock(input_batch=mock_input_batch)
             
-            with patch('skyrl_agent.agents.android.android_runner.build_generator_output') as mock_build_output:
+            with patch('skyrl_agent.agents.android.runner.build_generator_output') as mock_build_output:
                 mock_build_output.return_value = Mock(result={})
                 
                 with patch.object(runner, '_initialize_trajectories') as mock_init:
@@ -401,7 +401,7 @@ class TestRunCleanup:
                         runner.trajectories = {0: {0: Mock()}, 1: {0: Mock()}}
                     mock_init.side_effect = set_trajectories
                     
-                    with patch('skyrl_agent.agents.android.android_runner.DISPATCHER_REGISTRY') as mock_registry:
+                    with patch('skyrl_agent.agents.android.runner.DISPATCHER_REGISTRY') as mock_registry:
                         mock_dispatcher = AsyncMock()
                         mock_registry.get = Mock(return_value=mock_dispatcher)
                         

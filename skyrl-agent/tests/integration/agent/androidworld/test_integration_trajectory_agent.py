@@ -167,8 +167,8 @@ class TestE2EFullPipelineMock:
         mock_processor, mock_env_handle_terminated, sample_observation
     ):
         """Single trajectory completes successfully from start to finish."""
-        from skyrl_agent.agents.android.android_agent import AndroidAgent
-        from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
+        from skyrl_agent.agents.android.base import AndroidAgent
+        from skyrl_agent.agents.android.trajectory import AndroidTrajectory
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         # Setup: Response that finishes immediately
@@ -189,8 +189,8 @@ class TestE2EFullPipelineMock:
         traj.processor = mock_processor
         
         # Mock the tool
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry, \
-             patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry, \
+             patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
             
             mock_tool = Mock()
             mock_tool.name = "android_env"
@@ -222,7 +222,7 @@ class TestE2EFullPipelineMock:
         self, mock_traj_config, mock_tokenizer, mock_processor, mock_env_handle
     ):
         """Trajectory stops at max iterations when task not completed."""
-        from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
+        from skyrl_agent.agents.android.trajectory import AndroidTrajectory
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         # Setup: Low max iterations, never-ending response
@@ -244,8 +244,8 @@ class TestE2EFullPipelineMock:
         traj.env_handle = mock_env_handle
         traj.processor = mock_processor
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry, \
-             patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry, \
+             patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
             
             mock_tool = Mock()
             mock_tool.name = "android_env"
@@ -272,7 +272,7 @@ class TestE2EFullPipelineMock:
         self, mock_traj_config, mock_tokenizer, mock_processor, sample_observation
     ):
         """Multi-step trajectory executes correct sequence of actions."""
-        from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
+        from skyrl_agent.agents.android.trajectory import AndroidTrajectory
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         # Setup: Sequence of responses
@@ -308,8 +308,8 @@ class TestE2EFullPipelineMock:
         traj.env_handle = mock_env_handle
         traj.processor = mock_processor
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry, \
-             patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry, \
+             patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
             
             mock_tool = Mock()
             mock_tool.name = "android_env"
@@ -338,7 +338,7 @@ class TestE2EMultipleTrajectories:
         self, mock_traj_config, mock_tokenizer, mock_processor, sample_observation
     ):
         """Multiple trajectories run and complete independently."""
-        from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
+        from skyrl_agent.agents.android.trajectory import AndroidTrajectory
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         num_trajectories = 3
@@ -367,8 +367,8 @@ class TestE2EMultipleTrajectories:
         
         # Run all trajectories in parallel
         async def run_trajectory(traj):
-            with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry, \
-                 patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+            with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry, \
+                 patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
                 
                 mock_tool = Mock()
                 mock_tool.name = "android_env"
@@ -404,7 +404,7 @@ class TestE2EErrorHandling:
         self, mock_traj_config, mock_tokenizer, mock_processor
     ):
         """Trajectory handles environment errors gracefully."""
-        from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
+        from skyrl_agent.agents.android.trajectory import AndroidTrajectory
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         mock_infer_engine = AsyncMock()
@@ -430,8 +430,8 @@ class TestE2EErrorHandling:
         traj.env_handle = mock_env_handle
         traj.processor = mock_processor
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry, \
-             patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry, \
+             patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
             
             mock_tool = Mock()
             mock_tool.name = "android_env"
@@ -453,7 +453,7 @@ class TestE2EErrorHandling:
         self, mock_traj_config, mock_tokenizer, mock_processor, mock_env_handle
     ):
         """Trajectory handles action parse errors gracefully."""
-        from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
+        from skyrl_agent.agents.android.trajectory import AndroidTrajectory
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         # Malformed response that can't be parsed
@@ -473,8 +473,8 @@ class TestE2EErrorHandling:
         traj.env_handle = mock_env_handle
         traj.processor = mock_processor
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry, \
-             patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry, \
+             patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
             
             mock_tool = Mock()
             mock_tool.name = "android_env"
@@ -506,7 +506,7 @@ class TestE2ETrainingDataCollection:
         self, mock_traj_config, mock_tokenizer, mock_processor, sample_observation
     ):
         """Verify training tensors are collected during trajectory."""
-        from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
+        from skyrl_agent.agents.android.trajectory import AndroidTrajectory
         from skyrl_agent.tasks.android.android_task import AndroidTask
         
         mock_infer_engine = AsyncMock()
@@ -528,8 +528,8 @@ class TestE2ETrainingDataCollection:
         traj.env_handle = mock_env_handle
         traj.processor = mock_processor
         
-        with patch('skyrl_agent.agents.android.android_agent.TOOL_REGISTRY') as mock_registry, \
-             patch('skyrl_agent.agents.android.android_agent.call_sync_from_async') as mock_call:
+        with patch('skyrl_agent.agents.android.base.TOOL_REGISTRY') as mock_registry, \
+             patch('skyrl_agent.agents.android.base.call_sync_from_async') as mock_call:
             
             mock_tool = Mock()
             mock_tool.name = "android_env"

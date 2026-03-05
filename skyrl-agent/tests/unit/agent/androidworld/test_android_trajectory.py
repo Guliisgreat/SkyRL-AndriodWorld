@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch, MagicMock
 import numpy as np
 import pytest
 
-from skyrl_agent.agents.android.android_trajectory import AndroidTrajectory
+from skyrl_agent.agents.android.trajectory import AndroidTrajectory
 
 
 # ==================== Unit Tests ====================
@@ -190,7 +190,7 @@ class TestGenerateTrajectory:
     @pytest.mark.asyncio
     async def test_generate_trajectory(self, initialized_trajectory, mock_traj_config):
         """Verify agent creation and result retrieval."""
-        with patch('skyrl_agent.agents.android.android_trajectory.AndroidAgent') as MockAgent:
+        with patch('skyrl_agent.agents.android.trajectory.AndroidAgent') as MockAgent:
             # Create mock state that get_state returns
             mock_state = Mock()
             mock_state.instance_id = mock_traj_config.instance_id
@@ -234,7 +234,7 @@ class TestGenerateTrajectory:
     @pytest.mark.asyncio
     async def test_generate_trajectory_retrieves_state(self, initialized_trajectory, mock_traj_config):
         """Verify all state is retrieved from agent via get_state()."""
-        with patch('skyrl_agent.agents.android.android_trajectory.AndroidAgent') as MockAgent:
+        with patch('skyrl_agent.agents.android.trajectory.AndroidAgent') as MockAgent:
             # Create mock state that get_state returns
             mock_state = Mock()
             mock_state.instance_id = mock_traj_config.instance_id
@@ -268,7 +268,7 @@ class TestGenerateTrajectory:
     @pytest.mark.asyncio
     async def test_generate_trajectory_sets_instance_info(self, initialized_trajectory, mock_traj_config):
         """Verify instance_id and trajectory_id in result."""
-        with patch('skyrl_agent.agents.android.android_trajectory.AndroidAgent') as MockAgent:
+        with patch('skyrl_agent.agents.android.trajectory.AndroidAgent') as MockAgent:
             # Create mock state that get_state returns
             mock_state = Mock()
             mock_state.instance_id = mock_traj_config.instance_id
@@ -389,7 +389,7 @@ class TestFullTrajectoryLifecycle:
         assert trajectory.initial_observation is not None
         
         # 2. Generate (with mocked agent)
-        with patch('skyrl_agent.agents.android.android_trajectory.AndroidAgent') as MockAgent:
+        with patch('skyrl_agent.agents.android.trajectory.AndroidAgent') as MockAgent:
             # Create mock state that get_state returns
             mock_state = Mock()
             mock_state.instance_id = mock_traj_config.instance_id
