@@ -59,11 +59,14 @@ SP_SIZE=1
 TP_SIZE=1
 N_GPUS_PER_NODE=$NUM_GPUS
 
-OUTPUT_DIR=./results
-RESULTS_DIR=${OUTPUT_DIR}/results
+# Convention: {AgentClass}_{Model}_{yymmdd}_{HHMM}
+MODEL_SHORT=$(basename "$MODEL" | tr -d '.-')
+EXP_NAME="AndroidAPITreeADBAgent_${MODEL_SHORT}_$(date +%y%m%d_%H%M)"
+OUTPUT_DIR=./results/${EXP_NAME}
+RESULTS_DIR=${OUTPUT_DIR}
 ROLLOUTS_DIR=${OUTPUT_DIR}/rollouts
 mkdir -p ${RESULTS_DIR} ${ROLLOUTS_DIR}
-echo "Output directories created: ${RESULTS_DIR} ${ROLLOUTS_DIR}"
+echo "Output: ${OUTPUT_DIR}"
 
 echo ""
 echo "=============================================="
@@ -114,7 +117,7 @@ uv run --frozen --extra verl --env-file .env -m skyrl_agent.integrations.verl.ve
    trainer.balance_batch=False \
    'trainer.logger=["console", "wandb"]' \
    trainer.project_name=skyagent-android-full-adb-inference \
-   trainer.experiment_name=android-full-adb-inference-test \
+   trainer.experiment_name=$EXP_NAME \
    trainer.n_gpus_per_node=$N_GPUS_PER_NODE \
    trainer.nnodes=$NNODES \
    trainer.total_epochs=0 \
@@ -130,17 +133,10 @@ INFERENCE_EXIT_CODE=$?
 echo ""
 echo "=============================================="
 if [ $INFERENCE_EXIT_CODE -eq 0 ]; then
-    echo "Full-ADB inference completed successfully!"
-    if [ -f "${RESULTS_DIR}/final_metrics.json" ]; then
-        echo ""
-        echo "Final Metrics:"
-        cat "${RESULTS_DIR}/final_metrics.json"
-    fi
+    echo "Full-ADB inference completed! Output: ${OUTPUT_DIR}"
 else
     echo "Full-ADB inference failed with exit code: $INFERENCE_EXIT_CODE"
 fi
-echo "=============================================="
-echo "Output: ${RESULTS_DIR}/final_metrics.json, ${RESULTS_DIR}/0.jsonl"
 echo "=============================================="
 
 exit $INFERENCE_EXIT_CODE

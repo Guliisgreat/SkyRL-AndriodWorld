@@ -54,8 +54,9 @@ if [ -z "${OPENAI_API_KEY:-}" ]; then
 fi
 
 # === Output ===
-OUTPUT_DIR=${OUTPUT_DIR:-./results}
-mkdir -p "$OUTPUT_DIR"
+# When OUTPUT_DIR is set, results go directly there.
+# When unset, the Python script auto-creates results/{AgentClass}_{TaskClass}_{mmdd_HHMM}/.
+OUTPUT_DIR=${OUTPUT_DIR:-}
 
 echo ""
 echo "=============================================="
@@ -67,7 +68,7 @@ echo "  API type:    $API_TYPE"
 echo "  Tokenizer:   $TOKENIZER"
 echo "  Containers:  $ENV_POOL_SIZE"
 echo "  Instances:   $NUM_INSTANCES"
-echo "  Output:      $OUTPUT_DIR"
+echo "  Output:      ${OUTPUT_DIR:-./results/<auto>}"
 echo "=============================================="
 echo ""
 
@@ -77,7 +78,9 @@ EXTRA_ARGS+=(--model "$MODEL")
 EXTRA_ARGS+=(--api-url "$API_URL")
 EXTRA_ARGS+=(--api-type "$API_TYPE")
 EXTRA_ARGS+=(--tokenizer "$TOKENIZER")
-EXTRA_ARGS+=(--output-dir "$OUTPUT_DIR")
+if [ -n "$OUTPUT_DIR" ]; then
+    EXTRA_ARGS+=(--output-dir "$OUTPUT_DIR")
+fi
 
 if [ -n "${MAX_INSTANCES:-}" ]; then
     EXTRA_ARGS+=(--max-instances "$MAX_INSTANCES")
@@ -95,11 +98,7 @@ echo ""
 echo "=============================================="
 if [ $EXIT_CODE -eq 0 ]; then
     echo "Inference completed!"
-    if [ -f "${OUTPUT_DIR}/final_metrics.json" ]; then
-        echo ""
-        echo "Final Metrics:"
-        cat "${OUTPUT_DIR}/final_metrics.json"
-    fi
+    echo "(check ./results/ for output)"
 else
     echo "Inference failed (exit $EXIT_CODE)"
 fi

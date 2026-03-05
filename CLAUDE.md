@@ -26,3 +26,32 @@ Docs live in `docs/` with two subdirectories:
 - **`docs/*.md`** (top-level) — Usage and architecture docs for developers.
 
 Do NOT create docs in other locations (`dev docs/`, `dev_doc/`, `tmp_doc/`, etc.).
+
+## Experiment Results
+
+All experiment results go under `skyrl-agent/results/`. Each run gets its own subfolder.
+
+### Naming convention
+
+```
+{AgentClass}_{ModelShort}_{yymmdd}_{HHMM}
+```
+
+- **AgentClass** — the agent class name, e.g. `AndroidT3AADBAgent`, `ClaudeAgentSDK`
+- **ModelShort** — model name with `/`, `-`, `.` stripped, e.g. `gpt5mini`, `UITARS7BSFT`, `Qwen3527B`
+- **yymmdd\_HHMM** — run start time (2-digit year), e.g. `260305_1422`
+
+Examples:
+```
+results/AndroidAgent_gpt5mini_260305_1422/
+results/AndroidT3AADBAgent_UITARS7BSFT_260305_1507/
+results/ClaudeAgentSDK_claudesonnet420250514_260305_1633/
+```
+
+### Rules
+
+- Shell scripts and Python entry points must auto-generate the subfolder name — never dump results into `results/` flat.
+- The OpenAI backend (`run_openai_android_inference.py`) builds the name in `_default_experiment_name()`.
+- VERL shell scripts build `EXP_NAME` and pass it as `trainer.experiment_name`.
+- `TrajectorySaver` follows the same convention via its `exp_name` parameter.
+- Users can override with `OUTPUT_DIR=custom/path` or `--output-dir`, but the default must follow this convention.

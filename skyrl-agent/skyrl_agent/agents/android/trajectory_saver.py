@@ -25,12 +25,13 @@ class TrajectorySaver:
         save_screenshots: bool = True,
         agent_cls: str = "",
         task_name: str = "",
+        model_name: str = "",
     ):
         if not exp_name:
             agent_short = agent_cls.rsplit(".", 1)[-1] if agent_cls else "unknown"
-            task_short = task_name.rsplit(".", 1)[-1] if task_name else "task"
-            timestamp = datetime.now().strftime("%m%d_%H%M")
-            exp_name = f"{agent_short}_{task_short}_{timestamp}"
+            model_short = model_name.rsplit("/", 1)[-1].replace("-", "").replace(".", "") if model_name else "unknown"
+            timestamp = datetime.now().strftime("%y%m%d_%H%M")
+            exp_name = f"{agent_short}_{model_short}_{timestamp}"
         self.exp_name = exp_name
         self.base_dir = os.path.join(save_dir, exp_name)
         self.save_screenshots = save_screenshots

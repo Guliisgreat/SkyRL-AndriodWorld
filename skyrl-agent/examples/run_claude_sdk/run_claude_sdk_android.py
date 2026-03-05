@@ -127,7 +127,13 @@ def main():
     if pool_size is not None:
         cfg.env.pool_size = pool_size
 
-    output_dir = args.output_dir or "./results"
+    if args.output_dir:
+        output_dir = args.output_dir
+    else:
+        model = cfg.claude_sdk.get("model", "claude-sonnet-4-20250514")
+        model_short = model.rsplit("/", 1)[-1].replace("-", "").replace(".", "")
+        exp_name = f"ClaudeAgentSDK_{model_short}_{time.strftime('%y%m%d_%H%M')}"
+        output_dir = os.path.join("./results", exp_name)
     output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 

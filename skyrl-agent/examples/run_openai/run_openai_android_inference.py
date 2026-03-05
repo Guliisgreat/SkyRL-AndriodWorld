@@ -134,17 +134,17 @@ def _load_tokenizer(model_name: str, tokenizer_override: str = None):
     return AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
 
-def _default_experiment_name(cfg) -> str:
-    """Default experiment name: {AgentClass}_{TaskClass}_{mmdd}_{HHMM}.
+def _default_experiment_name(cfg, model_name: str = "") -> str:
+    """Default experiment name: {AgentClass}_{Model}_{yymmdd}_{HHMM}.
 
-    Matches TrajectorySaver convention so results and trajectories use the same folder
-    (e.g. AndroidT3AAgent_AndroidTask_0226_0231).
+    Example: AndroidT3AADBAgent_gpt5mini_260305_1422
     """
     agent_cls = cfg.get("agent_cls", "")
-    task_cls = cfg.get("task", "")
     agent_short = agent_cls.rsplit(".", 1)[-1] if agent_cls else "AndroidAgent"
-    task_short = task_cls.rsplit(".", 1)[-1] if task_cls else "AndroidTask"
-    return f"{agent_short}_{task_short}_{time.strftime('%m%d_%H%M')}"
+    # Shorten model name: "gpt-5-mini" -> "gpt5mini", "Qwen/Qwen3-VL-30B" -> "Qwen3-VL-30B"
+    model_short = model_name.rsplit("/", 1)[-1] if model_name else "unknown"
+    model_short = model_short.replace("-", "").replace(".", "")
+    return f"{agent_short}_{model_short}_{time.strftime('%y%m%d_%H%M')}"
 
 
 def _setup_wandb(cfg, model_name: str):
@@ -258,11 +258,6 @@ def main():
     cfg = OmegaConf.load(args.yaml)
     OmegaConf.set_struct(cfg, False)
 
-    experiment_name = args.experiment_name or _default_experiment_name(cfg)
-    output_dir = args.output_dir or os.path.join("./results", experiment_name)
-    output_dir = os.path.abspath(output_dir)
-    os.makedirs(output_dir, exist_ok=True)
-
     pool_size = args.pool_size
     if pool_size is None and os.environ.get("ENV_POOL_SIZE"):
         try:
@@ -283,6 +278,12 @@ def main():
 
     # --- Load tokenizer ---
     model_name = args.model or cfg.generator.backend_config.model_name
+
+    # --- Experiment name & output dir (after model is resolved) ---
+    experiment_name = args.experiment_name or _default_experiment_name(cfg, model_name)
+    output_dir = args.output_dir or os.path.join("./results", experiment_name)
+    output_dir = os.path.abspath(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
     tokenizer = _load_tokenizer(model_name, args.tokenizer)
 
     # --- Setup wandb (use same experiment name as results folder) ---

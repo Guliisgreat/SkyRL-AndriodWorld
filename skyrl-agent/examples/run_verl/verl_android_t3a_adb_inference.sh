@@ -70,8 +70,11 @@ TP_SIZE=1
 N_GPUS_PER_NODE=$NUM_GPUS
 
 # === Output ===
-OUTPUT_DIR=./results
-RESULTS_DIR=${OUTPUT_DIR}/results
+# Convention: {AgentClass}_{Model}_{yymmdd}_{HHMM}
+MODEL_SHORT=$(basename "$MODEL" | tr -d '.-')
+EXP_NAME="AndroidT3AADBAgent_${MODEL_SHORT}_$(date +%y%m%d_%H%M)"
+OUTPUT_DIR=./results/${EXP_NAME}
+RESULTS_DIR=${OUTPUT_DIR}
 ROLLOUTS_DIR=${OUTPUT_DIR}/rollouts
 mkdir -p ${RESULTS_DIR} ${ROLLOUTS_DIR}
 
@@ -120,7 +123,7 @@ uv run --frozen --extra verl --env-file .env -m skyrl_agent.integrations.verl.ve
    trainer.balance_batch=False \
    'trainer.logger=["console", "wandb"]' \
    trainer.project_name=skyagent-android-t3a-adb \
-   trainer.experiment_name=t3a-adb-qwen35-27b \
+   trainer.experiment_name=$EXP_NAME \
    trainer.n_gpus_per_node=$N_GPUS_PER_NODE \
    trainer.nnodes=$NNODES \
    trainer.total_epochs=0 \
