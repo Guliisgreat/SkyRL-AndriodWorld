@@ -6,14 +6,21 @@ Combines:
   - ADB shell commands as the action space (executed via step_adb)
 
 Key features:
-  - Text-only: observation = goal + history + UI element list (with bbox_pixels)
+  - Text-only: observation = goal + history + UI element list (with bbox_pixels + tap_target)
   - ADB commands: tap, swipe, input text, keyevent, app management, system queries
   - Mandatory summarization: second LLM call with before/after UI + command output
   - Full prompt rebuild each step (no sliding window; summarization compresses context)
+
+Optimizations over baseline:
+  - Pre-computed tap_target center coordinates in UI element descriptions
+  - Lenient answer/FINISH/INFEASIBLE parsing with regex fallbacks
+  - Streamlined prompt with focused ADB command set
+  - Explicit finish/answer guidance to increase finish ratio
 """
 
 import copy
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -21,7 +28,7 @@ import numpy as np
 
 from skyrl_agent.agents.android.android_agent import AndroidAgent
 from skyrl_agent.agents.android.android_m3a_agent import (
-    generate_ui_elements_description_full,
+    validate_ui_element,
 )
 from skyrl_agent.agents.android.android_api_screen_adb_agent import (
     _parse_task_control,
@@ -36,7 +43,71 @@ DEFAULT_SCREEN_HEIGHT = 2400
 
 
 # ---------------------------------------------------------------------------
-# T3A-ADB prompt templates
+# UI description with pre-computed tap targets
+# ---------------------------------------------------------------------------
+
+def _generate_ui_element_with_tap_target(el: Dict, index: int) -> str:
+    """Produce a UI element description with pre-computed tap_target center.
+
+    Adds "tap_target": [cx, cy] so the model doesn't need to compute
+    center coordinates from bounding boxes (reduces arithmetic errors).
+    """
+    desc = f'UI element {index}: {{"index": {index}, '
+    cn = el.get("class_name") or ""
+    if cn:
+        desc += f'"class_name": "{cn}", '
+    rid = el.get("resource_id") or ""
+    if rid:
+        desc += f'"resource_id": "{rid}", '
+    text = el.get("text") or ""
+    if text:
+        desc += f'"text": "{text}", '
+    cd = el.get("content_description") or ""
+    if cd:
+        desc += f'"content_description": "{cd}", '
+    ht = el.get("hint_text") or ""
+    if ht:
+        desc += f'"hint_text": "{ht}", '
+    bbox = el.get("bbox_pixels")
+    if bbox and isinstance(bbox, dict):
+        x_min = bbox.get("x_min", 0)
+        x_max = bbox.get("x_max", 0)
+        y_min = bbox.get("y_min", 0)
+        y_max = bbox.get("y_max", 0)
+        cx = (x_min + x_max) // 2
+        cy = (y_min + y_max) // 2
+        desc += f'"tap_target": [{cx}, {cy}], '
+        desc += (
+            f'"bbox_pixels": {{"x_min": {x_min}, '
+            f'"x_max": {x_max}, '
+            f'"y_min": {y_min}, '
+            f'"y_max": {y_max}}}, '
+        )
+    desc += f'"is_clickable": {"True" if el.get("is_clickable") else "False"}, '
+    desc += f'"is_long_clickable": {"True" if el.get("is_long_clickable") else "False"}, '
+    desc += f'"is_editable": {"True" if el.get("is_editable") else "False"}, '
+    if el.get("is_scrollable"):
+        desc += '"is_scrollable": True, '
+    if el.get("is_focusable"):
+        desc += '"is_focusable": True, '
+    desc += f'"is_selected": {"True" if el.get("is_selected") else "False"}, '
+    desc += f'"is_checked": {"True" if el.get("is_checked") else "False"}'
+    return desc + "}"
+
+
+def generate_ui_elements_with_tap_targets(
+    ui_elements: List[Dict], screen_size: Tuple[int, int],
+) -> str:
+    """Generate UI element descriptions with pre-computed tap_target centers."""
+    lines: List[str] = []
+    for index, el in enumerate(ui_elements):
+        if validate_ui_element(el, screen_size):
+            lines.append(_generate_ui_element_with_tap_target(el, index))
+    return "\n".join(lines) if lines else "Not available"
+
+
+# ---------------------------------------------------------------------------
+# T3A-ADB prompt templates (optimized)
 # ---------------------------------------------------------------------------
 
 PROMPT_PREFIX = (
@@ -48,91 +119,65 @@ PROMPT_PREFIX = (
     ' actions (step by step) on the phone.\n\n'
     'When given a user request, you will try to complete it step by step. At'
     ' each step, a list of descriptions for most UI elements on the'
-    ' current screen will be given to you (each element has bounding box'
-    ' coordinates in pixels), together with a history of what you have done'
-    ' in previous steps.'
-    ' Based on these pieces of information and the goal, you must choose to'
-    ' perform one of the actions in the following list by outputting the'
-    ' action in the correct format.\n\n'
+    ' current screen will be given to you. Each element has a pre-computed'
+    ' "tap_target": [x, y] center coordinate that you can directly use'
+    ' with `adb shell input tap x y`.\n\n'
     '## Available Actions\n\n'
     '### Touch & Input\n'
-    '- `adb shell input tap <x> <y>` -- tap at pixel coordinates\n'
+    '- `adb shell input tap <x> <y>` -- tap at coordinates (use tap_target from UI element)\n'
     '- `adb shell input swipe <x1> <y1> <x2> <y2> [duration_ms]` -- swipe gesture\n'
     '- `adb shell input text \'<text>\'` -- type text (must tap field first)\n'
     '- `adb shell input keyevent <keycode>` -- press a key\n'
     '  Common keycodes: KEYCODE_HOME (3), KEYCODE_BACK (4), KEYCODE_ENTER (66),'
     ' KEYCODE_DEL (67), KEYCODE_SEARCH (84), KEYCODE_TAB (61)\n\n'
-    '### App Management\n'
-    '- `adb shell am start -n <package/activity>` -- start an activity\n'
+    '### App & System\n'
+    '- `adb shell monkey -p <package> -c android.intent.category.LAUNCHER 1` -- launch app\n'
     '- `adb shell am start -a android.intent.action.VIEW -d <uri>` -- open a URI\n'
     '- `adb shell am force-stop <package>` -- force stop an app\n'
-    '- `adb shell am broadcast -a <action>` -- send a broadcast\n'
-    '- `adb shell monkey -p <package> -c android.intent.category.LAUNCHER 1` -- launch app\n'
-    '- `adb shell pm list packages` -- list installed packages\n\n'
-    '### System Queries\n'
-    '- `adb shell dumpsys <service>` -- dump system service info\n'
-    '- `adb shell settings get <namespace> <key>` -- get a system setting\n'
-    '- `adb shell settings put <namespace> <key> <value>` -- set a system setting\n'
-    '- `adb shell content query --uri <uri>` -- query content provider\n'
-    '- `adb shell content insert --uri <uri> --bind <col>:<type>:<val>` -- insert content\n'
-    '- `adb shell content delete --uri <uri>` -- delete content\n'
-    '- `adb shell getprop <property>` -- get system property\n\n'
-    '### UI Inspection\n'
-    '- `adb shell uiautomator dump /dev/tty` -- dump UI hierarchy (XML)\n\n'
-    '### Display & System\n'
-    '- `adb shell wm size` -- get screen size\n'
+    '- `adb shell settings get/put <namespace> <key> [value]` -- get/set settings\n'
+    '- `adb shell content query/insert/delete --uri <uri>` -- content provider operations\n'
     '- `adb shell date` -- get current date/time\n\n'
-    '### Task Control\n'
+    '### File Operations\n'
+    '- `adb shell ls/cat/rm/mv/cp/mkdir <path>` -- file system commands\n'
+    '- `adb shell sh -c \'<script>\'` -- run a shell script (supports &&, pipes, redirection)\n'
+    '  Example: `adb shell sh -c \'mkdir -p /sdcard/Foo && mv /sdcard/a.txt /sdcard/Foo/\'`\n'
+    '  Example: `adb shell sh -c \'echo "hello" > /sdcard/note.txt\'`\n\n'
+    '### Task Completion (IMPORTANT - you MUST use one of these to finish)\n'
     '- `FINISH(content=\'<result description>\')` -- task completed successfully\n'
     '- `INFEASIBLE(content=\'<reason>\')` -- task cannot be completed\n'
-    '- `answer(content=\'<answer text>\')` -- answer user\'s question and complete\n'
+    '- `answer(content=\'<answer text>\')` -- answer a question and complete the task\n'
+    '  Alternative formats also accepted: `answer(<answer text>)` or'
+    ' `answer: <answer text>`\n'
 )
 
 GUIDANCE = (
-    'Here are some useful guidelines you need to follow:\n'
-    'General\n'
-    '- Usually there will be multiple ways to complete a task, pick the'
-    ' easiest one. Also when something does not work as expected (due'
-    ' to various reasons), sometimes a simple retry can solve the problem,'
-    " but if it doesn't (you can see that from the history), try to"
-    ' switch to other solutions.\n'
-    '- Sometimes you may need to navigate the phone to gather information'
-    ' needed to complete the task, for example if user asks'
-    ' "what is my schedule tomorrow", then you may want to launch the calendar'
-    ' app, look up information there, answer'
-    " user's question (using the `answer` action) and finish.\n"
-    '- For requests that are questions (or chat messages), remember to use'
-    ' the `answer` action to reply to user explicitly before finish!'
-    ' Merely displaying the answer on the screen is NOT sufficient (unless'
-    ' the goal is something like "show me ...").\n'
-    '- If the desired state is already achieved (e.g., enabling Wi-Fi when'
-    " it's already on), you can just complete the task.\n"
-    'Action Related\n'
-    '- To tap a UI element, compute its center from the bounding box:'
-    ' x=(x_min+x_max)/2, y=(y_min+y_max)/2, then use'
+    'Here are some useful guidelines you need to follow:\n\n'
+    '## Completing Tasks\n'
+    '- CRITICAL: You MUST end every task by calling FINISH(), INFEASIBLE(),'
+    ' or answer(). If you have gathered the information or performed the'
+    ' action, call the appropriate completion command immediately.\n'
+    '- For questions: use `answer(content=\'<your answer>\')` to provide the'
+    ' answer, then the task is complete. Do NOT just display the answer on'
+    ' screen without calling answer().\n'
+    '- If the desired state is already achieved, call'
+    ' `FINISH(content=\'already done\')` right away.\n\n'
+    '## Tapping UI Elements\n'
+    '- Each UI element has a "tap_target": [x, y] field with pre-computed'
+    ' center coordinates. Use these directly:'
     ' `adb shell input tap <x> <y>`.\n'
-    '- Use `adb shell input text` to type text instead of tapping characters'
-    ' on the keyboard one by one. Tap the text field first, then type.\n'
-    '- Use `adb shell monkey -p <package> -c android.intent.category.LAUNCHER 1`'
-    ' to open an app.\n'
-    '- Prefer achieving the goal via direct shell commands or system APIs'
-    ' (settings, content providers, am/pm) when possible; use tap/swipe only'
-    ' when no such command exists or when the task explicitly requires'
-    ' interacting with on-screen UI.\n'
-    '- To scroll, use `adb shell input swipe` in the appropriate direction.'
-    ' For example, to scroll down: swipe from (540, 1800) to (540, 600).\n'
+    '- Example: if element shows "tap_target": [540, 1200], use'
+    ' `adb shell input tap 540 1200`.\n\n'
+    '## General\n'
+    '- Pick the easiest approach. If something fails, try an alternative.\n'
+    '- Use `adb shell input text` to type instead of tapping keys one by one.\n'
+    '- To scroll down: `adb shell input swipe 540 1800 540 600`.\n'
+    '- To scroll up: `adb shell input swipe 540 600 540 1800`.\n'
     '- Issue ONE command per step.\n'
-    '- After touch/input commands, check the UI element list in the next step'
-    ' to verify the result.\n'
-    '- If a command fails (non-zero return code), try an alternative approach.\n'
-    'Text Related Operations\n'
-    '- To delete text: tap the text field, then use'
-    ' `adb shell input keyevent KEYCODE_MOVE_END` followed by repeated'
-    ' `adb shell input keyevent KEYCODE_DEL` or select all and delete.\n'
-    '- Sometimes there is default text in the text field; remember to clear'
-    ' it before typing new text.\n'
-    '- When typing into a text field, sometimes an auto-complete dropdown'
-    ' will appear. Select the best match by tapping on it.\n'
+    '- Prefer shell commands (rm, mv, content query, content insert, settings)'
+    ' when they can accomplish the goal more directly than UI navigation.\n'
+    '- For file operations, use `adb shell sh -c \'...\'` to chain commands.\n'
+    '- To clear text: tap field, then `adb shell input keyevent KEYCODE_CTRL_A`'
+    ' followed by `adb shell input keyevent KEYCODE_DEL`.\n'
 )
 
 ACTION_SELECTION_PROMPT_TEMPLATE = (
@@ -142,6 +187,7 @@ ACTION_SELECTION_PROMPT_TEMPLATE = (
     + '\n\nHere is a list of descriptions for UI elements on the current'
     ' screen (each element has bounding box coordinates in pixels):\n'
     '{ui_elements_description}\n'
+    '{installed_packages}'
     + GUIDANCE
     + '{additional_guidelines}'
     + '\n\nNow output an action from the above list in the correct format,'
@@ -184,6 +230,7 @@ def _build_action_selection_prompt(
     history: List[str],
     ui_elements_description: str,
     additional_guidelines: Optional[List[str]] = None,
+    installed_packages: Optional[str] = None,
 ) -> str:
     """Build the T3A-ADB action selection prompt (text-only)."""
     if history:
@@ -197,11 +244,16 @@ def _build_action_selection_prompt(
         for g in additional_guidelines:
             extra += f"- {g}\n"
 
+    pkg_section = ""
+    if installed_packages:
+        pkg_section = f"\n{installed_packages}\n"
+
     return ACTION_SELECTION_PROMPT_TEMPLATE.format(
         goal=goal,
         history=hist_text,
         ui_elements_description=ui_elements_description or "Not available",
         additional_guidelines=extra,
+        installed_packages=pkg_section,
     )
 
 
@@ -224,6 +276,45 @@ def _build_summary_prompt(
     )
 
 
+def _try_extract_task_control(text: str) -> Optional[str]:
+    """Try to extract a task-control command from free-form text using regex.
+
+    Handles malformed variants like:
+      - answer(content='...')  answer(content="...")  answer(content=...)
+      - answer('...')  answer("...")  answer(...)  answer: ...
+      - FINISH(content='...')  FINISH('...')  FINISH: ...
+      - INFEASIBLE(content='...')  INFEASIBLE('...')
+    """
+    # Standard format: KEYWORD(content='...' or "...")
+    for keyword in ("answer", "FINISH", "INFEASIBLE"):
+        # content='...' or content="..."
+        m = re.search(
+            rf"{keyword}\s*\(\s*content\s*=\s*['\"]?(.*?)['\"]?\s*\)",
+            text, re.DOTALL | re.IGNORECASE,
+        )
+        if m:
+            return f"{keyword}(content='{m.group(1).strip()}')"
+        # KEYWORD('...') or KEYWORD("...")
+        m = re.search(
+            rf"{keyword}\s*\(\s*['\"](.+?)['\"]?\s*\)",
+            text, re.DOTALL | re.IGNORECASE,
+        )
+        if m:
+            return f"{keyword}(content='{m.group(1).strip()}')"
+        # KEYWORD(free text without quotes)
+        m = re.search(
+            rf"{keyword}\s*\(\s*([^)]+?)\s*\)",
+            text, re.DOTALL | re.IGNORECASE,
+        )
+        if m and "content=" not in m.group(1).lower():
+            return f"{keyword}(content='{m.group(1).strip()}')"
+    # answer: <text> (colon variant)
+    m = re.search(r"answer\s*:\s*(.+?)(?:\n|$)", text, re.IGNORECASE)
+    if m:
+        return f"answer(content='{m.group(1).strip()}')"
+    return None
+
+
 def _parse_action_response(text: str) -> Tuple[str, str]:
     """Extract (action_command, reason) from model output.
 
@@ -231,7 +322,10 @@ def _parse_action_response(text: str) -> Tuple[str, str]:
       Reason: <reasoning>
       Action: <adb shell ... | FINISH(...) | INFEASIBLE(...) | answer(...)>
 
-    Returns (command, reason). Raises ValueError if no Action: field.
+    Falls back to regex-based extraction for task control commands when
+    the model doesn't use the exact expected format.
+
+    Returns (command, reason). Raises ValueError if nothing can be parsed.
     """
     reason = ""
     if "Reason:" in text:
@@ -243,16 +337,31 @@ def _parse_action_response(text: str) -> Tuple[str, str]:
             else:
                 reason = reason_section.strip()
 
-    if "Action:" not in text:
-        raise ValueError(f"No 'Action:' found in model output: {text[:200]}")
+    command = None
 
-    command_section = text.split("Action:", 1)[1].strip()
-    command = command_section.split("\n")[0].strip()
-    command = command.strip("`").strip()
-    if not command:
-        raise ValueError("Empty command after 'Action:'")
+    if "Action:" in text:
+        command_section = text.split("Action:", 1)[1].strip()
+        # Take first line, but also handle multi-line task control
+        first_line = command_section.split("\n")[0].strip().strip("`").strip()
+        if first_line:
+            command = first_line
 
-    if not (command.startswith("FINISH") or command.startswith("INFEASIBLE") or command.startswith("answer")):
+    # Fallback: try regex extraction for task control commands
+    if command is None or command == "":
+        tc = _try_extract_task_control(text)
+        if tc:
+            command = tc
+
+    if command is None or command == "":
+        raise ValueError(f"No valid action found in model output: {text[:300]}")
+
+    # Normalize task control commands for consistent parsing
+    if command.lower().startswith("answer") or command.startswith("FINISH") or command.startswith("INFEASIBLE"):
+        # Re-extract with lenient regex to fix formatting issues
+        tc = _try_extract_task_control(command)
+        if tc:
+            command = tc
+    else:
         command = _normalize_adb_command(command)
 
     return command, reason
@@ -281,6 +390,7 @@ class AndroidT3AADBAgent(AndroidAgent):
         self.goal = ""
         self.history: List[str] = []
         self.additional_guidelines: Optional[List[str]] = None
+        self._installed_packages: Optional[str] = None  # cached package list
 
     def format_initial_instruction(
         self,
@@ -297,11 +407,12 @@ class AndroidT3AADBAgent(AndroidAgent):
             self.screen_height, self.screen_width = image.shape[:2]
 
         screen_size = (self.screen_width, self.screen_height)
-        ui_text = generate_ui_elements_description_full(ui_elements, screen_size)
+        ui_text = generate_ui_elements_with_tap_targets(ui_elements, screen_size)
         self._current_ui_elements = ui_elements
 
         prompt_text = _build_action_selection_prompt(
             self.goal, [], ui_text, self.additional_guidelines,
+            installed_packages=self._installed_packages,
         )
 
         system_prompt = "You are a helpful assistant."
@@ -325,6 +436,30 @@ class AndroidT3AADBAgent(AndroidAgent):
         """No images -- pure text agent."""
         return None
 
+    async def _query_installed_packages(self) -> str:
+        """Query installed third-party packages from the device.
+
+        Returns a formatted string like:
+          Installed apps: Tasks → org.tasks.tasks, Calendar → com.simplemobiletools.calendar.pro, ...
+        """
+        try:
+            payload = {"command": "adb shell pm list packages -3", "thought": "query installed packages"}
+            _obs, cmd_output, _reward, _term, _trunc, _info = await self.env_handle.step_adb(payload)
+            # Parse "package:com.foo.bar" lines into sorted list
+            packages = []
+            for line in cmd_output.strip().splitlines():
+                line = line.strip()
+                if line.startswith("package:"):
+                    packages.append(line[len("package:"):])
+            packages.sort()
+            if packages:
+                return "Installed third-party packages:\n" + "\n".join(f"  - {p}" for p in packages)
+            return ""
+        except Exception as e:
+            if DEBUG_TIMING:
+                print(f"[T3AADBAgent] Failed to query packages: {e}")
+            return ""
+
     async def step(self) -> Tuple[bool, Optional[str], Any]:
         """Single T3A-ADB step: action selection -> execute -> summarize."""
         self.state.step_count += 1
@@ -333,6 +468,27 @@ class AndroidT3AADBAgent(AndroidAgent):
                 f"[T3AADBAgent Step {self.state.step_count}] "
                 f"instance={self.state.instance_id} traj={self.state.trajectory_id}"
             )
+
+        # 0. On first step, query installed packages and rebuild prompt
+        if self.state.step_count == 1 and self._installed_packages is None:
+            self._installed_packages = await self._query_installed_packages()
+            if self._installed_packages:
+                # Rebuild the user prompt to include package list
+                current_ui_elements = getattr(self, "_current_ui_elements", [])
+                screen_size = (self.screen_width, self.screen_height)
+                ui_text = generate_ui_elements_with_tap_targets(
+                    current_ui_elements, screen_size,
+                )
+                prompt_text = _build_action_selection_prompt(
+                    self.goal, [], ui_text, self.additional_guidelines,
+                    installed_packages=self._installed_packages,
+                )
+                # Replace last user message with enriched prompt
+                self.state.messages = [
+                    msg for msg in self.state.messages if msg["role"] != "user"
+                ] + [
+                    {"role": "user", "content": [{"type": "text", "text": prompt_text}]},
+                ]
 
         # 1. Select messages for inference
         selected_messages = self.memory.get_inference_messages(self.state.messages)
@@ -423,11 +579,12 @@ class AndroidT3AADBAgent(AndroidAgent):
 
             # Rebuild observation with same UI state (no action was executed)
             screen_size = (self.screen_width, self.screen_height)
-            ui_text = generate_ui_elements_description_full(
+            ui_text = generate_ui_elements_with_tap_targets(
                 current_ui_elements, screen_size,
             )
             next_prompt = _build_action_selection_prompt(
                 self.goal, self.history, ui_text, self.additional_guidelines,
+                installed_packages=self._installed_packages,
             )
             self.state.messages = self.state.messages + [
                 {"role": "user", "content": [{"type": "text", "text": next_prompt}]},
@@ -449,7 +606,7 @@ class AndroidT3AADBAgent(AndroidAgent):
             or command.startswith("answer")
         )
 
-        before_elements_text = generate_ui_elements_description_full(
+        before_elements_text = generate_ui_elements_with_tap_targets(
             current_ui_elements, (self.screen_width, self.screen_height),
         )
 
@@ -497,7 +654,7 @@ class AndroidT3AADBAgent(AndroidAgent):
         if image is not None and isinstance(image, np.ndarray) and image.ndim >= 2:
             self.screen_height, self.screen_width = image.shape[:2]
 
-        after_elements_text = generate_ui_elements_description_full(
+        after_elements_text = generate_ui_elements_with_tap_targets(
             after_ui_elements, (self.screen_width, self.screen_height),
         )
 
@@ -514,6 +671,7 @@ class AndroidT3AADBAgent(AndroidAgent):
 
             next_prompt = _build_action_selection_prompt(
                 self.goal, self.history, after_elements_text, self.additional_guidelines,
+                installed_packages=self._installed_packages,
             )
             self.state.messages = self.state.messages + [
                 {"role": "user", "content": [{"type": "text", "text": next_prompt}]},
@@ -586,6 +744,7 @@ class AndroidT3AADBAgent(AndroidAgent):
 
         next_prompt = _build_action_selection_prompt(
             self.goal, self.history, after_elements_text, self.additional_guidelines,
+            installed_packages=self._installed_packages,
         )
         if cmd_feedback:
             next_prompt = cmd_feedback + "\n" + next_prompt
