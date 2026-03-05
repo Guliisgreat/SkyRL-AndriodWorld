@@ -327,6 +327,9 @@ def _parse_action_response(text: str) -> Tuple[str, str]:
 
     Returns (command, reason). Raises ValueError if nothing can be parsed.
     """
+    # Strip thinking tokens from reasoning models (e.g., Qwen3-*-Thinking)
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
     reason = ""
     if "Reason:" in text:
         parts = text.split("Reason:", 1)
