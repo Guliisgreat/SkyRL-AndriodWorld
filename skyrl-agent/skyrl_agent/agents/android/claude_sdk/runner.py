@@ -20,13 +20,24 @@ from omegaconf import DictConfig, OmegaConf
 
 import os as _os
 
-_AGENTS_ANDROID_DIR = _os.path.dirname(_os.path.abspath(__file__))
+_CLAUDE_SDK_DIR = _os.path.dirname(_os.path.abspath(__file__))
+_AGENTS_ANDROID_DIR = _os.path.dirname(_CLAUDE_SDK_DIR)
 
 
 def _load_sibling(module_name: str, filename: str):
-    """Load a sibling module from this directory, bypassing __init__.py chains."""
+    """Load a module from the agents/android/ directory, bypassing __init__.py chains."""
     import importlib.util
     filepath = _os.path.join(_AGENTS_ANDROID_DIR, filename)
+    spec = importlib.util.spec_from_file_location(module_name, filepath)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_local(module_name: str, filename: str):
+    """Load a module from this (claude_sdk/) directory."""
+    import importlib.util
+    filepath = _os.path.join(_CLAUDE_SDK_DIR, filename)
     spec = importlib.util.spec_from_file_location(module_name, filepath)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -194,7 +205,7 @@ class ClaudeSDKRunner:
 
     def _initialize_trajectories(self, data: List[Dict]) -> None:
         """Create ClaudeSDKTrajectory instances for each data item."""
-        _traj_mod = _load_sibling("claude_sdk_trajectory", "trajectory.py")
+        _traj_mod = _load_local("claude_sdk_trajectory", "trajectory.py")
         ClaudeSDKTrajectory = _traj_mod.ClaudeSDKTrajectory
         from skyrl_agent.config.configuration_utils import TrajectoryConfig
 
