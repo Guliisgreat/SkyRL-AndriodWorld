@@ -16,6 +16,7 @@ Key features:
 import copy
 import json
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -300,8 +301,8 @@ class AndroidT3AAgent(AndroidAgent):
                         break
 
         return [
-            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-            {"role": "user", "content": [{"type": "text", "text": prompt_text}]},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt_text},
         ]
 
     def extract_images_for_inference(self, messages: List[Dict]) -> Optional[List[Any]]:
@@ -347,6 +348,9 @@ class AndroidT3AAgent(AndroidAgent):
 
         self.state.total_input_tokens += len(_prompt_token_ids)
         self.state.total_output_tokens += len(response_token_ids)
+
+        # Strip <think>...</think> tokens from response if present
+        response_str = re.sub(r'<think>.*?</think>\s*', '', response_str, flags=re.DOTALL)
 
         if DEBUG_TIMING:
             vllm_elapsed = time.perf_counter() - vllm_start
@@ -437,7 +441,7 @@ class AndroidT3AAgent(AndroidAgent):
                 self.goal, self.history, ui_text, self.additional_guidelines,
             )
             self.state.messages = self.state.messages + [
-                {"role": "user", "content": [{"type": "text", "text": next_prompt}]},
+                {"role": "user", "content": next_prompt},
             ]
 
             _should_add, should_continue = self.training.add_step(
@@ -495,7 +499,7 @@ class AndroidT3AAgent(AndroidAgent):
                 self.goal, self.history, after_elements_text, self.additional_guidelines,
             )
             self.state.messages = self.state.messages + [
-                {"role": "user", "content": [{"type": "text", "text": next_prompt}]},
+                {"role": "user", "content": next_prompt},
             ]
             self._current_ui_elements = after_ui_elements
             image = output.get("image")
@@ -570,7 +574,7 @@ class AndroidT3AAgent(AndroidAgent):
             self.goal, self.history, after_elements_text, self.additional_guidelines,
         )
         self.state.messages = self.state.messages + [
-            {"role": "user", "content": [{"type": "text", "text": next_prompt}]},
+            {"role": "user", "content": next_prompt},
         ]
 
         # 12. Training
@@ -596,8 +600,8 @@ class AndroidT3AAgent(AndroidAgent):
             before_elements_text, after_elements_text,
         )
         summary_messages = [
-            {"role": "system", "content": [{"type": "text", "text": "You are a helpful assistant."}]},
-            {"role": "user", "content": [{"type": "text", "text": summary_prompt}]},
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": summary_prompt},
         ]
         summary_input_ids = self.prepare_input_ids(summary_messages)
 
@@ -616,6 +620,7 @@ class AndroidT3AAgent(AndroidAgent):
             summary_response, _, summary_prompt_ids, summary_resp_ids = result
             self.state.total_input_tokens += len(summary_prompt_ids)
             self.state.total_output_tokens += len(summary_resp_ids)
+            summary_response = re.sub(r'<think>.*?</think>\s*', '', summary_response, flags=re.DOTALL)
             return f"Action selected: {action_str}. {summary_response.strip()}"
         except Exception as e:
             if DEBUG_TIMING:
