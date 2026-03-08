@@ -376,13 +376,13 @@ class ContainerFactory:
             f"({'host network' if use_host_network else 'bridge'}, server={server_port})"
         )
         container_name = f"env{env_id}"
-        self._remove_existing_container(container_name)
-        
+        await asyncio.to_thread(self._remove_existing_container, container_name)
+
         try:
             if use_host_network:
-                container = self._create_with_host_network(env_id, environment)
+                container = await asyncio.to_thread(self._create_with_host_network, env_id, environment)
             else:
-                container = self._create_with_port_mapping(env_id, ports, environment)
+                container = await asyncio.to_thread(self._create_with_port_mapping, env_id, ports, environment)
             
             logger.info(f"[ContainerFactory] env{env_id}: Container started, waiting for server...")
             await asyncio.sleep(config.initial_wait)

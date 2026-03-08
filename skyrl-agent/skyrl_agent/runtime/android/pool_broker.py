@@ -43,6 +43,7 @@ from skyrl_agent.runtime.android.container_manager import (
 class BrokerContainerState(str, Enum):
     IDLE = "IDLE"
     LEASED = "LEASED"
+    RESETTING = "RESETTING"
     REPLACING = "REPLACING"
 
 
@@ -363,10 +364,8 @@ class ContainerPoolBroker:
     async def return_container(self, env_id: int, healthy: bool = True):
         """Return a container to the pool.
 
-        When caller reports healthy=True, trust it and skip the blocking health
-        check — the periodic _health_loop will catch problems later.  This keeps
-        return latency low and avoids client-side timeouts that cause container
-        leaks.
+        Restores the emulator snapshot to a clean state before making it
+        available again.  This prevents state contamination between tasks.
         """
         async with self._registry_lock:
             entry = self.registry.get(env_id)
@@ -386,15 +385,57 @@ class ContainerPoolBroker:
                 asyncio.create_task(self._replace_container(env_id))
                 return
 
-            # Trust caller's healthy=True — return immediately without blocking
-            # health check.  The _health_loop will verify idle containers later.
-            entry.state = BrokerContainerState.IDLE
+            # Mark as RESETTING while snapshot restore is in progress
+            entry.state = BrokerContainerState.RESETTING
 
-        await self.available_queue.put(env_id)
+        asyncio.create_task(self._restore_and_return(env_id))
+
+    async def _restore_and_return(self, env_id: int):
+        """Restore snapshot on a returned container and put it back in the pool."""
+        entry = self.registry.get(env_id)
+        if entry is None:
+            return
+
+        server_port = entry.container.server_port
+        try:
+            ok = await asyncio.to_thread(
+                self._restore_snapshot_sync, server_port
+            )
+        except Exception as e:
+            logger.warning(f"env{env_id} snapshot restore raised: {e}")
+            ok = False
+
+        if ok:
+            async with self._registry_lock:
+                entry.state = BrokerContainerState.IDLE
+            await self.available_queue.put(env_id)
+            logger.info(f"env{env_id} snapshot restored, returned to pool")
+        else:
+            logger.warning(
+                f"env{env_id} snapshot restore failed, replacing container"
+            )
+            async with self._registry_lock:
+                entry.state = BrokerContainerState.REPLACING
+            asyncio.create_task(self._replace_container(env_id))
+
+    def _restore_snapshot_sync(self, server_port: int) -> bool:
+        """Call the container's /reset endpoint to restore the clean snapshot."""
+        import requests
+
+        try:
+            resp = requests.post(
+                f"http://localhost:{server_port}/reset",
+                json={"seed": None, "options": {}},
+                timeout=(5, 120),
+            )
+            return resp.status_code == 200
+        except Exception as e:
+            logger.warning(f"Snapshot restore request failed (port {server_port}): {e}")
+            return False
 
     def get_status(self) -> Dict[str, Any]:
         """Get current pool status."""
-        counts = {"IDLE": 0, "LEASED": 0, "REPLACING": 0}
+        counts = {"IDLE": 0, "LEASED": 0, "RESETTING": 0, "REPLACING": 0}
         containers_info = []
         for env_id, entry in sorted(self.registry.items()):
             counts[entry.state.value] += 1
@@ -413,6 +454,7 @@ class ContainerPoolBroker:
             "initializing": self._pool_initializing,
             "idle": counts["IDLE"],
             "leased": counts["LEASED"],
+            "resetting": counts["RESETTING"],
             "replacing": counts["REPLACING"],
             "containers": containers_info,
         }

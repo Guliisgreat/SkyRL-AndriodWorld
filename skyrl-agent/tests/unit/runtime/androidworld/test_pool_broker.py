@@ -508,6 +508,7 @@ class TestBrokerAcquireReturn:
         broker._health_task = None
         broker._gc_task = None
         broker._start_time = time.time()
+        broker._pool_initializing = False
         return broker
 
     @pytest.mark.asyncio
@@ -559,14 +560,16 @@ class TestBrokerAcquireReturn:
             await broker.acquire(pid=100, timeout=0.1)
 
     @pytest.mark.asyncio
-    async def test_return_healthy_puts_back(self):
-        """Return with healthy=True puts container back in available queue."""
+    async def test_return_healthy_triggers_snapshot_restore(self):
+        """Return with healthy=True triggers async snapshot restore."""
         broker = self._make_broker()
         entry = _make_pool_entry(env_id=5, state=BrokerContainerState.LEASED, pid=100)
         broker.registry[5] = entry
 
-        with patch.object(broker, "_check_health_sync", return_value=True):
+        with patch.object(broker, "_restore_snapshot_sync", return_value=True):
             await broker.return_container(env_id=5, healthy=True)
+            # Let the async task run
+            await asyncio.sleep(0.05)
 
         assert entry.state == BrokerContainerState.IDLE
         assert entry.pid is None
@@ -592,7 +595,7 @@ class TestBrokerAcquireReturn:
         await broker.return_container(env_id=999, healthy=True)
 
     def test_get_status(self):
-        """get_status returns correct counts."""
+        """get_status returns correct counts including RESETTING."""
         broker = self._make_broker()
         broker.registry[0] = _make_pool_entry(
             env_id=0, state=BrokerContainerState.IDLE
@@ -603,13 +606,254 @@ class TestBrokerAcquireReturn:
         broker.registry[2] = _make_pool_entry(
             env_id=2, state=BrokerContainerState.REPLACING
         )
+        broker.registry[3] = _make_pool_entry(
+            env_id=3, state=BrokerContainerState.RESETTING
+        )
 
         status = broker.get_status()
-        assert status["total"] == 3
+        assert status["total"] == 4
         assert status["idle"] == 1
         assert status["leased"] == 1
+        assert status["resetting"] == 1
         assert status["replacing"] == 1
-        assert len(status["containers"]) == 3
+        assert len(status["containers"]) == 4
+
+
+# ─── TestBrokerSnapshotRestore ────────────────────────────────────────────────
+
+
+class TestBrokerSnapshotRestore:
+    """Test snapshot restore on container return."""
+
+    def _make_broker(self) -> ContainerPoolBroker:
+        """Create broker with mocked factory (skip real Docker)."""
+        broker = ContainerPoolBroker.__new__(ContainerPoolBroker)
+        broker.pool_size = 2
+        broker.use_host_network = True
+        broker.health_check_interval = 30.0
+        broker.gc_interval = 60.0
+        broker.config = Mock()
+        broker.port_allocator = Mock()
+        broker.factory = AsyncMock()
+        broker.registry = {}
+        broker.available_queue = asyncio.Queue()
+        broker._next_env_id = 2
+        broker._env_id_lock = asyncio.Lock()
+        broker._registry_lock = asyncio.Lock()
+        broker._health_task = None
+        broker._gc_task = None
+        broker._start_time = time.time()
+        broker._pool_initializing = False
+        return broker
+
+    @pytest.mark.asyncio
+    async def test_return_sets_resetting_state(self):
+        """Return with healthy=True sets state to RESETTING before restore."""
+        broker = self._make_broker()
+        entry = _make_pool_entry(env_id=5, state=BrokerContainerState.LEASED, pid=100)
+        broker.registry[5] = entry
+
+        # Block the restore so we can observe the intermediate RESETTING state
+        restore_started = asyncio.Event()
+        restore_proceed = asyncio.Event()
+
+        def slow_restore(server_port):
+            restore_started.set()
+            # Use a sync sleep to simulate blocking I/O in the thread
+            import threading
+            evt = threading.Event()
+            # We'll unblock from the test
+            while not restore_proceed.is_set():
+                evt.wait(0.01)
+            return True
+
+        with patch.object(broker, "_restore_snapshot_sync", side_effect=slow_restore):
+            await broker.return_container(env_id=5, healthy=True)
+            # Wait for restore to start
+            await asyncio.wait_for(restore_started.wait(), timeout=2.0)
+
+            # Container should be in RESETTING state
+            assert entry.state == BrokerContainerState.RESETTING
+            # Should NOT be in the available queue yet
+            assert broker.available_queue.qsize() == 0
+
+            # Let restore finish
+            restore_proceed.set()
+            await asyncio.sleep(0.1)
+
+        assert entry.state == BrokerContainerState.IDLE
+        assert broker.available_queue.qsize() == 1
+
+    @pytest.mark.asyncio
+    async def test_restore_success_returns_to_pool(self):
+        """Successful snapshot restore marks IDLE and enqueues container."""
+        broker = self._make_broker()
+        entry = _make_pool_entry(env_id=3, state=BrokerContainerState.LEASED, pid=200)
+        broker.registry[3] = entry
+
+        with patch.object(broker, "_restore_snapshot_sync", return_value=True):
+            await broker.return_container(env_id=3, healthy=True)
+            await asyncio.sleep(0.05)
+
+        assert entry.state == BrokerContainerState.IDLE
+        assert entry.pid is None
+        assert broker.available_queue.qsize() == 1
+        assert broker.available_queue.get_nowait() == 3
+
+    @pytest.mark.asyncio
+    async def test_restore_failure_triggers_replacement(self):
+        """Failed snapshot restore triggers container replacement."""
+        broker = self._make_broker()
+        entry = _make_pool_entry(env_id=7, state=BrokerContainerState.LEASED, pid=300)
+        broker.registry[7] = entry
+
+        with patch.object(broker, "_restore_snapshot_sync", return_value=False), \
+             patch.object(broker, "_replace_container", new_callable=AsyncMock) as mock_replace:
+            await broker.return_container(env_id=7, healthy=True)
+            await asyncio.sleep(0.05)
+
+        assert entry.state == BrokerContainerState.REPLACING
+        assert broker.available_queue.qsize() == 0
+
+    @pytest.mark.asyncio
+    async def test_restore_exception_triggers_replacement(self):
+        """Exception during snapshot restore triggers container replacement."""
+        broker = self._make_broker()
+        entry = _make_pool_entry(env_id=4, state=BrokerContainerState.LEASED, pid=400)
+        broker.registry[4] = entry
+
+        with patch.object(
+            broker, "_restore_snapshot_sync",
+            side_effect=Exception("connection refused")
+        ), patch.object(broker, "_replace_container", new_callable=AsyncMock):
+            await broker.return_container(env_id=4, healthy=True)
+            await asyncio.sleep(0.05)
+
+        assert entry.state == BrokerContainerState.REPLACING
+        assert broker.available_queue.qsize() == 0
+
+    @pytest.mark.asyncio
+    async def test_restore_calls_reset_endpoint(self):
+        """_restore_snapshot_sync posts to the container's /reset endpoint."""
+        broker = self._make_broker()
+        entry = _make_pool_entry(env_id=2, state=BrokerContainerState.LEASED, pid=500)
+        broker.registry[2] = entry
+        server_port = entry.container.server_port
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+
+        with patch("requests.post", return_value=mock_response) as mock_post:
+            result = broker._restore_snapshot_sync(server_port)
+
+        assert result is True
+        mock_post.assert_called_once_with(
+            f"http://localhost:{server_port}/reset",
+            json={"seed": None, "options": {}},
+            timeout=(5, 120),
+        )
+
+    @pytest.mark.asyncio
+    async def test_restore_sync_returns_false_on_non_200(self):
+        """_restore_snapshot_sync returns False on non-200 status."""
+        broker = self._make_broker()
+
+        mock_response = Mock()
+        mock_response.status_code = 500
+
+        with patch("requests.post", return_value=mock_response):
+            result = broker._restore_snapshot_sync(5000)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_restore_sync_returns_false_on_timeout(self):
+        """_restore_snapshot_sync returns False on request timeout."""
+        import requests as _requests
+
+        broker = self._make_broker()
+
+        with patch("requests.post",
+                    side_effect=_requests.exceptions.Timeout("timeout")):
+            result = broker._restore_snapshot_sync(5000)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_unhealthy_return_skips_restore(self):
+        """Return with healthy=False skips snapshot restore and replaces directly."""
+        broker = self._make_broker()
+        entry = _make_pool_entry(env_id=6, state=BrokerContainerState.LEASED, pid=600)
+        broker.registry[6] = entry
+
+        with patch.object(broker, "_restore_snapshot_sync") as mock_restore, \
+             patch.object(broker, "_replace_container", new_callable=AsyncMock):
+            await broker.return_container(env_id=6, healthy=False)
+            await asyncio.sleep(0.05)
+
+        # Restore should NOT have been called
+        mock_restore.assert_not_called()
+        assert entry.state == BrokerContainerState.REPLACING
+
+    @pytest.mark.asyncio
+    async def test_resetting_container_not_acquirable(self):
+        """Container in RESETTING state is not in the available queue."""
+        broker = self._make_broker()
+        entry = _make_pool_entry(env_id=1, state=BrokerContainerState.RESETTING)
+        broker.registry[1] = entry
+        # Queue is empty — RESETTING container is not available
+
+        with pytest.raises(TimeoutError):
+            await broker.acquire(pid=100, timeout=0.1)
+
+    @pytest.mark.asyncio
+    async def test_health_loop_skips_resetting_containers(self):
+        """Health loop only checks IDLE containers, not RESETTING ones."""
+        broker = self._make_broker()
+        resetting_entry = _make_pool_entry(
+            env_id=0, state=BrokerContainerState.RESETTING
+        )
+        idle_entry = _make_pool_entry(
+            env_id=1, state=BrokerContainerState.IDLE
+        )
+        broker.registry[0] = resetting_entry
+        broker.registry[1] = idle_entry
+
+        async with broker._registry_lock:
+            idle = [
+                (eid, e)
+                for eid, e in broker.registry.items()
+                if e.state == BrokerContainerState.IDLE
+            ]
+
+        # Only IDLE container should be checked
+        assert len(idle) == 1
+        assert idle[0][0] == 1
+
+    @pytest.mark.asyncio
+    async def test_multiple_returns_restore_concurrently(self):
+        """Multiple concurrent returns each trigger independent restores."""
+        broker = self._make_broker()
+        entries = {}
+        for i in range(3):
+            entry = _make_pool_entry(
+                env_id=i, state=BrokerContainerState.LEASED, pid=100 + i
+            )
+            broker.registry[i] = entry
+            entries[i] = entry
+
+        with patch.object(broker, "_restore_snapshot_sync", return_value=True):
+            # Return all three concurrently
+            await asyncio.gather(
+                broker.return_container(env_id=0, healthy=True),
+                broker.return_container(env_id=1, healthy=True),
+                broker.return_container(env_id=2, healthy=True),
+            )
+            await asyncio.sleep(0.1)
+
+        for i in range(3):
+            assert entries[i].state == BrokerContainerState.IDLE
+        assert broker.available_queue.qsize() == 3
 
 
 # ─── TestBrokerHealthLoop ────────────────────────────────────────────────────
