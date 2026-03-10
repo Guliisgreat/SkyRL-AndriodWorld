@@ -58,13 +58,26 @@ DEFAULT_PROMPT = "adb_baseline"
 
 def _load_system_prompt(prompt_name: str) -> str:
     """Load a system prompt by name and format it with ANDROID_ENV_SCRIPT."""
-    import importlib
+    import importlib.util
     if prompt_name not in PROMPT_MODULES:
         raise ValueError(
             f"Unknown prompt '{prompt_name}'. "
             f"Available: {list(PROMPT_MODULES.keys())}"
         )
-    mod = importlib.import_module(PROMPT_MODULES[prompt_name])
+    # Use spec_from_file_location to avoid importing through
+    # skyrl_agent.agents.__init__ which pulls in torch/transformers.
+    module_path = PROMPT_MODULES[prompt_name]
+    parts = module_path.split(".")
+    file_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        os.pardir, os.pardir,
+        *parts[:-1],
+        parts[-1] + ".py",
+    )
+    file_path = os.path.abspath(file_path)
+    spec = importlib.util.spec_from_file_location(prompt_name, file_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
     return mod.build_system_prompt(ANDROID_ENV_SCRIPT)
 
 # ---------------------------------------------------------------------------
