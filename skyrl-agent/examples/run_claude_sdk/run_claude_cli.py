@@ -1,0 +1,535 @@
+#!/usr/bin/env python3
+"""
+Run Claude Code CLI on AndroidWorld tasks — no hardcoded solutions.
+
+Claude Code receives the task description + a Bash tool. It uses android_env.py
+to explore the Android device, execute ADB commands, self-verify, and finish.
+
+Usage:
+    # Single container, sequential
+    python run_claude_cli.py --data val_data_seed7_no_gui.jsonl --container-url http://localhost:5800
+
+    # Parallel with broker
+    python run_claude_cli.py --data val_data_seed7_no_gui.jsonl --broker-url http://localhost:9100 --pool-size 16
+
+    # Specific tasks
+    python run_claude_cli.py --data val_data_seed7_no_gui.jsonl --tasks 3,6,12 --container-url http://localhost:5800
+"""
+
+import argparse
+import concurrent.futures
+import json
+import os
+import queue
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.request
+import urllib.error
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+ANDROID_ENV_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    os.pardir, os.pardir,
+    "skyrl_agent", "agents", "android", "claude_sdk", "android_env.py",
+)
+ANDROID_ENV_SCRIPT = os.path.abspath(ANDROID_ENV_SCRIPT)
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = f"""\
+You are an Android automation agent. You control an Android device via ADB \
+commands through a CLI wrapper.
+
+## CLI Wrapper
+
+Use Bash to call the wrapper:
+
+```bash
+python {ANDROID_ENV_SCRIPT} adb "adb shell <command>"          # run ADB command, returns command output only
+python {ANDROID_ENV_SCRIPT} adb "adb shell uiautomator dump /sdcard/w.xml && cat /sdcard/w.xml"  # see the screen
+python {ANDROID_ENV_SCRIPT} finish --status complete --description "<result>"
+```
+
+## Strategy
+
+PREFER programmatic approaches over GUI interaction when possible:
+1. **SQLite** — query and modify app databases directly via `sqlite3`
+2. **File ops** — `cat`, `rm`, `mv`, `cp`, `mkdir`, `echo` for file-based apps
+3. **Intents** — `am start` to launch activities, `svc` for system settings
+4. **Content providers** — `content query/insert/update/delete` for structured data
+5. **Settings** — `settings put/get` for system configuration
+6. **GUI** — `input tap`/`swipe`/`text`/`keyevent` when programmatic won't work (dump the screen first)
+
+## Discovery
+
+Explore the device to find what you need:
+- List packages: `adb shell pm list packages`
+- Find app databases: `adb shell find /data/data/<package> -name "*.db" 2>/dev/null`
+- Inspect DB schema: `adb shell sqlite3 <db> ".tables"` / `.schema <table>`
+- List files: `adb shell ls <path>`
+- Get current date/time: `adb shell date`
+
+## Shell Escaping
+
+Nested quoting inside `adb shell` is fragile — quotes get consumed by multiple shell layers. \
+Prefer piping via base64 to avoid wasting time debugging escaping issues:
+```bash
+echo "<base64_encoded>" | base64 -d | adb shell sqlite3 <db_path>
+echo "<base64_encoded>" | base64 -d | adb shell sh
+```
+
+## Self-Verification
+
+ALWAYS verify your work before calling finish:
+- After modifications: query back to confirm the change took effect
+- For information questions: double-check your answer
+- Timestamps in databases can use different formats and timezones. Before filtering by time, inspect existing entries to understand the convention used.
+
+## Important Rules
+
+1. Issue ONE ADB command per wrapper call.
+2. For information-retrieval tasks (questions), the `--description` in `finish` IS your answer.
+3. **ALWAYS call `finish` when done** — with a meaningful `--description`.
+4. Copy text and values EXACTLY from the task — do not paraphrase.
+"""
+
+# ---------------------------------------------------------------------------
+# Infrastructure
+# ---------------------------------------------------------------------------
+
+def http_post(url, payload, timeout=300):
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        url, data=data,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode())
+
+
+def reset_container(base_url, task_id, seed):
+    return http_post(f"{base_url}/reset", {
+        "seed": seed,
+        "options": {"task_id": task_id, "go_home_on_reset": True},
+    })
+
+
+def check_health(base_url):
+    try:
+        with urllib.request.urlopen(f"{base_url}/health", timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            # Container returns {"ready": true}, broker returns {"status": "ok"}
+            return data.get("ready", False) or data.get("status") == "ok"
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Broker helpers
+# ---------------------------------------------------------------------------
+
+def broker_acquire(broker_url, timeout=300, retries=3):
+    """Acquire a container from the broker. Returns container info dict."""
+    for attempt in range(retries):
+        try:
+            return http_post(
+                f"{broker_url}/acquire",
+                {"pid": os.getpid(), "timeout": timeout},
+                timeout=timeout + 30,
+            )
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(5 * (attempt + 1))
+            else:
+                raise RuntimeError(f"Failed to acquire container after {retries} attempts: {e}")
+
+
+def broker_release(broker_url, env_id, healthy=True, retries=3):
+    """Return a container to the broker."""
+    for attempt in range(retries):
+        try:
+            return http_post(
+                f"{broker_url}/return",
+                {"env_id": env_id, "healthy": healthy},
+                timeout=120,
+            )
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(2)
+            else:
+                print(f"  WARNING: Failed to return container env_id={env_id}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Run one task
+# ---------------------------------------------------------------------------
+
+def run_one_task(task_def, container_url, model, max_turns):
+    task_id = task_def["task_id"]
+    seed = task_def["seed"]
+    task_text = task_def["task"]
+
+    print(f"\n{'='*70}")
+    print(f"TASK {task_id} (seed={seed}): {task_text[:80]}")
+    print(f"{'='*70}")
+    sys.stdout.flush()
+
+    # Create state file
+    state_fd, state_file = tempfile.mkstemp(
+        suffix=".json", prefix=f"claude_task{task_id}_",
+    )
+    os.close(state_fd)
+    with open(state_file, "w") as f:
+        json.dump({
+            "step_count": 0, "terminated": False, "reward": 0.0,
+            "finish_status": "", "finish_description": "",
+            "step_records": [], "_last_a11y_cache": "",
+        }, f)
+
+    # Reset container
+    try:
+        reset_container(container_url, task_id, seed)
+        print(f"  Reset OK.")
+    except Exception as e:
+        print(f"  Reset FAILED: {e}")
+        os.unlink(state_file)
+        return {"task_id": task_id, "seed": seed, "task": task_text,
+                "reward": 0.0, "error": f"reset: {e}"}
+
+    time.sleep(10)  # wait for a11y tree stabilization
+
+    # Build prompt
+    prompt = f"{SYSTEM_PROMPT}\n\n## Task\n\n{task_text}\n\nComplete this task on the Android device."
+
+    # Set env vars for android_env.py
+    env = os.environ.copy()
+    env["ANDROID_SERVER_URL"] = container_url
+    env["ANDROID_STATE_FILE"] = state_file
+    env["ANDROID_DISABLE_TREE"] = "1"
+    # Unset CLAUDECODE to allow nested invocation
+    env.pop("CLAUDECODE", None)
+
+    # Run claude CLI
+    cmd = [
+        "claude",
+        "-p", prompt,
+        "--model", model,
+        "--max-turns", str(max_turns),
+        "--allowedTools", "Bash(command:*)",
+    ]
+
+    print(f"  Running claude CLI (model={model}, max_turns={max_turns})...")
+    sys.stdout.flush()
+
+    start_time = time.time()
+    elapsed = 0
+    try:
+        result = subprocess.run(
+            cmd, env=env,
+            capture_output=True, text=True,
+            timeout=900,  # 15 min max per task
+        )
+        elapsed = time.time() - start_time
+        print(f"  Claude finished in {elapsed:.0f}s (exit={result.returncode})")
+
+        if result.stdout:
+            # Print last few lines of Claude's output
+            lines = result.stdout.strip().split("\n")
+            for line in lines[-5:]:
+                print(f"    {line[:120]}")
+
+        if result.returncode != 0 and result.stderr:
+            print(f"  stderr: {result.stderr[-200:]}")
+
+    except subprocess.TimeoutExpired:
+        elapsed = time.time() - start_time
+        print(f"  TIMEOUT after {elapsed:.0f}s")
+        result = None
+
+    # Read state
+    state = {}
+    try:
+        with open(state_file) as f:
+            state = json.load(f)
+    except Exception:
+        pass
+    finally:
+        try:
+            os.unlink(state_file)
+        except OSError:
+            pass
+
+    reward = state.get("reward", 0.0)
+    step_count = state.get("step_count", 0)
+    finished = state.get("terminated", False)
+
+    status = "OK" if reward > 0 else "FAIL"
+    print(f"  >>> REWARD: {reward} ({status}), steps={step_count}, finished={finished}")
+    sys.stdout.flush()
+
+    return {
+        "task_id": task_id,
+        "seed": seed,
+        "task": task_text,
+        "reward": reward,
+        "step_count": step_count,
+        "finished": finished,
+        "commands": state.get("step_records", []),
+        "finish_description": state.get("finish_description", ""),
+        "elapsed_seconds": elapsed,
+        "claude_output": (result.stdout[-3000:] if result and result.stdout else ""),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Sequential mode (single container)
+# ---------------------------------------------------------------------------
+
+def run_sequential(tasks, container_url, model, max_turns, output_path):
+    results = []
+    with open(output_path, "w") as out:
+        for i, task_def in enumerate(tasks):
+            if not check_health(container_url):
+                print(f"  Container unhealthy, waiting 30s...")
+                time.sleep(30)
+                if not check_health(container_url):
+                    print(f"  Still unhealthy, skipping task {task_def['task_id']}")
+                    results.append({
+                        "task_id": task_def["task_id"], "reward": 0.0,
+                        "error": "container_unhealthy",
+                    })
+                    continue
+
+            result = run_one_task(task_def, container_url, model, max_turns)
+            results.append(result)
+            out.write(json.dumps(result) + "\n")
+            out.flush()
+
+            successes = sum(1 for r in results if r.get("reward", 0) > 0)
+            print(f"\n  Progress: {i+1}/{len(tasks)}, "
+                  f"Success: {successes}/{len(results)} "
+                  f"({100*successes/max(len(results),1):.0f}%)")
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Parallel mode (broker)
+# ---------------------------------------------------------------------------
+
+def run_parallel(tasks, broker_url, pool_size, model, max_turns, output_path):
+    task_queue = queue.Queue()
+    for t in tasks:
+        task_queue.put(t)
+
+    results = []
+    results_lock = threading.Lock()
+    completed = [0]  # mutable counter
+
+    out_file = open(output_path, "w")
+    out_lock = threading.Lock()
+
+    def worker(worker_id):
+        while True:
+            try:
+                task_def = task_queue.get_nowait()
+            except queue.Empty:
+                return
+
+            task_id = task_def["task_id"]
+            container_info = None
+            env_id = None
+
+            try:
+                # Acquire container from broker
+                container_info = broker_acquire(broker_url)
+                env_id = container_info["env_id"]
+                server_port = container_info["server_port"]
+                container_url = f"http://localhost:{server_port}"
+                print(f"  [worker {worker_id}] Acquired container env_id={env_id} "
+                      f"port={server_port} for task {task_id}")
+
+                # Run task
+                result = run_one_task(task_def, container_url, model, max_turns)
+                healthy = True
+
+            except Exception as e:
+                print(f"  [worker {worker_id}] ERROR on task {task_id}: {e}")
+                result = {
+                    "task_id": task_id, "seed": task_def.get("seed", 0),
+                    "task": task_def.get("task", ""), "reward": 0.0,
+                    "error": str(e),
+                }
+                healthy = False
+
+            finally:
+                # Return container to broker
+                if env_id is not None:
+                    broker_release(broker_url, env_id, healthy=healthy)
+                    print(f"  [worker {worker_id}] Returned container env_id={env_id}")
+
+            # Record result
+            with results_lock:
+                results.append(result)
+                completed[0] += 1
+                successes = sum(1 for r in results if r.get("reward", 0) > 0)
+                print(f"\n  Progress: {completed[0]}/{len(tasks)}, "
+                      f"Success: {successes}/{len(results)} "
+                      f"({100*successes/max(len(results),1):.0f}%)")
+
+            with out_lock:
+                out_file.write(json.dumps(result) + "\n")
+                out_file.flush()
+
+            task_queue.task_done()
+
+    # Launch workers
+    num_workers = min(pool_size, len(tasks))
+    print(f"Starting {num_workers} parallel workers...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(worker, i) for i in range(num_workers)]
+        concurrent.futures.wait(futures)
+        # Raise any worker exceptions
+        for f in futures:
+            if f.exception():
+                print(f"  Worker exception: {f.exception()}")
+
+    out_file.close()
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Run Claude Code CLI on AndroidWorld tasks",
+    )
+    parser.add_argument("--data", required=True,
+                        help="JSONL file with task definitions")
+    parser.add_argument("--tasks", type=str, default=None,
+                        help="Comma-separated task IDs (default: all)")
+    parser.add_argument("--model", default="claude-opus-4-6",
+                        help="Claude model to use")
+    parser.add_argument("--max-turns", type=int, default=30,
+                        help="Max turns for Claude")
+    parser.add_argument("--output", default=None,
+                        help="Output JSONL file (auto-generated if not set)")
+
+    # Container modes (mutually exclusive)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--container-url",
+                       help="Single container URL (sequential mode)")
+    group.add_argument("--broker-url",
+                       help="Broker URL for parallel mode (e.g., http://localhost:9100)")
+
+    parser.add_argument("--pool-size", type=int, default=8,
+                        help="Number of parallel workers (broker mode only)")
+
+    args = parser.parse_args()
+
+    # Verify android_env.py exists
+    if not os.path.exists(ANDROID_ENV_SCRIPT):
+        print(f"ERROR: android_env.py not found at {ANDROID_ENV_SCRIPT}")
+        return 1
+
+    # Verify claude CLI
+    try:
+        subprocess.run(["claude", "--version"], capture_output=True, check=True)
+    except Exception:
+        print("ERROR: claude CLI not found")
+        return 1
+
+    # Load tasks
+    with open(args.data) as f:
+        tasks = [json.loads(l) for l in f if l.strip()]
+
+    if args.tasks:
+        ids = set(int(x) for x in args.tasks.split(","))
+        tasks = [t for t in tasks if t["task_id"] in ids]
+
+    if not tasks:
+        print("No tasks to run.")
+        return 0
+
+    # Auto-generate output path if not specified
+    if args.output:
+        output_path = os.path.abspath(args.output)
+    else:
+        model_short = args.model.replace("-", "").replace(".", "").replace("/", "")
+        ts = time.strftime("%y%m%d_%H%M")
+        exp_name = f"ClaudeCodeCLI_{model_short}_{ts}"
+        output_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            os.pardir, os.pardir, "results", exp_name,
+        )
+        output_dir = os.path.abspath(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, "results.jsonl")
+
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    mode = "parallel" if args.broker_url else "sequential"
+    print(f"Mode: {mode}")
+    print(f"Tasks: {len(tasks)}, model={args.model}, max_turns={args.max_turns}")
+    print(f"Output: {output_path}")
+
+    if args.broker_url:
+        # Check broker health
+        if not check_health(args.broker_url):
+            print(f"ERROR: Broker at {args.broker_url} is not healthy")
+            return 1
+        print(f"Broker {args.broker_url} is healthy.")
+        print(f"Pool size: {args.pool_size}")
+        results = run_parallel(
+            tasks, args.broker_url, args.pool_size,
+            args.model, args.max_turns, output_path,
+        )
+    else:
+        # Check container health
+        if not check_health(args.container_url):
+            print(f"ERROR: Container at {args.container_url} is not healthy")
+            return 1
+        print(f"Container {args.container_url} is healthy.")
+        results = run_sequential(
+            tasks, args.container_url, args.model, args.max_turns, output_path,
+        )
+
+    # Summary
+    successes = sum(1 for r in results if r.get("reward", 0) > 0)
+    print(f"\n{'='*70}")
+    print(f"FINAL: {successes}/{len(results)} ({100*successes/max(len(results),1):.0f}%)")
+    print(f"{'='*70}")
+    for r in sorted(results, key=lambda x: x.get("task_id", 0)):
+        s = "OK" if r.get("reward", 0) > 0 else "FAIL"
+        print(f"  task_id={r['task_id']:3d} [{s:4s}] {r.get('task', '')[:55]}")
+
+    # Write summary.json
+    summary = {
+        "total": len(results),
+        "success": successes,
+        "success_rate": successes / max(len(results), 1),
+        "model": args.model,
+        "max_turns": args.max_turns,
+        "mode": mode,
+    }
+    summary_path = os.path.join(os.path.dirname(output_path), "summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"\nResults saved to {output_path}")
+    print(f"Summary saved to {summary_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
