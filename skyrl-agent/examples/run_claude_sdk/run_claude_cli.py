@@ -46,62 +46,26 @@ ANDROID_ENV_SCRIPT = os.path.abspath(ANDROID_ENV_SCRIPT)
 # System prompt
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = f"""\
-You are an Android automation agent. You control an Android device via ADB \
-commands through a CLI wrapper.
+# Available prompt modules (each has build_system_prompt(android_env_script)):
+#   adb_baseline  — one ADB command per step (default)
+#   codegen       — Python code generation for multi-step logic
+PROMPT_MODULES = {
+    "adb_baseline": "skyrl_agent.agents.android.claude_sdk.prompts.adb_baseline",
+    "codegen": "skyrl_agent.agents.android.claude_sdk.prompts.codegen",
+}
+DEFAULT_PROMPT = "adb_baseline"
 
-## CLI Wrapper
 
-Use Bash to call the wrapper:
-
-```bash
-python {ANDROID_ENV_SCRIPT} adb "adb shell <command>"          # run ADB command, returns command output only
-python {ANDROID_ENV_SCRIPT} adb "adb shell uiautomator dump /sdcard/w.xml && cat /sdcard/w.xml"  # see the screen
-python {ANDROID_ENV_SCRIPT} finish --status complete --description "<result>"
-```
-
-## Strategy
-
-PREFER programmatic approaches over GUI interaction when possible:
-1. **SQLite** — query and modify app databases directly via `sqlite3`
-2. **File ops** — `cat`, `rm`, `mv`, `cp`, `mkdir`, `echo` for file-based apps
-3. **Intents** — `am start` to launch activities, `svc` for system settings
-4. **Content providers** — `content query/insert/update/delete` for structured data
-5. **Settings** — `settings put/get` for system configuration
-6. **GUI** — `input tap`/`swipe`/`text`/`keyevent` when programmatic won't work (dump the screen first)
-
-## Discovery
-
-Explore the device to find what you need:
-- List packages: `adb shell pm list packages`
-- Find app databases: `adb shell find /data/data/<package> -name "*.db" 2>/dev/null`
-- Inspect DB schema: `adb shell sqlite3 <db> ".tables"` / `.schema <table>`
-- List files: `adb shell ls <path>`
-- Get current date/time: `adb shell date`
-
-## Shell Escaping
-
-Nested quoting inside `adb shell` is fragile — quotes get consumed by multiple shell layers. \
-Prefer piping via base64 to avoid wasting time debugging escaping issues:
-```bash
-echo "<base64_encoded>" | base64 -d | adb shell sqlite3 <db_path>
-echo "<base64_encoded>" | base64 -d | adb shell sh
-```
-
-## Self-Verification
-
-ALWAYS verify your work before calling finish:
-- After modifications: query back to confirm the change took effect
-- For information questions: double-check your answer
-- Timestamps in databases can use different formats and timezones. Before filtering by time, inspect existing entries to understand the convention used.
-
-## Important Rules
-
-1. Issue ONE ADB command per wrapper call.
-2. For information-retrieval tasks (questions), the `--description` in `finish` IS your answer.
-3. **ALWAYS call `finish` when done** — with a meaningful `--description`.
-4. Copy text and values EXACTLY from the task — do not paraphrase.
-"""
+def _load_system_prompt(prompt_name: str) -> str:
+    """Load a system prompt by name and format it with ANDROID_ENV_SCRIPT."""
+    import importlib
+    if prompt_name not in PROMPT_MODULES:
+        raise ValueError(
+            f"Unknown prompt '{prompt_name}'. "
+            f"Available: {list(PROMPT_MODULES.keys())}"
+        )
+    mod = importlib.import_module(PROMPT_MODULES[prompt_name])
+    return mod.build_system_prompt(ANDROID_ENV_SCRIPT)
 
 # ---------------------------------------------------------------------------
 # Infrastructure
@@ -174,7 +138,7 @@ def broker_release(broker_url, env_id, healthy=True, retries=3):
 # Run one task
 # ---------------------------------------------------------------------------
 
-def run_one_task(task_def, container_url, model, max_turns):
+def run_one_task(task_def, container_url, model, max_turns, system_prompt=None):
     task_id = task_def["task_id"]
     seed = task_def["seed"]
     task_text = task_def["task"]
@@ -209,7 +173,7 @@ def run_one_task(task_def, container_url, model, max_turns):
     time.sleep(10)  # wait for a11y tree stabilization
 
     # Build prompt
-    prompt = f"{SYSTEM_PROMPT}\n\n## Task\n\n{task_text}\n\nComplete this task on the Android device."
+    prompt = f"{system_prompt}\n\n## Task\n\n{task_text}\n\nComplete this task on the Android device."
 
     # Set env vars for android_env.py
     env = os.environ.copy()
@@ -323,7 +287,8 @@ def run_one_task(task_def, container_url, model, max_turns):
 # Sequential mode (single container)
 # ---------------------------------------------------------------------------
 
-def run_sequential(tasks, container_url, model, max_turns, output_path):
+def run_sequential(tasks, container_url, model, max_turns, output_path,
+                    system_prompt=None):
     results = []
     with open(output_path, "w") as out:
         for i, task_def in enumerate(tasks):
@@ -338,7 +303,8 @@ def run_sequential(tasks, container_url, model, max_turns, output_path):
                     })
                     continue
 
-            result = run_one_task(task_def, container_url, model, max_turns)
+            result = run_one_task(task_def, container_url, model, max_turns,
+                                  system_prompt=system_prompt)
             results.append(result)
             out.write(json.dumps(result) + "\n")
             out.flush()
@@ -354,7 +320,8 @@ def run_sequential(tasks, container_url, model, max_turns, output_path):
 # Parallel mode (broker)
 # ---------------------------------------------------------------------------
 
-def run_parallel(tasks, broker_url, pool_size, model, max_turns, output_path):
+def run_parallel(tasks, broker_url, pool_size, model, max_turns, output_path,
+                  system_prompt=None):
     task_queue = queue.Queue()
     for t in tasks:
         task_queue.put(t)
@@ -387,7 +354,8 @@ def run_parallel(tasks, broker_url, pool_size, model, max_turns, output_path):
                       f"port={server_port} for task {task_id}")
 
                 # Run task
-                result = run_one_task(task_def, container_url, model, max_turns)
+                result = run_one_task(task_def, container_url, model, max_turns,
+                                      system_prompt=system_prompt)
                 healthy = True
 
             except Exception as e:
@@ -646,8 +614,15 @@ def main():
 
     parser.add_argument("--pool-size", type=int, default=8,
                         help="Number of parallel workers (broker mode only)")
+    parser.add_argument("--prompt", default=DEFAULT_PROMPT,
+                        choices=list(PROMPT_MODULES.keys()),
+                        help=f"System prompt variant (default: {DEFAULT_PROMPT})")
 
     args = parser.parse_args()
+
+    # Load system prompt
+    SYSTEM_PROMPT = _load_system_prompt(args.prompt)
+    print(f"Prompt variant: {args.prompt}")
 
     # Verify android_env.py exists
     if not os.path.exists(ANDROID_ENV_SCRIPT):
@@ -706,6 +681,7 @@ def main():
         results = run_parallel(
             tasks, args.broker_url, args.pool_size,
             args.model, args.max_turns, output_path,
+            system_prompt=SYSTEM_PROMPT,
         )
     else:
         # Check container health
@@ -715,6 +691,7 @@ def main():
         print(f"Container {args.container_url} is healthy.")
         results = run_sequential(
             tasks, args.container_url, args.model, args.max_turns, output_path,
+            system_prompt=SYSTEM_PROMPT,
         )
 
     # Summary
@@ -750,6 +727,11 @@ def main():
 
     # Save ATIF trajectories
     save_atif_trajectories(results, output_dir, args.model, SYSTEM_PROMPT)
+
+    # Save prompt variant used
+    prompt_meta_path = os.path.join(output_dir, "prompt_variant.txt")
+    with open(prompt_meta_path, "w") as f:
+        f.write(f"{args.prompt}\n")
 
     print(f"\nResults saved to {output_path}")
     print(f"Summary saved to {summary_path}")
