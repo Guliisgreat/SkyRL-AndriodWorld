@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import concurrent.futures
+import datetime
 import json
 import os
 import queue
@@ -28,6 +29,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+import uuid
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -217,12 +219,13 @@ def run_one_task(task_def, container_url, model, max_turns):
     # Unset CLAUDECODE to allow nested invocation
     env.pop("CLAUDECODE", None)
 
-    # Run claude CLI
+    # Run claude CLI with JSON output for token tracking
     cmd = [
         "claude",
         "-p", prompt,
         "--model", model,
         "--max-turns", str(max_turns),
+        "--output-format", "json",
         "--allowedTools", "Bash(command:*)",
     ]
 
@@ -231,6 +234,7 @@ def run_one_task(task_def, container_url, model, max_turns):
 
     start_time = time.time()
     elapsed = 0
+    claude_json = {}
     try:
         result = subprocess.run(
             cmd, env=env,
@@ -240,11 +244,19 @@ def run_one_task(task_def, container_url, model, max_turns):
         elapsed = time.time() - start_time
         print(f"  Claude finished in {elapsed:.0f}s (exit={result.returncode})")
 
+        # Parse JSON output for token usage
         if result.stdout:
-            # Print last few lines of Claude's output
-            lines = result.stdout.strip().split("\n")
-            for line in lines[-5:]:
-                print(f"    {line[:120]}")
+            try:
+                claude_json = json.loads(result.stdout)
+                # Print the text result
+                result_text = claude_json.get("result", "")
+                if result_text:
+                    for line in result_text.strip().split("\n")[-5:]:
+                        print(f"    {line[:120]}")
+            except json.JSONDecodeError:
+                # Fallback: print raw output
+                for line in result.stdout.strip().split("\n")[-5:]:
+                    print(f"    {line[:120]}")
 
         if result.returncode != 0 and result.stderr:
             print(f"  stderr: {result.stderr[-200:]}")
@@ -253,6 +265,17 @@ def run_one_task(task_def, container_url, model, max_turns):
         elapsed = time.time() - start_time
         print(f"  TIMEOUT after {elapsed:.0f}s")
         result = None
+
+    # Extract token usage from claude JSON output
+    usage = claude_json.get("usage", {})
+    input_tokens = (
+        usage.get("input_tokens", 0)
+        + usage.get("cache_creation_input_tokens", 0)
+        + usage.get("cache_read_input_tokens", 0)
+    )
+    output_tokens = usage.get("output_tokens", 0)
+    cost_usd = claude_json.get("total_cost_usd", 0.0)
+    num_turns = claude_json.get("num_turns", 0)
 
     # Read state
     state = {}
@@ -273,6 +296,7 @@ def run_one_task(task_def, container_url, model, max_turns):
 
     status = "OK" if reward > 0 else "FAIL"
     print(f"  >>> REWARD: {reward} ({status}), steps={step_count}, finished={finished}")
+    print(f"      tokens: in={input_tokens}, out={output_tokens}, cost=${cost_usd:.4f}")
     sys.stdout.flush()
 
     return {
@@ -285,7 +309,13 @@ def run_one_task(task_def, container_url, model, max_turns):
         "commands": state.get("step_records", []),
         "finish_description": state.get("finish_description", ""),
         "elapsed_seconds": elapsed,
-        "claude_output": (result.stdout[-3000:] if result and result.stdout else ""),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd": cost_usd,
+        "num_turns": num_turns,
+        "claude_output": claude_json.get("result", "")[-3000:] if claude_json else (
+            result.stdout[-3000:] if result and result.stdout else ""
+        ),
     }
 
 
@@ -406,6 +436,189 @@ def run_parallel(tasks, broker_url, pool_size, model, max_turns, output_path):
 
 
 # ---------------------------------------------------------------------------
+# ATIF trajectory export (Harbor Agent Trajectory Interchange Format v1.6)
+# ---------------------------------------------------------------------------
+
+def result_to_atif(result, model, system_prompt):
+    """Convert a task result dict to an ATIF-v1.6 trajectory dict.
+
+    Maps the step_records from android_env.py into ATIF steps with
+    tool_calls (Bash) and observations (command output).
+    """
+    task_id = result.get("task_id", 0)
+    session_id = f"androidworld-task{task_id}-{uuid.uuid4().hex[:8]}"
+
+    steps = []
+    step_id = 1
+
+    # Step 1: system prompt
+    steps.append({
+        "step_id": step_id,
+        "source": "system",
+        "message": system_prompt,
+    })
+    step_id += 1
+
+    # Step 2: user message (task description)
+    steps.append({
+        "step_id": step_id,
+        "source": "user",
+        "message": result.get("task", ""),
+    })
+    step_id += 1
+
+    # Steps 3+: agent actions from step_records
+    for rec in result.get("commands", []):
+        action_type = rec.get("action_type", "")
+        params = rec.get("action_params", {})
+        cmd_output = rec.get("command_output", "")
+
+        if action_type == "adb":
+            command = params.get("command", "")
+            tool_call_id = f"call_{step_id}"
+
+            # Reconstruct the full bash command
+            no_tree = params.get("no_tree", False)
+            tree_flag = " --no-tree" if no_tree else ""
+            bash_cmd = f"python android_env.py adb{tree_flag} \"{command}\""
+
+            steps.append({
+                "step_id": step_id,
+                "source": "agent",
+                "message": rec.get("thought", "") or f"Execute: {command}",
+                "model_name": model,
+                "tool_calls": [{
+                    "tool_call_id": tool_call_id,
+                    "function_name": "Bash",
+                    "arguments": {"command": bash_cmd},
+                }],
+                "observation": {
+                    "results": [{
+                        "source_call_id": tool_call_id,
+                        "content": cmd_output[:8000] if cmd_output else "(no output)",
+                    }],
+                },
+            })
+            step_id += 1
+
+        elif action_type == "tree":
+            tool_call_id = f"call_{step_id}"
+            steps.append({
+                "step_id": step_id,
+                "source": "agent",
+                "message": rec.get("thought", "Get accessibility tree"),
+                "model_name": model,
+                "tool_calls": [{
+                    "tool_call_id": tool_call_id,
+                    "function_name": "Bash",
+                    "arguments": {"command": "python android_env.py tree"},
+                }],
+                "observation": {
+                    "results": [{
+                        "source_call_id": tool_call_id,
+                        "content": cmd_output[:8000] if cmd_output else "(no output)",
+                    }],
+                },
+            })
+            step_id += 1
+
+        elif action_type == "finish":
+            tool_call_id = f"call_{step_id}"
+            status = params.get("status", "complete")
+            desc = params.get("description", "")
+            bash_cmd = f'python android_env.py finish --status {status} --description "{desc}"'
+
+            steps.append({
+                "step_id": step_id,
+                "source": "agent",
+                "message": rec.get("thought", "") or f"Finish: {desc}",
+                "model_name": model,
+                "tool_calls": [{
+                    "tool_call_id": tool_call_id,
+                    "function_name": "Bash",
+                    "arguments": {"command": bash_cmd},
+                }],
+                "observation": {
+                    "results": [{
+                        "source_call_id": tool_call_id,
+                        "content": cmd_output[:8000] if cmd_output else "Task finished.",
+                    }],
+                },
+            })
+            step_id += 1
+
+    # If no steps were recorded, add a minimal agent step
+    if len(steps) == 2:
+        steps.append({
+            "step_id": step_id,
+            "source": "agent",
+            "message": result.get("claude_output", "")[:3000] or "(no output captured)",
+            "model_name": model,
+        })
+
+    trajectory = {
+        "schema_version": "ATIF-v1.6",
+        "session_id": session_id,
+        "agent": {
+            "name": "ClaudeCodeCLI",
+            "version": "1.0",
+            "model_name": model,
+            "tool_definitions": [{
+                "type": "function",
+                "function": {
+                    "name": "Bash",
+                    "description": "Execute a bash command",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string", "description": "The command to execute"},
+                        },
+                        "required": ["command"],
+                    },
+                },
+            }],
+        },
+        "steps": steps,
+        "final_metrics": {
+            "total_prompt_tokens": result.get("input_tokens", 0),
+            "total_completion_tokens": result.get("output_tokens", 0),
+            "total_cost_usd": result.get("cost_usd", 0.0),
+            "total_steps": result.get("step_count", 0),
+            "extra": {
+                "task_id": task_id,
+                "seed": result.get("seed", 0),
+                "reward": result.get("reward", 0.0),
+                "finished": result.get("finished", False),
+                "elapsed_seconds": result.get("elapsed_seconds", 0),
+                "finish_description": result.get("finish_description", ""),
+                "num_turns": result.get("num_turns", 0),
+            },
+        },
+        "extra": {
+            "benchmark": "AndroidWorld",
+            "task_text": result.get("task", ""),
+        },
+    }
+
+    return trajectory
+
+
+def save_atif_trajectories(results, output_dir, model, system_prompt):
+    """Save each task result as an individual ATIF JSON file."""
+    atif_dir = os.path.join(output_dir, "atif_trajectories")
+    os.makedirs(atif_dir, exist_ok=True)
+
+    for result in results:
+        task_id = result.get("task_id", 0)
+        traj = result_to_atif(result, model, system_prompt)
+        path = os.path.join(atif_dir, f"task_{task_id:03d}.json")
+        with open(path, "w") as f:
+            json.dump(traj, f, indent=2, default=str)
+
+    print(f"ATIF trajectories saved to {atif_dir}/ ({len(results)} files)")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -514,6 +727,9 @@ def main():
         print(f"  task_id={r['task_id']:3d} [{s:4s}] {r.get('task', '')[:55]}")
 
     # Write summary.json
+    total_input = sum(r.get("input_tokens", 0) for r in results)
+    total_output = sum(r.get("output_tokens", 0) for r in results)
+    total_cost = sum(r.get("cost_usd", 0) for r in results)
     summary = {
         "total": len(results),
         "success": successes,
@@ -521,10 +737,19 @@ def main():
         "model": args.model,
         "max_turns": args.max_turns,
         "mode": mode,
+        "total_input_tokens": total_input,
+        "total_output_tokens": total_output,
+        "avg_input_tokens": total_input // max(len(results), 1),
+        "avg_output_tokens": total_output // max(len(results), 1),
+        "total_cost_usd": round(total_cost, 4),
     }
-    summary_path = os.path.join(os.path.dirname(output_path), "summary.json")
+    output_dir = os.path.dirname(output_path)
+    summary_path = os.path.join(output_dir, "summary.json")
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
+
+    # Save ATIF trajectories
+    save_atif_trajectories(results, output_dir, args.model, SYSTEM_PROMPT)
 
     print(f"\nResults saved to {output_path}")
     print(f"Summary saved to {summary_path}")
