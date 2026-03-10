@@ -39,6 +39,7 @@ import urllib.error
 
 SERVER_URL = os.environ.get("ANDROID_SERVER_URL", "")
 STATE_FILE = os.environ.get("ANDROID_STATE_FILE", "")
+DISABLE_TREE = os.environ.get("ANDROID_DISABLE_TREE", "") == "1"
 
 # Accessibility tree auto-chaining (same as mcp_server.py)
 _A11Y_DUMP_SUFFIX = (
@@ -110,6 +111,10 @@ def cmd_adb(command: str, no_tree: bool = False) -> int:
         print("ERROR: Task already finished.")
         return 1
 
+    # ANDROID_DISABLE_TREE=1 forces no-tree mode globally
+    if DISABLE_TREE:
+        no_tree = True
+
     combined = command if no_tree else command + _A11Y_DUMP_SUFFIX
 
     try:
@@ -180,6 +185,10 @@ def cmd_adb(command: str, no_tree: bool = False) -> int:
 
 def cmd_tree() -> int:
     """Get the accessibility tree (cached or fresh)."""
+    if DISABLE_TREE:
+        print("Tree observation is disabled in this mode. Use adb commands directly.")
+        return 0
+
     state = _load_state()
 
     if state["terminated"]:
@@ -219,7 +228,15 @@ def cmd_tree() -> int:
 
 
 def cmd_finish(status: str, description: str) -> int:
-    """Signal task completion via the container's /step endpoint."""
+    """Signal task completion via the container's /step endpoint.
+
+    For information-retrieval tasks the evaluator reads ``interaction_cache``
+    which is ONLY populated when the environment receives an action with
+    ``action_type == "answer"``.  We therefore always send an ``answer``
+    action first (with the description as the answer text), then a ``status``
+    action to terminate the episode.  This is harmless for non-IR tasks
+    (interaction_cache is simply ignored).
+    """
     state = _load_state()
 
     if state["terminated"]:
@@ -231,13 +248,22 @@ def cmd_finish(status: str, description: str) -> int:
         if status.lower() in ("complete", "success", "done")
         else "infeasible"
     )
-    action_dict = {
-        "action_type": "status",
-        "goal_status": goal_status,
-        "text": description,
-    }
 
     try:
+        # Step 1: Set interaction_cache via "answer" action (needed for
+        # information-retrieval evaluation; no-op for other task types).
+        if goal_status == "complete" and description:
+            _http_post("/step", {
+                "action": {"action_type": "answer", "text": description},
+                "thought": description,
+            })
+
+        # Step 2: Terminate the episode.
+        action_dict = {
+            "action_type": "status",
+            "goal_status": goal_status,
+            "text": description,
+        }
         resp = _http_post("/step", {"action": action_dict, "thought": description})
     except (urllib.error.URLError, OSError) as e:
         print(f"ERROR: HTTP request failed: {e}")
