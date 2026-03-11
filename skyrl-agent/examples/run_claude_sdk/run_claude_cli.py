@@ -51,7 +51,9 @@ ANDROID_ENV_SCRIPT = os.path.abspath(ANDROID_ENV_SCRIPT)
 #   codegen       — Python code generation for multi-step logic
 PROMPT_MODULES = {
     "adb_baseline": "skyrl_agent.agents.android.claude_sdk.prompts.adb_baseline",
+    "adb_baseline_v2": "skyrl_agent.agents.android.claude_sdk.prompts.adb_baseline_v2",
     "codegen": "skyrl_agent.agents.android.claude_sdk.prompts.codegen",
+    "shell_script": "skyrl_agent.agents.android.claude_sdk.prompts.shell_script",
 }
 DEFAULT_PROMPT = "adb_baseline"
 
@@ -151,7 +153,8 @@ def broker_release(broker_url, env_id, healthy=True, retries=3):
 # Run one task
 # ---------------------------------------------------------------------------
 
-def run_one_task(task_def, container_url, model, max_turns, system_prompt=None):
+def run_one_task(task_def, container_url, model, max_turns, system_prompt=None,
+                 effort=None):
     task_id = task_def["task_id"]
     seed = task_def["seed"]
     task_text = task_def["task"]
@@ -205,6 +208,8 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt=None):
         "--output-format", "json",
         "--allowedTools", "Bash(command:*)",
     ]
+    if effort:
+        cmd.extend(["--effort", effort])
 
     print(f"  Running claude CLI (model={model}, max_turns={max_turns})...")
     sys.stdout.flush()
@@ -301,7 +306,7 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt=None):
 # ---------------------------------------------------------------------------
 
 def run_sequential(tasks, container_url, model, max_turns, output_path,
-                    system_prompt=None):
+                    system_prompt=None, effort=None):
     results = []
     with open(output_path, "w") as out:
         for i, task_def in enumerate(tasks):
@@ -317,7 +322,7 @@ def run_sequential(tasks, container_url, model, max_turns, output_path,
                     continue
 
             result = run_one_task(task_def, container_url, model, max_turns,
-                                  system_prompt=system_prompt)
+                                  system_prompt=system_prompt, effort=effort)
             results.append(result)
             out.write(json.dumps(result) + "\n")
             out.flush()
@@ -334,7 +339,7 @@ def run_sequential(tasks, container_url, model, max_turns, output_path,
 # ---------------------------------------------------------------------------
 
 def run_parallel(tasks, broker_url, pool_size, model, max_turns, output_path,
-                  system_prompt=None):
+                  system_prompt=None, effort=None):
     task_queue = queue.Queue()
     for t in tasks:
         task_queue.put(t)
@@ -368,7 +373,7 @@ def run_parallel(tasks, broker_url, pool_size, model, max_turns, output_path,
 
                 # Run task
                 result = run_one_task(task_def, container_url, model, max_turns,
-                                      system_prompt=system_prompt)
+                                      system_prompt=system_prompt, effort=effort)
                 healthy = True
 
             except Exception as e:
@@ -630,6 +635,9 @@ def main():
     parser.add_argument("--prompt", default=DEFAULT_PROMPT,
                         choices=list(PROMPT_MODULES.keys()),
                         help=f"System prompt variant (default: {DEFAULT_PROMPT})")
+    parser.add_argument("--effort", default=None,
+                        choices=["low", "medium", "high", "max"],
+                        help="Claude reasoning effort level (default: medium)")
 
     args = parser.parse_args()
 
@@ -694,7 +702,7 @@ def main():
         results = run_parallel(
             tasks, args.broker_url, args.pool_size,
             args.model, args.max_turns, output_path,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=SYSTEM_PROMPT, effort=args.effort,
         )
     else:
         # Check container health
@@ -704,7 +712,7 @@ def main():
         print(f"Container {args.container_url} is healthy.")
         results = run_sequential(
             tasks, args.container_url, args.model, args.max_turns, output_path,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=SYSTEM_PROMPT, effort=args.effort,
         )
 
     # Summary
