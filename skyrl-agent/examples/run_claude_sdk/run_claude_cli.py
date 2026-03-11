@@ -54,12 +54,13 @@ PROMPT_MODULES = {
     "adb_baseline_v2": "skyrl_agent.agents.android.claude_sdk.prompts.adb_baseline_v2",
     "codegen": "skyrl_agent.agents.android.claude_sdk.prompts.codegen",
     "shell_script": "skyrl_agent.agents.android.claude_sdk.prompts.shell_script",
+    "hybrid": "skyrl_agent.agents.android.claude_sdk.prompts.hybrid",
 }
 DEFAULT_PROMPT = "adb_baseline"
 
 
-def _load_system_prompt(prompt_name: str) -> str:
-    """Load a system prompt by name and format it with ANDROID_ENV_SCRIPT."""
+def _load_prompt_module(prompt_name: str):
+    """Load a prompt module by name."""
     import importlib.util
     if prompt_name not in PROMPT_MODULES:
         raise ValueError(
@@ -80,7 +81,19 @@ def _load_system_prompt(prompt_name: str) -> str:
     spec = importlib.util.spec_from_file_location(prompt_name, file_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_system_prompt(prompt_name: str) -> str:
+    """Load a system prompt by name and format it with ANDROID_ENV_SCRIPT."""
+    mod = _load_prompt_module(prompt_name)
     return mod.build_system_prompt(ANDROID_ENV_SCRIPT)
+
+
+def _get_allowed_tools(prompt_name: str) -> str:
+    """Get required tools for a prompt (default: Bash only)."""
+    mod = _load_prompt_module(prompt_name)
+    return getattr(mod, "REQUIRED_TOOLS", "Bash(command:*)")
 
 # ---------------------------------------------------------------------------
 # Infrastructure
@@ -154,7 +167,8 @@ def broker_release(broker_url, env_id, healthy=True, retries=3):
 # ---------------------------------------------------------------------------
 
 def run_one_task(task_def, container_url, model, max_turns, system_prompt=None,
-                 effort=None):
+                 effort=None, allowed_tools="Bash(command:*)",
+                 disable_tree=True):
     task_id = task_def["task_id"]
     seed = task_def["seed"]
     task_text = task_def["task"]
@@ -195,7 +209,8 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt=None,
     env = os.environ.copy()
     env["ANDROID_SERVER_URL"] = container_url
     env["ANDROID_STATE_FILE"] = state_file
-    env["ANDROID_DISABLE_TREE"] = "1"
+    if disable_tree:
+        env["ANDROID_DISABLE_TREE"] = "1"
     # Unset CLAUDECODE to allow nested invocation
     env.pop("CLAUDECODE", None)
 
@@ -206,7 +221,7 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt=None,
         "--model", model,
         "--max-turns", str(max_turns),
         "--output-format", "json",
-        "--allowedTools", "Bash(command:*)",
+        "--allowedTools", allowed_tools,
     ]
     if effort:
         cmd.extend(["--effort", effort])
@@ -306,7 +321,8 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt=None,
 # ---------------------------------------------------------------------------
 
 def run_sequential(tasks, container_url, model, max_turns, output_path,
-                    system_prompt=None, effort=None):
+                    system_prompt=None, effort=None, allowed_tools="Bash(command:*)",
+                    disable_tree=True):
     results = []
     with open(output_path, "w") as out:
         for i, task_def in enumerate(tasks):
@@ -322,7 +338,9 @@ def run_sequential(tasks, container_url, model, max_turns, output_path,
                     continue
 
             result = run_one_task(task_def, container_url, model, max_turns,
-                                  system_prompt=system_prompt, effort=effort)
+                                  system_prompt=system_prompt, effort=effort,
+                                  allowed_tools=allowed_tools,
+                                  disable_tree=disable_tree)
             results.append(result)
             out.write(json.dumps(result) + "\n")
             out.flush()
@@ -339,7 +357,8 @@ def run_sequential(tasks, container_url, model, max_turns, output_path,
 # ---------------------------------------------------------------------------
 
 def run_parallel(tasks, broker_url, pool_size, model, max_turns, output_path,
-                  system_prompt=None, effort=None):
+                  system_prompt=None, effort=None, allowed_tools="Bash(command:*)",
+                  disable_tree=True):
     task_queue = queue.Queue()
     for t in tasks:
         task_queue.put(t)
@@ -373,7 +392,9 @@ def run_parallel(tasks, broker_url, pool_size, model, max_turns, output_path,
 
                 # Run task
                 result = run_one_task(task_def, container_url, model, max_turns,
-                                      system_prompt=system_prompt, effort=effort)
+                                      system_prompt=system_prompt, effort=effort,
+                                      allowed_tools=allowed_tools,
+                                      disable_tree=disable_tree)
                 healthy = True
 
             except Exception as e:
@@ -641,9 +662,16 @@ def main():
 
     args = parser.parse_args()
 
-    # Load system prompt
+    # Load system prompt and tool config
     SYSTEM_PROMPT = _load_system_prompt(args.prompt)
+    ALLOWED_TOOLS = _get_allowed_tools(args.prompt)
+    # Disable a11y tree auto-append unless the prompt uses it (e.g., hybrid)
+    DISABLE_TREE = "Read" not in ALLOWED_TOOLS
     print(f"Prompt variant: {args.prompt}")
+    if ALLOWED_TOOLS != "Bash(command:*)":
+        print(f"Allowed tools: {ALLOWED_TOOLS}")
+    if not DISABLE_TREE:
+        print(f"A11y tree: enabled")
 
     # Verify android_env.py exists
     if not os.path.exists(ANDROID_ENV_SCRIPT):
@@ -703,6 +731,7 @@ def main():
             tasks, args.broker_url, args.pool_size,
             args.model, args.max_turns, output_path,
             system_prompt=SYSTEM_PROMPT, effort=args.effort,
+            allowed_tools=ALLOWED_TOOLS, disable_tree=DISABLE_TREE,
         )
     else:
         # Check container health
@@ -713,6 +742,7 @@ def main():
         results = run_sequential(
             tasks, args.container_url, args.model, args.max_turns, output_path,
             system_prompt=SYSTEM_PROMPT, effort=args.effort,
+            allowed_tools=ALLOWED_TOOLS, disable_tree=DISABLE_TREE,
         )
 
     # Summary
