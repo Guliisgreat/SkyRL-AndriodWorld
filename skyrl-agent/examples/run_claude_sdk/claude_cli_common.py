@@ -41,6 +41,9 @@ PROMPT_MODULES = {
     "codegen": "skyrl_agent.agents.android.claude_sdk.prompts.codegen",
     "shell_script": "skyrl_agent.agents.android.claude_sdk.prompts.shell_script",
     "hybrid": "skyrl_agent.agents.android.claude_sdk.prompts.hybrid",
+    "minimal_terminal": "skyrl_agent.agents.android.claude_sdk.prompts.minimal_terminal",
+    "minimal_shell_escaping": "skyrl_agent.agents.android.claude_sdk.prompts.minimal_shell_escaping",
+    "minimal_shell_escaping_no_gui": "skyrl_agent.agents.android.claude_sdk.prompts.minimal_shell_escaping_no_gui",
 }
 DEFAULT_PROMPT = "adb_baseline"
 
@@ -191,7 +194,7 @@ def broker_release(broker_url, env_id, healthy=True, retries=3):
 def run_one_task(task_def, container_url, model, max_turns, system_prompt,
                  effort=None, allowed_tools="Bash(command:*)",
                  disable_tree=True, prompt_suffix="",
-                 skip_reset=False, task_timeout=900):
+                 skip_reset=False, task_timeout=900, auto_finish=True):
     """Run one Claude attempt on a task. Returns a result dict.
 
     Parameters
@@ -322,6 +325,13 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     reward = state.get("reward", 0.0)
     step_count = state.get("step_count", 0)
     finished = state.get("terminated", False)
+
+    if not finished and auto_finish:
+        print(f"  Agent didn't call finish — auto-finishing...")
+        auto_reward = force_eval(container_url)
+        reward = auto_reward
+        finished = True
+        print(f"  Auto-finish reward: {auto_reward}")
 
     status = "OK" if reward > 0 else "FAIL"
     print(f"  >>> REWARD: {reward} ({status}), steps={step_count}, finished={finished}")
