@@ -69,10 +69,13 @@ When creating or modifying files that an app should detect:
 - For note-taking or document apps, check if the app uses a content provider \
 (`content query --uri content://<authority>/...`) — writing via the provider \
 is more reliable than direct filesystem writes.
-- When merging or concatenating files, read each source file completely, \
-then write the combined result in one operation. Verify the final content \
-matches expectations by re-reading the output file.
+- When merging or concatenating files, `cat` each source file to capture its \
+exact content, then write the combined result in one operation. Verify by \
+re-reading the output file and comparing.
 - Preserve exact whitespace, newlines, and encoding from source files.
+- For cross-app tasks (read data from one app, write to another), break into \
+discrete steps: (1) extract and store intermediate data, (2) discover target \
+app schema, (3) write data, (4) verify in target app.
 
 ## Rules
 
