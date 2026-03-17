@@ -280,7 +280,9 @@ async def get_n_tasks(env: Env):
 # ADB command execution (POST /step_adb)
 # ---------------------------------------------------------------------------
 
-_adb_logger = logging.getLogger("server_adb")
+_adb_logger = get_logger('server_adb', f'/data/log/server_logs/env{env_id}_adb.log')
+
+ADB_WHITELIST_ENABLED = str_to_bool(os.getenv("ADB_WHITELIST_ENABLED", "false"))
 
 ALLOWED_ADB_PREFIXES = [
     "adb shell input tap", "adb shell input swipe", "adb shell input text", "adb shell input keyevent",
@@ -296,12 +298,13 @@ ALLOWED_ADB_PREFIXES = [
     "adb shell pm grant", "adb shell pm clear", "adb shell sed",
 ]
 BLOCKED_ADB_PATTERNS = [
-    r"\brmdir\b", r"\breboot\b", r"\bshutdown\b",
-    r"\bformat\b", r"\bmkfs\b", r"\bdd\b", r"\bwipe\b",
-    r";\s*rm", r"&&\s*rm", r"\|\s*rm",
+    r"\breboot\b", r"\bshutdown\b",
+    r"\bformat\b", r"\bmkfs\b", r"\bwipe\b",
 ]
 
 def _validate_adb_command(command: str) -> None:
+    if not ADB_WHITELIST_ENABLED:
+        return
     if not any(command.startswith(p) for p in ALLOWED_ADB_PREFIXES):
         raise ValueError(f"Command not in whitelist: {command}")
     for pat in BLOCKED_ADB_PATTERNS:
@@ -336,8 +339,11 @@ def _execute_adb(env, command: str) -> str:
         args = args[1:]
     full_cmd = [env.adb_path, "-P", str(env.adb_server_port),
                 "-s", f"emulator-{env.console_port}"] + args
-    result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=30)
-    return (result.stdout or "") + (result.stderr or "")
+    _adb_logger.debug(f"exec: {' '.join(full_cmd)}")
+    result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=120)
+    output = (result.stdout or "") + (result.stderr or "")
+    _adb_logger.debug(f"output ({len(output)} chars): {output[:500]}")
+    return output
 
 def _parse_task_control(command: str) -> dict:
     if command.startswith("FINISH"):
@@ -361,7 +367,7 @@ async def step_adb(env: Env, data: StepAdbInput):
     command = data.command.strip()
     thought = data.thought or "Not provided"
 
-    _adb_logger.info(f"step_adb: command={command[:80]}..., thought={thought[:50]}.")
+    _adb_logger.info(f"step_adb: command={command[:200]}, thought={thought[:80]}.")
 
     try:
         if command.startswith("FINISH") or command.startswith("INFEASIBLE") or command.startswith("answer"):
