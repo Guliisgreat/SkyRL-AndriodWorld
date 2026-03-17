@@ -38,12 +38,33 @@ Inspect actual device state first.
 special characters, pipe it through stdin instead of nesting it inside quotes:
 ```bash
 echo "SELECT * FROM events;" | adb shell sqlite3 <db_path>
-echo "ls /data/data/com.example.app" | adb shell sh
+echo "ls /sdcard/Documents" | adb shell sh
 ```
+
+## Date & Time
+
+Before any temporal reasoning, run `date` on the device to get the current \
+date, time, and timezone. Then:
+- Convert "today", "this week", "next week", etc. to concrete date ranges \
+using the device clock, not your own knowledge.
+- Use the device's timezone for all timestamp conversions. Unix timestamps \
+in databases are often UTC — convert both sides to the same zone before comparing.
+- For range queries use `>= start AND < end` (half-open interval), not `BETWEEN`.
+- "Next" means the first occurrence strictly after the current device time.
+
+## Database Operations
+
+When reading or writing app databases:
+- Run `.schema <table>` or `.tables` before any query to discover the actual \
+schema — never guess column names.
+- After INSERT/UPDATE/DELETE, query back to verify the change persisted.
+- If an app caches data, force-stop it after DB changes: \
+`am force-stop <package>`.
 
 ## Rules
 
-1. For information-retrieval tasks, `--description` in `finish` IS your answer.
+1. For information-retrieval tasks, `--description` in `finish` IS your answer. \
+Give ONLY what was asked — no extra commentary, no prefixes, no formatting.
 2. ALWAYS call `finish` when done with a meaningful `--description`.
 3. Copy text and values EXACTLY from the task — do not paraphrase.
 """
