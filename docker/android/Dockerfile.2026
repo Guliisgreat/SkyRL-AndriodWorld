@@ -1,0 +1,49 @@
+# AndroidWorld 2026 — thin wrapper architecture.
+#
+# Layers on top of androidworld:v8 (which has Python 3.11, Android SDK,
+# emulator, and base dependencies). Replaces the forked android_world/
+# android_env with upstream pip packages (pinned commits) and our thin
+# skyrl_server/ wrapper.
+#
+# Build:
+#   cd docker/android
+#   docker build -f Dockerfile.2026 -t androidworld:2026 .
+#
+# Requires base image androidworld:v8.
+
+FROM androidworld:v8
+
+WORKDIR /data
+
+# Uninstall old forked packages (installed as editable in v8)
+RUN pip uninstall -y android-world android-env 2>/dev/null; \
+    pip uninstall -y android_world android_env 2>/dev/null; \
+    true
+
+# Install git (needed for pip install from GitHub)
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+
+# Pin setuptools<71 because upstream setup.py uses pkg_resources (removed in >=72)
+RUN pip install --upgrade pip "setuptools<71" wheel
+
+# Install dependencies first (most are already in v8, this handles version bumps)
+COPY skyrl_server/requirements.txt /data/requirements.txt
+RUN grep -v "^android-" /data/requirements.txt | grep -v "^#" | grep -v "^$" | \
+    pip install --no-cache-dir --no-build-isolation -r /dev/stdin
+
+# Install android_env from GitHub (pinned commit)
+RUN pip install --no-cache-dir --no-build-isolation --no-deps \
+    "android-env @ git+https://github.com/google-deepmind/android_env.git@0cdf2711c4e971bb8f813994f0663e41e625c1ac"
+
+# Install android_world from GitHub (pinned commit)
+# --no-deps because it requires android_env==1.2.3 but GitHub HEAD is 1.2.2 (compatible)
+RUN pip install --no-cache-dir --no-build-isolation --no-deps \
+    "android-world @ git+https://github.com/google-research/android_world.git@d9c569f764b3a5629321858de03ff653d0f24056"
+
+# Copy our thin wrapper server
+COPY skyrl_server/ /data/skyrl_server/
+
+# Copy entrypoint
+COPY entrypoint_2026.sh /data/entrypoint.sh
+
+ENTRYPOINT ["bash", "/data/entrypoint.sh"]

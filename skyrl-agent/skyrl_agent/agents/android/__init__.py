@@ -24,6 +24,7 @@ __all__ = [
     "AndroidM3AAgent",
     "AndroidT3AAgent",
     "AndroidT3AADBAgent",
+    "AndroidT3AADBAgentV2",
     "AndroidMobileUseAgent",
     "TrajectoryState",
     # Prompt template (agent-specific)
@@ -87,6 +88,10 @@ def __getattr__(name):
     if name == "AndroidT3AADBAgent":
         from skyrl_agent.agents.android.t3a_adb_agent import AndroidT3AADBAgent
         return AndroidT3AADBAgent
+
+    if name == "AndroidT3AADBAgentV2":
+        from skyrl_agent.agents.android.t3a_adb_agent_v2 import AndroidT3AADBAgentV2
+        return AndroidT3AADBAgentV2
 
     if name == "AndroidMobileUseAgent":
         from skyrl_agent.agents.android.mobileuse import AndroidMobileUseAgent

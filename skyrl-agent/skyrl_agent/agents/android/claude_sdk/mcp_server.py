@@ -370,13 +370,20 @@ async def _handle_finish(args: dict) -> list[TextContent]:
         if status_val.lower() in ("complete", "success", "done")
         else "infeasible"
     )
-    action_dict = {
-        "action_type": "status",
-        "goal_status": goal_status,
-        "text": description,
-    }
-
     try:
+        # Set interaction_cache via "answer" action (needed for
+        # information-retrieval evaluation; no-op for other task types).
+        if goal_status == "complete" and description:
+            await _http_step(
+                {"action_type": "answer", "text": description}, description
+            )
+
+        # Terminate the episode.
+        action_dict = {
+            "action_type": "status",
+            "goal_status": goal_status,
+            "text": description,
+        }
         resp = await _http_step(action_dict, description)
     except Exception as e:
         return [TextContent(type="text", text=f"ERROR: HTTP request failed: {e}")]

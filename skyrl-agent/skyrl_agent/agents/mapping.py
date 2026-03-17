@@ -9,6 +9,7 @@ AGENT_GENERATOR_REGISTRY = {
     "skyrl_agent.agents.android.AndroidM3AAgent": "skyrl_agent.agents.android.runner.AndroidAgentRunner",
     "skyrl_agent.agents.android.AndroidT3AAgent": "skyrl_agent.agents.android.runner.AndroidAgentRunner",
     "skyrl_agent.agents.android.AndroidT3AADBAgent": "skyrl_agent.agents.android.runner.AndroidAgentRunner",
+    "skyrl_agent.agents.android.AndroidT3AADBAgentV2": "skyrl_agent.agents.android.runner.AndroidAgentRunner",
     "skyrl_agent.agents.android.AndroidMobileUseAgent": "skyrl_agent.agents.android.runner.AndroidAgentRunner",
 }
 
@@ -23,5 +24,6 @@ AGENT_TRAJECTORY_REGISTRY = {
     "skyrl_agent.agents.android.AndroidM3AAgent": "skyrl_agent.agents.android.trajectory.AndroidTrajectory",
     "skyrl_agent.agents.android.AndroidT3AAgent": "skyrl_agent.agents.android.trajectory.AndroidTrajectory",
     "skyrl_agent.agents.android.AndroidT3AADBAgent": "skyrl_agent.agents.android.trajectory.AndroidTrajectory",
+    "skyrl_agent.agents.android.AndroidT3AADBAgentV2": "skyrl_agent.agents.android.trajectory.AndroidTrajectory",
     "skyrl_agent.agents.android.AndroidMobileUseAgent": "skyrl_agent.agents.android.trajectory.AndroidTrajectory",
 }

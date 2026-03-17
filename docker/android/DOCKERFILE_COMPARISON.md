@@ -8,28 +8,32 @@ This document compares all Docker images for AndroidWorld containers.
 
 ```
 ubuntu:22.04
-  └── androidworld:v8              (base image)
+  └── androidworld:v8              (base image, forked android_world)
         ├── androidworld:v9         (ADB port fix only)
         ├── androidworld-adb:v8     (/step_adb only)
-        └── androidworld:full_adb_agent  ← RECOMMENDED (all features)
+        ├── androidworld:full_adb_agent  (all features, forked)
+        └── androidworld:2026       ← RECOMMENDED (upstream packages)
 ```
 
 ---
 
 ## Quick Comparison
 
-| Feature | v8 (base) | v9 | adb:v8 | full_adb_agent |
-|---|---|---|---|---|
-| Dockerfile | `Dockerfile` | `Dockerfile.v9` | `Dockerfile.adb` | `Dockerfile.full_adb_agent` |
-| Emulator + env | ✅ | ✅ | ✅ | ✅ |
-| `/health`, `/reset`, `/step` | ✅ | ✅ | ✅ | ✅ |
-| `/step_adb` (ADB commands) | ❌ | ❌ | ✅ | ✅ |
-| Per-container ADB port | ❌ | ✅ | ❌ | ✅ |
-| `ui_elements` in observations | ❌ | ❌ | ❌ | ✅ |
-| Host network (16+ containers) | ❌ (5 max) | ✅ | ❌ (5 max) | ✅ |
-| GUI agent compatible | ✅ | ✅ | ✅ | ✅ |
-| ADB agent compatible | ❌ | ❌ | ✅ | ✅ |
-| A11y tree input | ❌ | ❌ | ❌ | ✅ |
+| Feature | v8 (base) | v9 | adb:v8 | full_adb_agent | **2026** |
+|---|---|---|---|---|---|
+| Dockerfile | `Dockerfile` | `Dockerfile.v9` | `Dockerfile.adb` | `Dockerfile.full_adb_agent` | **`Dockerfile.2026`** |
+| android_world source | Forked | Forked | Forked | Forked | **Upstream pip** |
+| Emulator + env | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `/health`, `/reset`, `/step` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `/step_adb` (ADB commands) | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Per-container ADB port | ❌ | ✅ | ❌ | ✅ | ✅ |
+| `ui_elements` in observations | ❌ | ❌ | ❌ | ✅ | ✅ |
+| `ENV_SKIP_SCREENSHOT` support | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Host network (16+ containers) | ❌ (5 max) | ✅ | ❌ (5 max) | ✅ | ✅ |
+| GUI agent compatible | ✅ | ✅ | ✅ | ✅ | ✅ |
+| ADB agent compatible | ❌ | ❌ | ✅ | ✅ | ✅ |
+| A11y tree input | ❌ | ❌ | ❌ | ✅ | ✅ |
+| v8 task ordering (JSONL compat) | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ---
 
@@ -135,6 +139,30 @@ docker build -f docker/android/Dockerfile.full_adb_agent \
 
 ---
 
+### `androidworld:2026` — Upstream Thin Wrapper (Recommended)
+
+**Dockerfile:** `Dockerfile.2026`
+**Built from:** `androidworld:v8`
+
+Replaces the forked `android_world` / `android_env` libraries with upstream pip packages (pinned to specific commits). Uses a clean `skyrl_server/` wrapper that delegates to the upstream API. This decouples our infrastructure from upstream changes and makes upgrades trivial.
+
+**Key differences from `full_adb_agent`:**
+- **Upstream packages**: `android_world` and `android_env` installed from GitHub via pip, not forked copies
+- **`registry_ext.py`**: Maintains v8-compatible task ordering so existing JSONL data files (positional `task_id`) work unchanged with upstream's alphabetical registry
+- **`ENV_SKIP_SCREENSHOT`**: Can skip screenshot capture for ADB-only agents (saves ~6s/step)
+- **`patches.py`**: Runtime monkey-patches for ADB port override without modifying upstream source
+- **Cleaner codebase**: `skyrl_server/` is a self-contained module (~7 files) with no coupling to our agent code
+
+**Supports all endpoints and agent modes** — same as `full_adb_agent`.
+
+**Build:**
+```bash
+cd docker/android
+docker build -f Dockerfile.2026 -t androidworld:2026 .
+```
+
+---
+
 ## Observation Format
 
 ### v8 / v9 / adb:v8
@@ -148,7 +176,7 @@ docker build -f docker/android/Dockerfile.full_adb_agent \
 }
 ```
 
-### full_adb_agent
+### full_adb_agent / 2026
 
 ```json
 {
@@ -166,6 +194,9 @@ docker build -f docker/android/Dockerfile.full_adb_agent \
         }
     ]
 }
+```
+
+When `ENV_SKIP_SCREENSHOT=True` (2026 only), `image`, `image_shape`, and `image_dtype` are omitted from the response.
 ```
 
 ---
@@ -191,7 +222,7 @@ Same as v8 plus:
 |---|---|
 | `/step_adb` | POST |
 
-### full_adb_agent
+### full_adb_agent / 2026
 
 All endpoints from both:
 
@@ -209,19 +240,30 @@ All endpoints from both:
 
 ## Migration Guide
 
-To switch from any existing image to `androidworld:full_adb_agent`:
+To switch from any existing image to `androidworld:2026` (recommended):
 
 1. Build the image:
    ```bash
-   docker build -f docker/android/Dockerfile.full_adb_agent \
-       -t androidworld:full_adb_agent docker/android
+   cd docker/android
+   docker build -f Dockerfile.2026 -t androidworld:2026 .
    ```
 
 2. Update YAML config:
    ```yaml
    env:
-     docker_image: androidworld:full_adb_agent
+     docker_image: androidworld:2026
      use_host_network: true
    ```
 
-No code changes needed on the agent side — `RuntimeClient` now supports both `step()` and `step_adb()`.
+3. For ADB-only agents (no screenshots needed), add `--skip-screenshot` to the broker:
+   ```bash
+   python -m skyrl_agent.runtime.android.pool_broker \
+       --docker-image androidworld:2026 --skip-screenshot
+   ```
+   **Important:** VLM agents (UI-TARS, Qwen2-VL) require screenshots — do NOT use `--skip-screenshot` with them.
+
+No code changes needed on the agent side — `RuntimeClient` supports both `step()` and `step_adb()`.
+
+### Upgrading from `full_adb_agent` to `2026`
+
+The API is identical. Just change `docker_image` in your YAML. The only behavioral difference is that `2026` uses upstream `android_world` packages, so task class ordering follows our `registry_ext.py` (which preserves v8 ordering for JSONL compatibility).

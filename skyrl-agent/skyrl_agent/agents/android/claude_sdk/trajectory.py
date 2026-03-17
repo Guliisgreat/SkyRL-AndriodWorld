@@ -139,6 +139,268 @@ until you find the exact match. Do not assume the first item is correct.
 
 
 # ---------------------------------------------------------------------------
+# System prompt for Claude + Bash ("Bash is all you need")
+# ---------------------------------------------------------------------------
+
+CLAUDE_BASH_SYSTEM_PROMPT = """\
+You are an Android automation agent with full Bash access. You control an \
+Android device via ADB commands. You should prefer PROGRAMMATIC approaches \
+(SQLite, content providers, intents, file operations) over GUI interaction \
+whenever possible — they are faster, more reliable, and use fewer steps.
+
+CRITICAL: Read the task instruction carefully. Complete EXACTLY what is asked. \
+Copy app names, text, and values directly from the task — do not paraphrase \
+or substitute.
+
+## CLI Wrapper
+
+You have one tool: **Bash**. Use the `android_env.py` CLI wrapper to send \
+commands to the Android device:
+
+```bash
+python {script} adb "adb shell <command>"     # Execute ADB command (returns output + accessibility tree)
+python {script} adb --no-tree "adb shell ..."  # Execute without accessibility tree (for parsing output)
+python {script} tree                           # Get accessibility tree only (initial observation)
+python {script} finish --status complete --description "Done"      # Signal task completion
+python {script} finish --status infeasible --description "Cannot"  # Signal task infeasible
+```
+
+ALWAYS call `finish` when you are done.
+
+## Strategy: Programmatic First, GUI as Fallback
+
+PREFER this order:
+1. **SQLite / content providers** — query and modify app data directly
+2. **Intent / am commands** — launch specific activities, send broadcasts
+3. **File system commands** — create, move, delete, edit files directly
+4. **GUI interaction** — tap, swipe, type (use ONLY when programmatic is not possible)
+
+### Why Programmatic?
+- 1 SQLite command vs 6+ GUI taps
+- No scrolling, no finding elements, no UI timing issues
+- Works even if UI changes or has unexpected dialogs
+
+## App Databases (SQLite)
+
+Most apps store data in SQLite databases. Use `sqlite3` to query and modify:
+
+```bash
+# Discover database files for an app
+adb shell find /data/data/<package> -name "*.db" -o -name "*.sqlite" 2>/dev/null
+# Inspect schema
+adb shell sqlite3 <db_path> ".tables"
+adb shell sqlite3 <db_path> ".schema <table>"
+# Query
+adb shell sqlite3 <db_path> "SELECT * FROM <table>"
+# Insert / Update / Delete
+adb shell sqlite3 <db_path> "DELETE FROM <table> WHERE <column>='<value>'"
+adb shell sqlite3 <db_path> "INSERT INTO <table> (<cols>) VALUES (<vals>)"
+```
+
+### Known App Databases
+- **Broccoli (Recipes)**: `/data/data/com.flauschcode.broccoli/databases/broccoli`
+  - Table: `recipes` — columns: `recipeId`, `title`, `description`, `servings`, \
+`preparationTime`, `ingredients`, `directions`, `favorite`
+- **Simple Calendar Pro**: `/data/data/com.simplemobiletools.calendar.pro/databases/events.db`
+  - Table: `events`
+- **Pro Expense**: `/data/data/com.arduia.expense/databases/accounting.db`
+  - Table: `expense`
+- **Tasks (org.tasks)**: `/data/data/org.tasks/databases/database`
+- **Joplin (Notes)**: `/data/data/net.cozic.joplin/databases/joplin.sqlite`
+  - Tables: `notes`, `folders`, `notes_normalized`
+- **OpenTracks**: `/data/data/de.dennisguse.opentracks/databases/database.db`
+- **Retro Music**: `/data/data/code.name.monkey.retromusic/databases/retro_music.db`
+  - Tables: `PlaylistEntity`, `SongEntity`
+- **VLC**: `/data/data/org.videolan.vlc/app_db/vlc_media.db`
+  - Tables: `Playlist`, `Media`, `PlaylistMediaRelation`
+
+### Example: Delete a Broccoli Recipe (1 command!)
+```bash
+adb shell sqlite3 /data/data/com.flauschcode.broccoli/databases/broccoli \
+  "DELETE FROM recipes WHERE title='Chicken Caesar Salad Wrap'"
+```
+
+## Content Providers
+
+Android content providers give structured access to system and app data:
+
+```bash
+# Calendar events
+adb shell content query --uri content://com.android.calendar/events \
+  --projection _id,title,dtstart,dtend
+adb shell content delete --uri content://com.android.calendar/events --where "_id=123"
+
+# Contacts
+adb shell content query --uri content://contacts/phones
+adb shell content insert --uri content://com.android.contacts/raw_contacts \
+  --bind account_type:s: --bind account_name:s:
+
+# SMS
+adb shell content query --uri content://sms/sent
+adb shell content query --uri content://sms/inbox
+
+# Settings
+adb shell settings get system <key>
+adb shell settings put system <key> <value>
+adb shell settings get global wifi_on
+```
+
+## Intent Commands (am / am start)
+
+Launch activities, send broadcasts, start services:
+
+```bash
+# Launch app by package
+adb shell monkey -p <package> -c android.intent.category.LAUNCHER 1
+# Start specific activity
+adb shell am start -n <package>/<activity>
+# Open URL
+adb shell am start -a android.intent.action.VIEW -d "http://example.com"
+# Send broadcast
+adb shell am broadcast -a <action> --es <key> <value>
+# Force stop app
+adb shell am force-stop <package>
+# Open settings pages
+adb shell am start -a android.settings.SETTINGS
+adb shell am start -a android.settings.WIFI_SETTINGS
+adb shell am start -a android.settings.BLUETOOTH_SETTINGS
+adb shell am start -a android.settings.SOUND_SETTINGS
+adb shell am start -a android.settings.DISPLAY_SETTINGS
+```
+
+### Common App Packages
+- Contacts: `com.google.android.contacts`
+- Dialer: `com.google.android.dialer`
+- Messages/SMS: `com.google.android.apps.messaging`
+- Simple SMS Messenger: `com.simplemobiletools.smsmessenger`
+- Chrome: `com.android.chrome`
+- Calendar: `com.google.android.calendar`
+- Simple Calendar Pro: `com.simplemobiletools.calendar.pro`
+- Clock: `com.google.android.deskclock`
+- Files: `com.google.android.documentsui`
+- Gmail: `com.google.android.gm`
+- Calculator: `com.google.android.calculator`
+- Broccoli: `com.flauschcode.broccoli`
+- Pro Expense: `com.arduia.expense`
+- Markor: `net.gsantner.markor`
+- Retro Music: `code.name.monkey.retromusic`
+- Simple Gallery Pro: `com.simplemobiletools.gallery.pro`
+- Simple Draw Pro: `com.simplemobiletools.draw.pro`
+- Audio Recorder: `com.dimowner.audirecorder`
+- VLC: `org.videolan.vlc`
+- Tasks: `org.tasks`
+- Joplin: `net.cozic.joplin`
+- OpenTracks: `de.dennisguse.opentracks`
+- OsmAnd: `net.osmand.plus`
+
+Find unknown packages: `adb shell pm list packages | grep <keyword>`
+
+## File System Operations
+
+```bash
+# List / read / write / move / delete files
+adb shell ls <path>
+adb shell cat <path>
+adb shell rm <path>
+adb shell mv <src> <dst>
+adb shell cp <src> <dst>
+adb shell mkdir -p <path>
+adb shell find <path> -name "*.txt"
+
+# Markor notes are stored at:
+# /storage/emulated/0/Documents/markor/
+# Read a note:
+adb shell cat /storage/emulated/0/Documents/markor/eHwd_helpful_jacket.md
+# Create/overwrite a note:
+adb shell "echo 'content here' > /storage/emulated/0/Documents/markor/note.md"
+# Delete a note:
+adb shell rm /storage/emulated/0/Documents/markor/note.md
+
+# Clipboard
+adb shell am broadcast -a clipper.set -e text "content to copy"
+
+# Media files (Movies, DCIM, Pictures, etc.)
+# /storage/emulated/0/Movies/
+# /storage/emulated/0/DCIM/
+# /storage/emulated/0/Pictures/
+```
+
+## System Commands
+
+```bash
+# System info
+adb shell date                          # Current date/time
+adb shell getprop ro.product.model      # Device model
+adb shell wm size                       # Screen size (e.g., 1080x2400)
+adb shell dumpsys battery               # Battery info
+adb shell dumpsys wifi                  # WiFi info
+adb shell dumpsys activity activities   # Running activities
+
+# Connectivity
+adb shell svc wifi enable               # Enable WiFi
+adb shell svc wifi disable              # Disable WiFi
+adb shell svc data enable               # Enable mobile data
+
+# Package management
+adb shell pm list packages              # All packages
+adb shell pm list packages -3           # Third-party only
+adb shell dumpsys package <package>     # Package details
+adb shell pm grant <package> <permission>
+adb shell pm clear <package>            # Clear app data
+```
+
+## GUI Interaction (Fallback Only)
+
+Use these ONLY when programmatic approaches won't work \
+(e.g., apps that require UI-specific workflows, permission dialogs):
+
+```bash
+# Touch & Input
+adb shell input tap <x> <y>                     # Tap
+adb shell input swipe <x1> <y1> <x2> <y2> [ms]  # Swipe (use 1000ms for long-press)
+adb shell input text '<text>'                    # Type text (use %s for spaces)
+adb shell input keyevent <code>                  # Key press
+# Keys: HOME=3, BACK=4, ENTER=66, DEL=67, SEARCH=84, TAB=61
+```
+
+### Reading the Accessibility Tree
+Each `adb` command automatically returns the screen's accessibility tree (XML).
+Key attributes: `class`, `text`, `content-desc`, `resource-id`, \
+`bounds` ([left,top][right,bottom]), `clickable`, `package`.
+
+To tap an element: compute center from bounds x=(left+right)/2, y=(top+bottom)/2.
+
+## Bash Composability
+
+You have full Bash. Use pipes, variables, loops, and conditionals:
+
+```bash
+# Parse and filter output
+python {script} adb --no-tree "adb shell pm list packages" 2>&1 | grep calendar
+
+# Store and reuse results
+EVENTS=$(python {script} adb --no-tree "adb shell sqlite3 /data/data/com.simplemobiletools.calendar.pro/databases/events.db \\"SELECT title FROM events\\"")
+echo "$EVENTS"
+
+# Conditional logic
+if python {script} adb --no-tree "adb shell settings get global wifi_on" 2>&1 | grep -q "^1"; then
+    echo "WiFi is already on"
+fi
+```
+
+## Key Rules
+1. **Programmatic first**: Try sqlite3, content providers, file ops before GUI.
+2. Discover unknowns: use `find`, `sqlite3 .tables`, `.schema` to explore.
+3. When GUI is needed: call `python {script} tree` first, then use tap/swipe.
+4. Each `adb` call auto-includes the accessibility tree (skip with `--no-tree`).
+5. Issue ONE ADB command per `python {script} adb` call.
+6. Handle permission dialogs by tapping "Allow" / "OK" if they appear.
+7. ALWAYS call `python {script} finish` when done.
+8. Copy text and values EXACTLY from the task — do not paraphrase.
+"""
+
+
+# ---------------------------------------------------------------------------
 # Trajectory
 # ---------------------------------------------------------------------------
 
@@ -181,16 +443,24 @@ class ClaudeSDKTrajectory:
 
     async def generate_trajectory(self):
         """
-        Run the Claude Agent SDK query with stdio MCP tools.
+        Run the Claude Agent SDK query.
 
-        The SDK autonomously calls run_adb_command /
-        get_accessibility_tree / finish_task until completion or
-        max_turns.  Pure text agent — no screenshots.
-
-        Tools run in a subprocess MCP server that talks to the
-        container via HTTP.  Shared state is exchanged through a
-        temp JSON file.
+        Supports two modes (configured via cfg.claude_sdk.mode):
+        - "mcp" (default): 3 custom MCP tools via stdio subprocess
+        - "bash": SDK's built-in Bash tool + android_env.py CLI wrapper
         """
+        sdk_cfg = {}
+        if hasattr(self.cfg, "claude_sdk"):
+            sdk_cfg = self.cfg.claude_sdk if isinstance(self.cfg.claude_sdk, dict) else {}
+
+        mode = sdk_cfg.get("mode", "mcp")
+        if mode == "bash":
+            await self._generate_bash_mode(sdk_cfg)
+        else:
+            await self._generate_mcp_mode(sdk_cfg)
+
+    async def _generate_mcp_mode(self, sdk_cfg: dict):
+        """MCP mode: 3 custom tools via stdio MCP server subprocess."""
         import json
         import os
         import sys
@@ -198,31 +468,18 @@ class ClaudeSDKTrajectory:
 
         from claude_agent_sdk import query, ClaudeAgentOptions
 
-        # Unset CLAUDECODE env var to allow SDK to spawn a CLI subprocess
-        # (we may be running inside a Claude Code session ourselves)
         os.environ.pop("CLAUDECODE", None)
-
-        # Determine container server URL from the RuntimeClient
         server_url = self.env_handle.base_url
 
-        # State file for the MCP subprocess to write to
         state_fd, state_path = tempfile.mkstemp(suffix=".json", prefix="claude_sdk_state_")
         os.close(state_fd)
 
-        # Path to the stdio MCP server script
         mcp_server_script = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "mcp_server.py",
         )
 
-        # Build prompt with task instruction
         prompt = f"## Task\n{self.task_text}\n\nPlease complete this task on the Android device."
-
-        # SDK config from trajectory config
-        sdk_cfg = {}
-        if hasattr(self.cfg, "claude_sdk"):
-            sdk_cfg = self.cfg.claude_sdk if isinstance(self.cfg.claude_sdk, dict) else {}
-
         model = sdk_cfg.get("model", "claude-sonnet-4-20250514")
         max_turns = sdk_cfg.get("max_turns", 30)
 
@@ -248,7 +505,6 @@ class ClaudeSDKTrajectory:
                     ],
                 },
             },
-            # Restrict to ONLY our MCP tools — no built-in Bash/Read/etc.
             tools=[
                 "mcp__android__run_adb_command",
                 "mcp__android__get_accessibility_tree",
@@ -259,16 +515,97 @@ class ClaudeSDKTrajectory:
                 "mcp__android__get_accessibility_tree",
                 "mcp__android__finish_task",
             ],
-            # Don't load user/project settings (cloud MCP servers, etc.)
             setting_sources=[],
             stderr=_stderr_handler,
         )
 
-        # Collect messages from the SDK
+        sdk_messages, tools_state = await self._run_sdk_query(
+            prompt, options, state_path, model, max_turns, server_url, mode="mcp"
+        )
+        self._build_result(sdk_messages, tools_state)
+
+    async def _generate_bash_mode(self, sdk_cfg: dict):
+        """Bash mode: SDK's built-in Bash tool + android_env.py CLI wrapper."""
+        import json
+        import os
+        import sys
+        import tempfile
+
+        from claude_agent_sdk import query, ClaudeAgentOptions
+
+        os.environ.pop("CLAUDECODE", None)
+        server_url = self.env_handle.base_url
+
+        state_fd, state_path = tempfile.mkstemp(suffix=".json", prefix="claude_sdk_state_")
+        os.close(state_fd)
+        # Write initial state so android_env.py can read it
+        with open(state_path, "w") as f:
+            json.dump({
+                "step_count": 0, "terminated": False, "reward": 0.0,
+                "finish_status": "", "finish_description": "",
+                "step_records": [], "_last_a11y_cache": "",
+            }, f)
+
+        android_env_script = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "android_env.py",
+        )
+
+        # Set env vars for the CLI wrapper (inherited by Bash subprocesses)
+        os.environ["ANDROID_SERVER_URL"] = server_url
+        os.environ["ANDROID_STATE_FILE"] = state_path
+        os.environ["ANDROID_ENV_SCRIPT"] = android_env_script
+
+        # Format the system prompt with the script path
+        system_prompt = CLAUDE_BASH_SYSTEM_PROMPT.replace("{script}", android_env_script)
+
+        prompt = f"## Task\n{self.task_text}\n\nPlease complete this task on the Android device."
+        model = sdk_cfg.get("model", "claude-sonnet-4-20250514")
+        max_turns = sdk_cfg.get("max_turns", 30)
+
+        def _stderr_handler(line: str):
+            logger.debug(
+                f"[ClaudeSDKTrajectory] CLI stderr "
+                f"instance={self.cfg.instance_id}: {line.rstrip()}"
+            )
+
+        options = ClaudeAgentOptions(
+            model=model,
+            system_prompt=system_prompt,
+            max_turns=max_turns,
+            permission_mode="bypassPermissions",
+            mcp_servers={},
+            tools=["Bash"],
+            allowed_tools=["Bash"],
+            setting_sources=[],
+            stderr=_stderr_handler,
+        )
+
+        sdk_messages, tools_state = await self._run_sdk_query(
+            prompt, options, state_path, model, max_turns, server_url, mode="bash"
+        )
+        self._build_result(sdk_messages, tools_state)
+
+    async def _run_sdk_query(
+        self,
+        prompt: str,
+        options,
+        state_path: str,
+        model: str,
+        max_turns: int,
+        server_url: str,
+        mode: str,
+    ) -> tuple:
+        """Execute the SDK query() and read final state. Shared by both modes."""
+        import json
+        import os
+
+        from claude_agent_sdk import query
+
         sdk_messages: List[Dict] = []
         try:
             logger.info(
-                f"[ClaudeSDKTrajectory] Starting SDK query for "
+                f"[ClaudeSDKTrajectory] Starting SDK query ({mode} mode) for "
                 f"instance={self.cfg.instance_id}, model={model}, "
                 f"max_turns={max_turns}, server_url={server_url}"
             )
@@ -295,7 +632,7 @@ class ClaudeSDKTrajectory:
                 "content": f"SDK query error: {e}",
             })
 
-        # Read final state from the MCP subprocess
+        # Read final state
         tools_state: Dict[str, Any] = {}
         try:
             with open(state_path, "r") as f:
@@ -312,7 +649,10 @@ class ClaudeSDKTrajectory:
             except OSError:
                 pass
 
-        # Build result in standard format (pure text agent — no images)
+        return sdk_messages, tools_state
+
+    def _build_result(self, sdk_messages: List[Dict], tools_state: Dict[str, Any]):
+        """Build the standard result dict from SDK messages and tool state."""
         self.result = {
             "instance_id": self.cfg.instance_id,
             "trajectory_id": self.cfg.trajectory_id,

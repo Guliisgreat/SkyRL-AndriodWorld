@@ -274,11 +274,13 @@ class AndroidAgent:
         Returns:
             Token IDs ready for generation
         """
-        return self.tokenizer.apply_chat_template(
-            messages,
+        kwargs = dict(
             add_generation_prompt=True,
             tokenize=True,
         )
+        if hasattr(self, 'traj_config'):
+            kwargs["enable_thinking"] = getattr(self.traj_config, 'qwen3_enable_thinking', True)
+        return self.tokenizer.apply_chat_template(messages, **kwargs)
     
     def extract_images_for_inference(self, messages: List[Dict]) -> Optional[List[Any]]:
         """
