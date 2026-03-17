@@ -144,7 +144,7 @@ async def run_terminus2_task(
             "reward": 0.0, "error": f"reset: {e}",
         }
     # Brief pause for emulator to settle after reset
-    await asyncio.sleep(10)
+    await asyncio.sleep(2)
 
     # --- 3. Create environment + agent ---
     env = SkyrlServerEnvironment(

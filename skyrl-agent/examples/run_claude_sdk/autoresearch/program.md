@@ -56,16 +56,15 @@ Every guideline you add must be **generic** — applicable to any Android app, n
 Run the eval on these 16 specific tasks using:
 
 ```bash
-cd skyrl-agent/examples/run_claude_sdk
+cd /shared/ligu/projects/SkyRL-AndriodWorld/skyrl-agent/examples/run_claude_sdk
 python claude_code_cli_oracle.py \
-  --data val_data_seed7_terminal.jsonl \
+  --data ../../data/androidworld_original/val_data_seed7_terminal.jsonl \
   --tasks 4,11,26,51,56,61,79,87,92,95,97,98,99,100,101,104 \
   --prompt optimized_terminal_v1 \
   --model claude-opus-4-6 \
   --broker-url http://localhost:9200 \
   --pool-size 16 \
-  --max-attempts 4 \
-  --output-dir ../../results
+  --max-attempts 4
 ```
 
 **Canary tasks** (must stay PASS): 51, 56, 98, 99, 100
@@ -78,15 +77,14 @@ python claude_code_cli_oracle.py \
 Only run if Phase A shows improvement (at least 1 target task flipped to PASS) and no canary regressions:
 
 ```bash
-cd skyrl-agent/examples/run_claude_sdk
+cd /shared/ligu/projects/SkyRL-AndriodWorld/skyrl-agent/examples/run_claude_sdk
 python claude_code_cli_oracle.py \
-  --data val_data_seed7_terminal.jsonl \
+  --data ../../data/androidworld_original/val_data_seed7_terminal.jsonl \
   --prompt optimized_terminal_v1 \
   --model claude-opus-4-6 \
   --broker-url http://localhost:9200 \
   --pool-size 16 \
-  --max-attempts 4 \
-  --output-dir ../../results
+  --max-attempts 4
 ```
 
 **Acceptance rule**: Accept if full SR improves by **>=2 tasks** over the current best (starting baseline: 60/87).

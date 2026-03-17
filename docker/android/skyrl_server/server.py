@@ -357,13 +357,20 @@ def _parse_task_control(command: str) -> dict:
         return {"action_type": "status", "goal_status": "infeasible", "text": m.group(1) if m else ""}
     raise ValueError(f"Not a task control command: {command}")
 
+LAZY_EVAL = str_to_bool(os.getenv("LAZY_EVAL", "true"))
+
 class StepAdbInput(BaseModel):
     command: str
     thought: Optional[str] = "Not provided"
 
 @app.post("/step_adb")
 async def step_adb(env: Env, data: StepAdbInput):
-    """Execute a raw ADB command in the container and return observation + command output."""
+    """Execute a raw ADB command in the container and return observation + command output.
+
+    When LAZY_EVAL is true (default), evaluation and screenshot capture are
+    skipped for normal ADB commands — only FINISH/INFEASIBLE triggers them.
+    This dramatically speeds up multi-step agent runs.
+    """
     command = data.command.strip()
     thought = data.thought or "Not provided"
 
@@ -391,6 +398,22 @@ async def step_adb(env: Env, data: StepAdbInput):
         command_output = "\n".join(outputs)
 
         env.steps += 1
+
+        if LAZY_EVAL:
+            # Fast path: skip evaluation and screenshot capture.
+            # Only track steps; evaluation happens on FINISH.
+            env.truncated = env.steps > env.max_steps
+            container_state.mark_success()
+            return {
+                "status": "success",
+                "observation": {},
+                "command_output": command_output,
+                "reward": 0,
+                "terminated": False,
+                "truncated": env.truncated,
+                "info": {},
+            }
+
         observation, info = env.get_raw_observation()
         env.current_observation = {
             "image": observation,
