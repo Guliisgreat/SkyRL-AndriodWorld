@@ -91,10 +91,15 @@ class AndroidAgentRunner(AgentRunner):
                 else self.cfg.generator.num_trajectories
             )
             
+            # Extract instance seed from data (task parameterization seed)
+            instance = data.get("instance", {})
+            instance_seed = instance.get("seed") if isinstance(instance, dict) else None
+            
             for traj_id in range(num_trajectories):
                 traj_cfg = TrajectoryConfig(
                     instance_id=instance_id,
                     trajectory_id=traj_id,
+                    seed=instance_seed,
                     max_prompt_length=self.cfg.generator.max_prompt_length,
                     sampling_params=sampling_params,
                     vision_is_active=self.cfg.generator.vision_is_active,
