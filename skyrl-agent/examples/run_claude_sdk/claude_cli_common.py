@@ -44,6 +44,7 @@ PROMPT_MODULES = {
     "minimal_terminal": "skyrl_agent.agents.android.claude_sdk.prompts.minimal_terminal",
     "minimal_shell_escaping": "skyrl_agent.agents.android.claude_sdk.prompts.minimal_shell_escaping",
     "minimal_shell_escaping_no_gui": "skyrl_agent.agents.android.claude_sdk.prompts.minimal_shell_escaping_no_gui",
+    "optimized_terminal_v1": "skyrl_agent.agents.android.claude_sdk.prompts.optimized_terminal_v1",
 }
 DEFAULT_PROMPT = "adb_baseline"
 
