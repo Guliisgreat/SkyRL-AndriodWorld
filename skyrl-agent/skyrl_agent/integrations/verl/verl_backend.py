@@ -106,6 +106,24 @@ class VeRLBackend(AsyncInferBackend):
                 # Likely hit max_tokens limit
                 finish_reason = "length"
         
+        # Decode token_ids to text string.
+        # Use skip_special_tokens=False to preserve box tokens
+        # (<|box_start|>, <|box_end|>), but strip the trailing EOS/stop token
+        # (e.g. <|im_end|>) before decoding. If <|im_end|> leaks into the
+        # decoded text it gets duplicated when apply_chat_template re-wraps the
+        # assistant message, corrupting the prompt for subsequent turns.
+        if self.tokenizer is not None:
+            decode_ids = response_token_ids
+            if decode_ids and decode_ids[-1] == self.tokenizer.eos_token_id:
+                decode_ids = decode_ids[:-1]
+            response_str = self.tokenizer.decode(
+                decode_ids,
+                skip_special_tokens=False,
+            )
+        else:
+            logger.warning("Tokenizer not provided, returning raw token_ids as string")
+            response_str = str(response_token_ids)
+        
         if return_token_ids:
             # Return token IDs to avoid retokenization for training
             # prompt_token_ids = what we passed in (input_ids)
