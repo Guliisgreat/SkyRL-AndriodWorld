@@ -61,6 +61,19 @@ schema — never guess column names.
 - If an app caches data, force-stop it after DB changes: \
 `am force-stop <package>`.
 
+## File Operations
+
+When creating or modifying files that an app should detect:
+- After writing files, trigger a media scan so apps pick up changes: \
+`am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://<path>`
+- For note-taking or document apps, check if the app uses a content provider \
+(`content query --uri content://<authority>/...`) — writing via the provider \
+is more reliable than direct filesystem writes.
+- When merging or concatenating files, read each source file completely, \
+then write the combined result in one operation. Verify the final content \
+matches expectations by re-reading the output file.
+- Preserve exact whitespace, newlines, and encoding from source files.
+
 ## Rules
 
 1. For information-retrieval tasks, `--description` in `finish` IS your answer. \
