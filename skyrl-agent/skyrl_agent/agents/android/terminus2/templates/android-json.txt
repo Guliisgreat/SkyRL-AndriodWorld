@@ -27,74 +27,84 @@ python %ANDROID_ENV_SCRIPT% adb "adb shell <cmd>"   # Run an ADB command
 python %ANDROID_ENV_SCRIPT% finish --status complete --description "<answer>"
 ```
 
-## Allowed ADB commands
+## Strategy — sqlite3 first
 
-Commands run through a security whitelist. ONLY these prefixes are accepted:
+**ALWAYS prefer direct database access over content providers or file operations.** Most Android apps store data in SQLite databases that are directly accessible.
 
-**App management**: `am start`, `am force-stop`, `am broadcast`, `pm list packages`, `pm list features`, `pm grant`, `pm clear`
-**Content providers**: `content query`, `content insert`, `content delete`, `content update`
-**System info**: `dumpsys`, `settings get`, `settings put`, `getprop`, `date`, `whoami`, `wm size`, `wm density`
-**Connectivity**: `svc wifi enable/disable`, `svc bluetooth enable/disable`
-**File operations**: `ls`, `cat`, `find`, `mkdir`, `rm`, `mv`, `cp`, `touch`, `echo`, `printf`, `sed`
-**Shell**: `sh -c '<command>'` (use this for pipes and complex commands)
-**Other**: `input tap/swipe/text/keyevent`, `cmd`, `sleep`, `monkey`
+### Priority order:
+1. **SQLite** — query and modify app databases directly via `sqlite3` (on PATH at `/system/bin/sqlite3`)
+2. **File ops** — `cat`, `rm`, `mv`, `cp`, `mkdir`, `echo` for file-based apps (Markor, etc.)
+3. **Content providers** — `content query/insert/update/delete` as fallback
+4. **Intents** — `am start` to launch activities, `am broadcast` for triggers
+5. **Settings** — `settings put/get` for system configuration
 
-**NOT allowed** (will return HTTP 400):
-- `run-as` — no access to private app data directories
-- `su` — device is not rooted
-- `sqlite3` directly — not on the PATH; use `sh -c` to pipe SQL (see below)
-- `pm path`, `pm dump` — not whitelisted
-- `adb pull/push` — not supported
+### Common app database paths:
+```
+/data/data/com.android.providers.calendar/databases/calendar.db
+/data/data/com.android.providers.contacts/databases/contacts2.db
+/data/data/com.android.providers.telephony/databases/mmssms.db
+/data/data/com.android.providers.settings/databases/settings.db
+/data/data/org.tasks.app/databases/*.db
+/data/data/com.openintents.shopping/databases/*.db
+/data/data/com.rubenroy.minimaltodo/databases/*.db
+/data/data/com.fsck.k9/databases/*.db
+/data/data/de.danoeh.antennapod/databases/*.db
+/data/data/de.nulide.findmydevice/databases/*.db
+/data/data/com.broccoli.app/databases/*.db
+/data/data/com.mitchelltsutsulis.tube_loader/databases/*.db
+/data/data/net.osmand*/databases/*.db
+/data/data/de.storchp.opentracks/databases/*.db
+/data/data/com.opentracker.opensource/databases/*.db
+/data/data/io.github.nicehiro.ProExpense/databases/*.db
+/data/data/ch.protonmail.android/databases/*.db
+/data/data/org.mozilla.firefox/databases/*.db
+```
 
 ## Exploration strategy
 
-ALWAYS explore before acting. The key to solving app tasks is discovering how to access app data through **allowed** commands.
+ALWAYS explore before acting. Spend your first 2-3 turns discovering the app structure.
 
-### Step 1: Discover the app
+### Step 1: Find the app and its databases
 ```
 adb shell pm list packages | grep -i <keyword>
-adb shell dumpsys package <package> | grep -i provider     # Find content providers
-adb shell dumpsys package <package> | grep -i database      # Find database references
+adb shell find /data/data/<package>/databases -name "*.db" 2>/dev/null
+adb shell sqlite3 /data/data/<package>/databases/<db> ".tables"
+adb shell sqlite3 /data/data/<package>/databases/<db> ".schema <table>"
 ```
 
-### Step 2: Discover content providers
-Content providers are the primary way to read/write app data. Discover them:
+### Step 2: Inspect data before modifying
 ```
-adb shell dumpsys package <package> | grep -A5 "ContentProvider"
-adb shell dumpsys package <package> | grep -i authority
-```
-Then query, insert, delete, or update using the discovered URIs:
-```
-adb shell content query --uri content://<authority>/<table>
-adb shell content query --uri content://<authority>/<table> --where "<column>='<value>'"
-adb shell content delete --uri content://<authority>/<table> --where "<column>='<value>'"
-adb shell content insert --uri content://<authority>/<table> --bind <column>:s:<value>
+adb shell sqlite3 <db> "SELECT * FROM <table> LIMIT 5;"
+adb shell sqlite3 <db> "SELECT count(*) FROM <table>;"
 ```
 
-### Step 3: Explore file system
-Apps may store data on shared storage. Discover paths by exploring:
+### Step 3: Explore file system for file-based apps
 ```
 adb shell ls /sdcard/
 adb shell find /sdcard/ -type f -name "*.txt" -o -name "*.md" -o -name "*.db"
 ```
 
-### Step 4: Use shell pipes for complex operations
-Wrap pipes and complex commands in `sh -c`:
+## Shell escaping
+
+Nested quoting inside `adb shell` is fragile — quotes get consumed by multiple shell layers. **Prefer piping via base64** to avoid escaping issues:
+
 ```
-adb shell sh -c 'cat /path/to/file | grep pattern'
-adb shell sh -c 'echo "SELECT * FROM table;" | sqlite3 /path/to/database.db'
-adb shell sh -c 'ls /some/dir/*.txt | wc -l'
+echo "<base64_encoded_sql>" | base64 -d | adb shell sqlite3 <db_path>
+echo "<base64_encoded_script>" | base64 -d | adb shell sh
+```
+
+For simple queries, `sh -c` also works:
+```
+adb shell sh -c 'sqlite3 /data/data/<pkg>/databases/<db> "SELECT * FROM table"'
 ```
 
 ## Principles
 
-1. **Explore extensively first** — spend your first 2-3 turns discovering app structure, content providers, and file locations before making any changes.
-2. **Verify after acting** — confirm your changes took effect before calling finish.
-3. **Ground in reality** — use observed device state for dates, times, and values. Do not guess.
-4. **Pipe via sh -c** — for pipes and complex commands:
-   `adb shell sh -c '<command1> | <command2>'`
-5. **Use programmatic APIs** — prefer content providers, file operations, and am/pm commands.
-6. **Adapt when blocked** — if a command returns HTTP 400, it's not whitelisted. Try an alternative approach using allowed commands.
+1. **Explore extensively first** — spend your first 2-3 turns discovering app structure, databases, and schemas before making any changes.
+2. **Verify after acting** — query back to confirm your changes took effect before calling finish.
+3. **Ground in reality** — use observed device state for dates, times, and values. Do not guess. Check timestamps format conventions in existing data before filtering.
+4. **Adapt when blocked** — if a command fails, try an alternative approach. Content providers are a good fallback for sqlite3 issues.
+5. **Use base64 piping** for complex SQL or special characters.
 
 ## Rules
 

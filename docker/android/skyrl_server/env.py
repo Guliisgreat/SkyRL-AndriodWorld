@@ -565,7 +565,7 @@ class AndroidWorldEnv(gym.Env):
         """
         if task_complexity is None:
             raise ValueError("Task complexity must be provided.")
-        return int(10 * (task_complexity))
+        return int(30 * (task_complexity))
 
     def perform_action(self, action):
         """

@@ -357,13 +357,22 @@ def _parse_task_control(command: str) -> dict:
         return {"action_type": "status", "goal_status": "infeasible", "text": m.group(1) if m else ""}
     raise ValueError(f"Not a task control command: {command}")
 
+LAZY_EVAL = str_to_bool(os.getenv("LAZY_EVAL", "true"))
+
 class StepAdbInput(BaseModel):
     command: str
     thought: Optional[str] = "Not provided"
+    count_step: Optional[bool] = True
 
 @app.post("/step_adb")
 async def step_adb(env: Env, data: StepAdbInput):
-    """Execute a raw ADB command in the container and return observation + command output."""
+    """Execute a raw ADB command in the container and return observation + command output.
+
+    When LAZY_EVAL is true (default), evaluation and screenshot capture are
+    skipped for normal ADB commands — only FINISH/INFEASIBLE triggers them.
+    When count_step is false, env.steps is not incremented (for batching
+    multiple commands as a single logical step).
+    """
     command = data.command.strip()
     thought = data.thought or "Not provided"
 
@@ -390,7 +399,22 @@ async def step_adb(env: Env, data: StepAdbInput):
             outputs.append(_execute_adb(env, sub_cmd))
         command_output = "\n".join(outputs)
 
-        env.steps += 1
+        if data.count_step:
+            env.steps += 1
+
+        if LAZY_EVAL:
+            env.truncated = env.steps > env.max_steps
+            container_state.mark_success()
+            return {
+                "status": "success",
+                "observation": {},
+                "command_output": command_output,
+                "reward": 0,
+                "terminated": False,
+                "truncated": env.truncated,
+                "info": {},
+            }
+
         observation, info = env.get_raw_observation()
         env.current_observation = {
             "image": observation,

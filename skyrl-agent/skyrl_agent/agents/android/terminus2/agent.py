@@ -323,17 +323,30 @@ class AndroidTerminus2Agent:
         commands: list,
         commands_log: list[dict],
     ) -> str:
-        """Execute parsed commands sequentially, return combined output."""
+        """Execute parsed commands sequentially, return combined output.
+
+        Only the last ADB command per turn counts as a step (via --no-step
+        flag on earlier commands) so multiple commands in one turn consume
+        a single step from the budget.
+        """
         outputs: list[str] = []
 
-        for cmd in commands:
-            raw = cmd.keystrokes.rstrip("\n").strip()
-            if not raw:
-                continue
+        non_empty = [(i, cmd) for i, cmd in enumerate(commands)
+                     if cmd.keystrokes.rstrip("\n").strip()]
 
-            logger.info("EXEC: %s", raw[:200])
+        for seq, (_, cmd) in enumerate(non_empty):
+            raw = cmd.keystrokes.rstrip("\n").strip()
+            is_last = (seq == len(non_empty) - 1)
+
+            # Inject --no-step for all but the last ADB command so the
+            # entire turn counts as a single step in the budget.
+            exec_cmd = raw
+            if not is_last and " adb " in raw and "finish" not in raw:
+                exec_cmd = raw.replace(" adb ", " adb --no-step ", 1)
+
+            logger.info("EXEC: %s", exec_cmd[:200])
             result: ExecResult = await self.environment.exec(
-                raw, timeout_sec=self.command_timeout,
+                exec_cmd, timeout_sec=self.command_timeout,
             )
 
             stdout = (result.stdout or "").rstrip()

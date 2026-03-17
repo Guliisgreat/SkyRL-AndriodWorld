@@ -103,7 +103,7 @@ def _http_post(endpoint: str, payload: dict) -> dict:
 # Subcommands
 # ---------------------------------------------------------------------------
 
-def cmd_adb(command: str, no_tree: bool = False) -> int:
+def cmd_adb(command: str, no_tree: bool = False, count_step: bool = True) -> int:
     """Execute an ADB command via the container's /step_adb endpoint."""
     state = _load_state()
 
@@ -118,7 +118,11 @@ def cmd_adb(command: str, no_tree: bool = False) -> int:
     combined = command if no_tree else command + _A11Y_DUMP_SUFFIX
 
     try:
-        resp = _http_post("/step_adb", {"command": combined, "thought": ""})
+        resp = _http_post("/step_adb", {
+            "command": combined,
+            "thought": "",
+            "count_step": count_step,
+        })
     except (urllib.error.URLError, OSError) as e:
         print(f"ERROR: HTTP request failed: {e}")
         return 2
@@ -296,6 +300,8 @@ def main() -> int:
     adb_p.add_argument("command", help="ADB command (e.g. 'adb shell input tap 540 960')")
     adb_p.add_argument("--no-tree", action="store_true",
                         help="Skip auto-appending accessibility tree")
+    adb_p.add_argument("--no-step", action="store_true",
+                        help="Don't count this command as a step")
 
     # tree subcommand
     sub.add_parser("tree", help="Get accessibility tree (cached or fresh)")
@@ -315,7 +321,8 @@ def main() -> int:
         return 1
 
     if args.subcommand == "adb":
-        return cmd_adb(args.command, no_tree=args.no_tree)
+        return cmd_adb(args.command, no_tree=args.no_tree,
+                        count_step=not args.no_step)
     elif args.subcommand == "tree":
         return cmd_tree()
     elif args.subcommand == "finish":
