@@ -179,6 +179,7 @@ class AndroidTerminus2Agent:
         api_base: str | None = None,
         command_timeout: int = 60,
         reasoning_effort: str | None = None,
+        template_override: str | None = None,
     ):
         self.model_name = model_name
         self.android_env_script = android_env_script
@@ -188,6 +189,7 @@ class AndroidTerminus2Agent:
         self.api_base = api_base
         self.command_timeout = command_timeout
         self.reasoning_effort = reasoning_effort
+        self.template_override = template_override
 
         self.parser = _make_parser(parser_name)
         self.environment: SkyrlServerEnvironment | None = None
@@ -219,7 +221,10 @@ class AndroidTerminus2Agent:
         assert self.environment is not None, "Call setup() first"
         assert self._chat is not None
 
-        template = _load_harbor_template(self.parser_name)
+        if self.template_override:
+            template = Path(self.template_override).read_text()
+        else:
+            template = _load_harbor_template(self.parser_name)
 
         if self.parser_name == "android-json":
             # android_env.py template: uses %PLACEHOLDER% syntax.

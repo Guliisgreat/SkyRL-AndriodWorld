@@ -94,6 +94,7 @@ def run_one_task_with_retries(
     task_timeout: int,
     max_attempts: int,
     reasoning_effort: str | None = None,
+    template_override: str | None = None,
 ) -> dict:
     """Run a task with up to *max_attempts*, feeding eval reward as signal."""
     task_id = task_def["task_id"]
@@ -113,6 +114,7 @@ def run_one_task_with_retries(
             command_timeout=command_timeout,
             task_timeout=task_timeout,
             reasoning_effort=reasoning_effort,
+            template_override=template_override,
         )
 
         # Force-evaluate if agent didn't finish
@@ -218,6 +220,8 @@ def build_parser():
                         help="Per-task timeout in seconds (default: 900)")
     parser.add_argument("--reasoning-effort", default=None,
                         help="LLM reasoning effort")
+    parser.add_argument("--template", default=None,
+                        help="Path to custom template file (overrides default for parser)")
 
     # For output path generation compatibility
     parser.add_argument("--prompt", default="terminus2_json",
@@ -242,6 +246,14 @@ def main():
 
     output_path = resolve_output_path(args)
 
+    # Resolve template override to absolute path
+    template_override = None
+    if args.template:
+        template_override = os.path.abspath(args.template)
+        if not os.path.exists(template_override):
+            print(f"ERROR: Template file not found: {template_override}")
+            return 1
+
     task_runner = partial(
         run_one_task_with_retries,
         model=args.model,
@@ -253,6 +265,7 @@ def main():
         task_timeout=args.task_timeout,
         max_attempts=args.max_attempts,
         reasoning_effort=args.reasoning_effort,
+        template_override=template_override,
     )
 
     system_prompt = (
