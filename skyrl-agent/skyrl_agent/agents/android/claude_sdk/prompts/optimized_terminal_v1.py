@@ -61,6 +61,50 @@ schema — never guess column names.
 - If an app caches data, force-stop it after DB changes: \
 `am force-stop <package>`.
 
+## File Operations
+
+When creating or modifying files that an app should detect:
+- After writing files, trigger a media scan so apps pick up changes: \
+`am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://<path>`
+- For note-taking or document apps, check if the app uses a content provider \
+(`content query --uri content://<authority>/...`) — writing via the provider \
+is more reliable than direct filesystem writes.
+- When merging or concatenating files, `cat` each source file to capture its \
+exact content, then write the combined result in one operation. Verify by \
+re-reading the output file and comparing character-by-character.
+- Preserve exact whitespace, newlines, and encoding from source files. \
+Strip any trailing whitespace/newlines from each source before joining \
+with the requested separator.
+- For cross-app tasks (read data from one app, write to another), break into \
+discrete steps: (1) extract and store intermediate data, (2) discover target \
+app schema, (3) write data, (4) verify in target app.
+- After creating or deleting files/folders in an app's watched directory, \
+force-stop the app so it re-reads from disk on next launch: \
+`am force-stop <package>`.
+
+## Messaging & Communication
+
+When sending messages (SMS, etc.) without UI interaction:
+- Use the `service call` interface instead of direct DB writes. For SMS: \
+`service call isms 7 i32 0 s16 "com.android.mms" s16 "<phone>" s16 "null" \
+s16 "<body>" s16 "null" s16 "null"` — this actually dispatches the message \
+through the telephony stack.
+- Always check the SMS content provider afterward: \
+`content query --uri content://sms --where "address='<phone>'"` to verify \
+the message was recorded.
+- For contacts/phone numbers, match exactly as specified in the task.
+
+## App State Sync
+
+After modifying any app's data (database writes, file operations, content \
+provider inserts):
+- Force-stop the app: `am force-stop <package>`.
+- If verification requires the app to have processed the data, restart it: \
+`am start -n <package>/<activity>` (discover the main activity via \
+`dumpsys package <package> | grep -A5 'android.intent.action.MAIN'`).
+- Wait briefly, then verify through the app's content provider or database \
+that the state is as expected.
+
 ## Rules
 
 1. For information-retrieval tasks, `--description` in `finish` IS your answer. \
