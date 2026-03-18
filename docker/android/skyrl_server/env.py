@@ -111,8 +111,8 @@ class AndroidWorldEnv(gym.Env):
             self._check_and_fix_kvm_access()
             _KVM_CHECK_PERFORMED.set()
 
-        # Initialize the task registry
-        self.task_family = task_family
+        # Initialize the task registry (env var overrides constructor arg)
+        self.task_family = os.environ.get("TASK_FAMILY", task_family)
         self._initialize_task_registry()
 
         # Store configuration

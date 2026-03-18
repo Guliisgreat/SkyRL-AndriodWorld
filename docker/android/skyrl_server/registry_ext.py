@@ -27,6 +27,9 @@ from android_world.task_evals.single import sms
 from android_world.task_evals.single import system
 from android_world.task_evals.single import vlc
 from android_world.task_evals.single.calendar import calendar
+from .tier4 import files as tier4_files
+from .tier4 import sms as tier4_sms
+from .tier4 import system as tier4_system
 
 # ── Custom difficulty tiers ──────────────────────────────────────────
 
@@ -166,6 +169,15 @@ _IR_HARD = {
 }
 
 
+_TIER4_TASKS = (
+    tier4_files.Tier4BulkDeleteTmpInDownloads,
+    tier4_files.Tier4CoverageNoTmpInDownloads,
+    tier4_system.Tier4HiddenStateListAppVersions,
+    tier4_sms.Tier4AggregationCountUnreadSMS,
+    tier4_sms.Tier4CrossAppSmsNumbersNotInContacts,
+)
+
+
 def _build_registry(task_classes):
     return {cls.__name__: cls for cls in task_classes}
 
@@ -290,6 +302,8 @@ class ExtendedTaskRegistry(_upstream_registry.TaskRegistry):
     EASY_MEDIUM = 'easy_medium'
     EASY_MEDIUM_HARD = 'easy_medium_hard'
     ANDROID_EASY = 'android_easy'
+    TIER4 = 'tier4'
+    ADB_EXCLUSIVE = 'adb_exclusive'
 
     # IR task names in v8 positional order (indices 91-115)
     _V8_IR_ORDER = (
@@ -332,6 +346,8 @@ class ExtendedTaskRegistry(_upstream_registry.TaskRegistry):
         self._ir_medium = _filter_ir(ir, _IR_MEDIUM)
         self._ir_hard = _filter_ir(ir, _IR_HARD)
 
+        self._tier4_reg = _build_registry(_TIER4_TASKS)
+
         # Build v8-compatible ordered registry (action tasks 0-90 + IR tasks 91-115)
         from collections import OrderedDict
         self._v8_ordered_reg = OrderedDict()
@@ -342,7 +358,9 @@ class ExtendedTaskRegistry(_upstream_registry.TaskRegistry):
                 self._v8_ordered_reg[name] = ir[name]
 
     def get_registry(self, family):
-        if family == self.EASY:
+        if family in (self.TIER4, self.ADB_EXCLUSIVE):
+            return self._tier4_reg
+        elif family == self.EASY:
             return {**self._easy_reg, **self._ir_easy}
         elif family == self.MEDIUM:
             return {**self._medium_reg, **self._ir_medium}
