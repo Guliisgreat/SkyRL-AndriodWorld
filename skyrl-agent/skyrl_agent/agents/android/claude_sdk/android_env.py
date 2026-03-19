@@ -400,6 +400,120 @@ def cmd_write_file(device_path: str, content: str,
     return 0
 
 
+def cmd_read_file(device_path: str, count_step: bool = True) -> int:
+    """Read content from a file on the device.
+
+    Uses base64 round-trip to avoid shell escaping issues with
+    file paths or content containing special characters.
+    """
+    import base64 as _b64
+
+    state = _load_state()
+    if state["terminated"]:
+        print("ERROR: Task already finished.")
+        return 1
+
+    adb_cmd = f'adb shell "base64 {device_path}"'
+
+    try:
+        resp = _http_post("/step_adb", {
+            "command": adb_cmd,
+            "thought": f"read-file: {device_path}",
+            "count_step": count_step,
+        })
+    except (urllib.error.URLError, OSError) as e:
+        print(f"ERROR: HTTP request failed: {e}")
+        return 2
+
+    raw_output = resp.get("command_output", "").strip()
+    reward = resp.get("reward", 0.0)
+    terminated = resp.get("terminated", False)
+    truncated = resp.get("truncated", False)
+
+    state["step_count"] += 1
+    state["reward"] = reward
+    if terminated or truncated:
+        state["terminated"] = True
+
+    # Decode base64 content
+    try:
+        content = _b64.b64decode(raw_output).decode("utf-8", errors="replace")
+    except Exception:
+        content = raw_output  # Fallback to raw output if decode fails
+
+    if len(content) > MAX_OUTPUT_CHARS:
+        content = content[:MAX_OUTPUT_CHARS] + "\n... (truncated)"
+
+    print(f"$ cat {device_path}")
+    print(content)
+
+    state["step_records"].append({
+        "step_idx": state["step_count"],
+        "thought": f"read-file: {device_path}",
+        "action_type": "read-file",
+        "action_params": {"device_path": device_path},
+        "command_output": content[:4000],
+    })
+    _save_state(state)
+    return 0
+
+
+def cmd_find_files(directory: str, pattern: str, count_step: bool = True) -> int:
+    """Search for files on the device by glob pattern.
+
+    Shell-escapes the pattern internally to handle spaces and
+    special characters in file names.
+    """
+    import shlex
+
+    state = _load_state()
+    if state["terminated"]:
+        print("ERROR: Task already finished.")
+        return 1
+
+    safe_pattern = shlex.quote(pattern)
+    adb_cmd = f'adb shell "find {directory} -name {safe_pattern} 2>/dev/null"'
+
+    try:
+        resp = _http_post("/step_adb", {
+            "command": adb_cmd,
+            "thought": f"find-files: {directory} {pattern}",
+            "count_step": count_step,
+        })
+    except (urllib.error.URLError, OSError) as e:
+        print(f"ERROR: HTTP request failed: {e}")
+        return 2
+
+    raw_output = resp.get("command_output", "").strip()
+    reward = resp.get("reward", 0.0)
+    terminated = resp.get("terminated", False)
+    truncated = resp.get("truncated", False)
+
+    state["step_count"] += 1
+    state["reward"] = reward
+    if terminated or truncated:
+        state["terminated"] = True
+
+    if len(raw_output) > MAX_OUTPUT_CHARS:
+        raw_output = raw_output[:MAX_OUTPUT_CHARS] + "\n... (truncated)"
+
+    print(f"$ find {directory} -name {safe_pattern}")
+    if raw_output:
+        print(raw_output)
+    else:
+        print("(no files found)")
+
+    state["step_records"].append({
+        "step_idx": state["step_count"],
+        "thought": f"find-files: {directory} {pattern}",
+        "action_type": "find-files",
+        "action_params": {"directory": directory, "pattern": pattern},
+        "command_output": raw_output[:4000],
+    })
+    _save_state(state)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -437,6 +551,19 @@ def main() -> int:
     wf_p.add_argument("--no-step", action="store_true",
                         help="Don't count this command as a step")
 
+    # read-file subcommand
+    rf_p = sub.add_parser("read-file", help="Read content from a device file")
+    rf_p.add_argument("device_path", help="Absolute path on device")
+    rf_p.add_argument("--no-step", action="store_true",
+                        help="Don't count this command as a step")
+
+    # find-files subcommand
+    ff_p = sub.add_parser("find-files", help="Search for files on device")
+    ff_p.add_argument("directory", help="Directory to search in")
+    ff_p.add_argument("pattern", help="File name pattern (e.g. '*.db', '*.md')")
+    ff_p.add_argument("--no-step", action="store_true",
+                        help="Don't count this command as a step")
+
     # finish subcommand
     fin_p = sub.add_parser("finish", help="Signal task completion")
     fin_p.add_argument("--status", required=True, help="'complete' or 'infeasible'")
@@ -462,6 +589,12 @@ def main() -> int:
     elif args.subcommand == "write-file":
         return cmd_write_file(args.device_path, args.content,
                                append=args.append,
+                               count_step=not args.no_step)
+    elif args.subcommand == "read-file":
+        return cmd_read_file(args.device_path,
+                              count_step=not args.no_step)
+    elif args.subcommand == "find-files":
+        return cmd_find_files(args.directory, args.pattern,
                                count_step=not args.no_step)
     elif args.subcommand == "finish":
         return cmd_finish(args.status, args.description)
