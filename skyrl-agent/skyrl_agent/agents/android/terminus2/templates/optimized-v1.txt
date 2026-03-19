@@ -20,54 +20,34 @@ Fields:
 - "commands" (required): Array of shell command strings to execute. Each runs sequentially via subprocess.run() and blocks until finished. You receive the combined stdout/stderr before your next turn.
 - "task_complete" (optional, default false): Set to true when the task is done. You may include final commands (e.g., finish) alongside task_complete: true.
 
-## CLI wrapper
+## CLI tools
 
 ```
-python %ANDROID_ENV_SCRIPT% adb "adb shell <cmd>"   # Run an ADB command
+python %ANDROID_ENV_SCRIPT% adb "adb shell <cmd>"                    # Run any ADB command
+python %ANDROID_ENV_SCRIPT% sql <db_path> "<SQL>"                    # Run SQL on a device database
+python %ANDROID_ENV_SCRIPT% write-file <device_path> "<content>"     # Write content to a device file
+python %ANDROID_ENV_SCRIPT% write-file <device_path> "<content>" --append  # Append to a file
 python %ANDROID_ENV_SCRIPT% finish --status complete --description "<answer>"
 ```
 
-## CRITICAL: Shell Escaping
-
-Nested quoting inside `adb shell` breaks — quotes get consumed by multiple shell layers.
-
-### For schema exploration — echo-pipe is fine:
+### `sql` — Use for ALL database operations
+Handles shell escaping automatically. Pass raw SQL — no quoting needed:
 ```
-adb shell "echo '.tables' | sqlite3 /data/data/<package>/databases/<db>"
-adb shell "echo '.schema <table>' | sqlite3 /data/data/<package>/databases/<db>"
-adb shell "echo 'SELECT * FROM <table> LIMIT 5;' | sqlite3 /data/data/<package>/databases/<db>"
-```
-
-### For complex SQL with parentheses, quotes, or special characters — use base64:
-When SQL contains `(`, `)`, `'`, or `"`, **base64-encode it** to bypass all shell escaping:
-```
-echo "<base64_encoded_sql>" | base64 -d | adb shell sqlite3 /data/data/<package>/databases/<db>
-```
-Example — to run `INSERT INTO recipes (title,servings) VALUES ('Pasta',4);`:
-1. Base64-encode the SQL: `echo -n "INSERT INTO recipes (title,servings) VALUES ('Pasta',4);" | base64` → `SU5TRVJUIElOVE8g...`
-2. Run: `echo "SU5TRVJUIElOVE8g..." | base64 -d | adb shell sqlite3 /data/data/<pkg>/databases/<db>`
-
-This works for ANY SQL — INSERT, DELETE with WHERE IN(...), UPDATE with quotes, etc. Use it whenever echo-pipe gives syntax errors.
-
-### Writing file content with special characters — use base64:
-```
-echo "<base64_of_content>" | base64 -d | adb shell "cat > /path/to/file"
+python %ANDROID_ENV_SCRIPT% sql /data/data/<pkg>/databases/<db> ".tables"
+python %ANDROID_ENV_SCRIPT% sql /data/data/<pkg>/databases/<db> ".schema <table>"
+python %ANDROID_ENV_SCRIPT% sql /data/data/<pkg>/databases/<db> "SELECT * FROM <table> LIMIT 5;"
+python %ANDROID_ENV_SCRIPT% sql /data/data/<pkg>/databases/<db> "INSERT INTO <table> (col1,col2) VALUES ('text',42);"
+python %ANDROID_ENV_SCRIPT% sql /data/data/<pkg>/databases/<db> "DELETE FROM <table> WHERE name='Item';"
 ```
 
-### Multi-step file operations — use simple sequential commands:
+### `write-file` — Use for writing files with special characters
+Handles apostrophes, quotes, and special characters automatically:
 ```
-adb shell cat /path/file1 > /tmp/merged
-adb shell cat /path/file2 >> /tmp/merged
-adb shell cp /tmp/merged /path/output
+python %ANDROID_ENV_SCRIPT% write-file /sdcard/Documents/note.md "Content with apostrophe's and (parens)"
 ```
-Do NOT use complex one-liners with awk/sed or heredoc syntax (`cat <<EOF`) — they break.
 
-**NEVER** use: `adb shell sqlite3 <db> "SQL"` (nested quotes break) or heredoc (`cat <<EOF`).
-
-**NEVER** use this broken pattern (it will always fail with syntax errors):
-```
-adb shell sqlite3 <db> "SELECT * FROM table;"   # WRONG — nested quotes break
-```
+### `adb` — Use for everything else
+Settings, intents, file operations (cat, rm, mv, cp, find, ls), content providers, etc.
 
 ## Strategy — sqlite3 first
 
