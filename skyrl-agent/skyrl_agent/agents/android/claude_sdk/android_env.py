@@ -285,6 +285,121 @@ def cmd_finish(status: str, description: str) -> int:
     return 0
 
 
+def cmd_sql(db_path: str, sql: str, count_step: bool = True) -> int:
+    """Execute a SQL statement on a device database.
+
+    Handles all shell escaping internally via base64 encoding.
+    The agent passes raw SQL — no quoting gymnastics needed.
+    """
+    import base64 as _b64
+
+    state = _load_state()
+    if state["terminated"]:
+        print("ERROR: Task already finished.")
+        return 1
+
+    encoded = _b64.b64encode(sql.encode("utf-8")).decode("ascii")
+    adb_cmd = f'adb shell "echo {encoded} | base64 -d | sqlite3 {db_path}"'
+
+    try:
+        resp = _http_post("/step_adb", {
+            "command": adb_cmd,
+            "thought": f"sql: {sql[:200]}",
+            "count_step": count_step,
+        })
+    except (urllib.error.URLError, OSError) as e:
+        print(f"ERROR: HTTP request failed: {e}")
+        return 2
+
+    raw_output = resp.get("command_output", "")
+    reward = resp.get("reward", 0.0)
+    terminated = resp.get("terminated", False)
+    truncated = resp.get("truncated", False)
+
+    state["step_count"] += 1
+    state["reward"] = reward
+    if terminated or truncated:
+        state["terminated"] = True
+
+    if len(raw_output) > MAX_OUTPUT_CHARS:
+        raw_output = raw_output[:MAX_OUTPUT_CHARS] + "\n... (truncated)"
+
+    print(f"$ sqlite3 {db_path}")
+    print(f"  SQL: {sql}")
+    if raw_output.strip():
+        print(raw_output)
+    else:
+        print("(no output)")
+
+    state["step_records"].append({
+        "step_idx": state["step_count"],
+        "thought": f"sql: {sql[:200]}",
+        "action_type": "sql",
+        "action_params": {"db_path": db_path, "sql": sql[:2000]},
+        "command_output": raw_output[:4000],
+    })
+    _save_state(state)
+    return 0
+
+
+def cmd_write_file(device_path: str, content: str,
+                   append: bool = False, count_step: bool = True) -> int:
+    """Write content to a file on the device.
+
+    Handles all shell escaping internally via base64 encoding.
+    Supports any content: apostrophes, quotes, unicode.
+    """
+    import base64 as _b64
+
+    state = _load_state()
+    if state["terminated"]:
+        print("ERROR: Task already finished.")
+        return 1
+
+    encoded = _b64.b64encode(content.encode("utf-8")).decode("ascii")
+    redirect = ">>" if append else ">"
+    adb_cmd = f'adb shell "echo {encoded} | base64 -d {redirect} {device_path}"'
+
+    try:
+        resp = _http_post("/step_adb", {
+            "command": adb_cmd,
+            "thought": f"write-file: {device_path}",
+            "count_step": count_step,
+        })
+    except (urllib.error.URLError, OSError) as e:
+        print(f"ERROR: HTTP request failed: {e}")
+        return 2
+
+    raw_output = resp.get("command_output", "")
+    reward = resp.get("reward", 0.0)
+    terminated = resp.get("terminated", False)
+    truncated = resp.get("truncated", False)
+
+    state["step_count"] += 1
+    state["reward"] = reward
+    if terminated or truncated:
+        state["terminated"] = True
+
+    mode = "appended to" if append else "wrote to"
+    print(f"$ {mode} {device_path} ({len(content)} bytes)")
+    if raw_output.strip():
+        print(raw_output)
+
+    state["step_records"].append({
+        "step_idx": state["step_count"],
+        "thought": f"write-file: {device_path}",
+        "action_type": "write-file",
+        "action_params": {
+            "device_path": device_path,
+            "content_length": len(content),
+            "append": append,
+        },
+        "command_output": raw_output[:4000],
+    })
+    _save_state(state)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -306,6 +421,22 @@ def main() -> int:
     # tree subcommand
     sub.add_parser("tree", help="Get accessibility tree (cached or fresh)")
 
+    # sql subcommand
+    sql_p = sub.add_parser("sql", help="Execute SQL on a device database")
+    sql_p.add_argument("db_path", help="Absolute path to database on device")
+    sql_p.add_argument("sql", help="SQL statement to execute")
+    sql_p.add_argument("--no-step", action="store_true",
+                        help="Don't count this command as a step")
+
+    # write-file subcommand
+    wf_p = sub.add_parser("write-file", help="Write content to a device file")
+    wf_p.add_argument("device_path", help="Absolute path on device")
+    wf_p.add_argument("content", help="Content to write")
+    wf_p.add_argument("--append", action="store_true",
+                       help="Append instead of overwrite")
+    wf_p.add_argument("--no-step", action="store_true",
+                        help="Don't count this command as a step")
+
     # finish subcommand
     fin_p = sub.add_parser("finish", help="Signal task completion")
     fin_p.add_argument("--status", required=True, help="'complete' or 'infeasible'")
@@ -325,6 +456,13 @@ def main() -> int:
                         count_step=not args.no_step)
     elif args.subcommand == "tree":
         return cmd_tree()
+    elif args.subcommand == "sql":
+        return cmd_sql(args.db_path, args.sql,
+                        count_step=not args.no_step)
+    elif args.subcommand == "write-file":
+        return cmd_write_file(args.device_path, args.content,
+                               append=args.append,
+                               count_step=not args.no_step)
     elif args.subcommand == "finish":
         return cmd_finish(args.status, args.description)
     return 1
