@@ -285,6 +285,235 @@ def cmd_finish(status: str, description: str) -> int:
     return 0
 
 
+def cmd_sql(db_path: str, sql: str, count_step: bool = True) -> int:
+    """Execute a SQL statement on a device database.
+
+    Handles all shell escaping internally via base64 encoding.
+    The agent passes raw SQL — no quoting gymnastics needed.
+    """
+    import base64 as _b64
+
+    state = _load_state()
+    if state["terminated"]:
+        print("ERROR: Task already finished.")
+        return 1
+
+    encoded = _b64.b64encode(sql.encode("utf-8")).decode("ascii")
+    adb_cmd = f'adb shell "echo {encoded} | base64 -d | sqlite3 {db_path}"'
+
+    try:
+        resp = _http_post("/step_adb", {
+            "command": adb_cmd,
+            "thought": f"sql: {sql[:200]}",
+            "count_step": count_step,
+        })
+    except (urllib.error.URLError, OSError) as e:
+        print(f"ERROR: HTTP request failed: {e}")
+        return 2
+
+    raw_output = resp.get("command_output", "")
+    reward = resp.get("reward", 0.0)
+    terminated = resp.get("terminated", False)
+    truncated = resp.get("truncated", False)
+
+    state["step_count"] += 1
+    state["reward"] = reward
+    if terminated or truncated:
+        state["terminated"] = True
+
+    if len(raw_output) > MAX_OUTPUT_CHARS:
+        raw_output = raw_output[:MAX_OUTPUT_CHARS] + "\n... (truncated)"
+
+    print(f"$ sqlite3 {db_path}")
+    print(f"  SQL: {sql}")
+    if raw_output.strip():
+        print(raw_output)
+    else:
+        print("(no output)")
+
+    state["step_records"].append({
+        "step_idx": state["step_count"],
+        "thought": f"sql: {sql[:200]}",
+        "action_type": "sql",
+        "action_params": {"db_path": db_path, "sql": sql[:2000]},
+        "command_output": raw_output[:4000],
+    })
+    _save_state(state)
+    return 0
+
+
+def cmd_write_file(device_path: str, content: str,
+                   append: bool = False, count_step: bool = True) -> int:
+    """Write content to a file on the device.
+
+    Handles all shell escaping internally via base64 encoding.
+    Supports any content: apostrophes, quotes, unicode.
+    """
+    import base64 as _b64
+
+    state = _load_state()
+    if state["terminated"]:
+        print("ERROR: Task already finished.")
+        return 1
+
+    encoded = _b64.b64encode(content.encode("utf-8")).decode("ascii")
+    redirect = ">>" if append else ">"
+    adb_cmd = f'adb shell "echo {encoded} | base64 -d {redirect} {device_path}"'
+
+    try:
+        resp = _http_post("/step_adb", {
+            "command": adb_cmd,
+            "thought": f"write-file: {device_path}",
+            "count_step": count_step,
+        })
+    except (urllib.error.URLError, OSError) as e:
+        print(f"ERROR: HTTP request failed: {e}")
+        return 2
+
+    raw_output = resp.get("command_output", "")
+    reward = resp.get("reward", 0.0)
+    terminated = resp.get("terminated", False)
+    truncated = resp.get("truncated", False)
+
+    state["step_count"] += 1
+    state["reward"] = reward
+    if terminated or truncated:
+        state["terminated"] = True
+
+    mode = "appended to" if append else "wrote to"
+    print(f"$ {mode} {device_path} ({len(content)} bytes)")
+    if raw_output.strip():
+        print(raw_output)
+
+    state["step_records"].append({
+        "step_idx": state["step_count"],
+        "thought": f"write-file: {device_path}",
+        "action_type": "write-file",
+        "action_params": {
+            "device_path": device_path,
+            "content_length": len(content),
+            "append": append,
+        },
+        "command_output": raw_output[:4000],
+    })
+    _save_state(state)
+    return 0
+
+
+def cmd_read_file(device_path: str, count_step: bool = True) -> int:
+    """Read content from a file on the device.
+
+    Uses base64 round-trip to avoid shell escaping issues with
+    file paths or content containing special characters.
+    """
+    import base64 as _b64
+
+    state = _load_state()
+    if state["terminated"]:
+        print("ERROR: Task already finished.")
+        return 1
+
+    adb_cmd = f'adb shell "base64 {device_path}"'
+
+    try:
+        resp = _http_post("/step_adb", {
+            "command": adb_cmd,
+            "thought": f"read-file: {device_path}",
+            "count_step": count_step,
+        })
+    except (urllib.error.URLError, OSError) as e:
+        print(f"ERROR: HTTP request failed: {e}")
+        return 2
+
+    raw_output = resp.get("command_output", "").strip()
+    reward = resp.get("reward", 0.0)
+    terminated = resp.get("terminated", False)
+    truncated = resp.get("truncated", False)
+
+    state["step_count"] += 1
+    state["reward"] = reward
+    if terminated or truncated:
+        state["terminated"] = True
+
+    # Decode base64 content
+    try:
+        content = _b64.b64decode(raw_output).decode("utf-8", errors="replace")
+    except Exception:
+        content = raw_output  # Fallback to raw output if decode fails
+
+    if len(content) > MAX_OUTPUT_CHARS:
+        content = content[:MAX_OUTPUT_CHARS] + "\n... (truncated)"
+
+    print(f"$ cat {device_path}")
+    print(content)
+
+    state["step_records"].append({
+        "step_idx": state["step_count"],
+        "thought": f"read-file: {device_path}",
+        "action_type": "read-file",
+        "action_params": {"device_path": device_path},
+        "command_output": content[:4000],
+    })
+    _save_state(state)
+    return 0
+
+
+def cmd_find_files(directory: str, pattern: str, count_step: bool = True) -> int:
+    """Search for files on the device by glob pattern.
+
+    Shell-escapes the pattern internally to handle spaces and
+    special characters in file names.
+    """
+    import shlex
+
+    state = _load_state()
+    if state["terminated"]:
+        print("ERROR: Task already finished.")
+        return 1
+
+    safe_pattern = shlex.quote(pattern)
+    adb_cmd = f'adb shell "find {directory} -name {safe_pattern} 2>/dev/null"'
+
+    try:
+        resp = _http_post("/step_adb", {
+            "command": adb_cmd,
+            "thought": f"find-files: {directory} {pattern}",
+            "count_step": count_step,
+        })
+    except (urllib.error.URLError, OSError) as e:
+        print(f"ERROR: HTTP request failed: {e}")
+        return 2
+
+    raw_output = resp.get("command_output", "").strip()
+    reward = resp.get("reward", 0.0)
+    terminated = resp.get("terminated", False)
+    truncated = resp.get("truncated", False)
+
+    state["step_count"] += 1
+    state["reward"] = reward
+    if terminated or truncated:
+        state["terminated"] = True
+
+    if len(raw_output) > MAX_OUTPUT_CHARS:
+        raw_output = raw_output[:MAX_OUTPUT_CHARS] + "\n... (truncated)"
+
+    print(f"$ find {directory} -name {safe_pattern}")
+    if raw_output:
+        print(raw_output)
+    else:
+        print("(no files found)")
+
+    state["step_records"].append({
+        "step_idx": state["step_count"],
+        "thought": f"find-files: {directory} {pattern}",
+        "action_type": "find-files",
+        "action_params": {"directory": directory, "pattern": pattern},
+        "command_output": raw_output[:4000],
+    })
+    _save_state(state)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -306,6 +535,35 @@ def main() -> int:
     # tree subcommand
     sub.add_parser("tree", help="Get accessibility tree (cached or fresh)")
 
+    # sql subcommand
+    sql_p = sub.add_parser("sql", help="Execute SQL on a device database")
+    sql_p.add_argument("db_path", help="Absolute path to database on device")
+    sql_p.add_argument("sql", help="SQL statement to execute")
+    sql_p.add_argument("--no-step", action="store_true",
+                        help="Don't count this command as a step")
+
+    # write-file subcommand
+    wf_p = sub.add_parser("write-file", help="Write content to a device file")
+    wf_p.add_argument("device_path", help="Absolute path on device")
+    wf_p.add_argument("content", help="Content to write")
+    wf_p.add_argument("--append", action="store_true",
+                       help="Append instead of overwrite")
+    wf_p.add_argument("--no-step", action="store_true",
+                        help="Don't count this command as a step")
+
+    # read-file subcommand
+    rf_p = sub.add_parser("read-file", help="Read content from a device file")
+    rf_p.add_argument("device_path", help="Absolute path on device")
+    rf_p.add_argument("--no-step", action="store_true",
+                        help="Don't count this command as a step")
+
+    # find-files subcommand
+    ff_p = sub.add_parser("find-files", help="Search for files on device")
+    ff_p.add_argument("directory", help="Directory to search in")
+    ff_p.add_argument("pattern", help="File name pattern (e.g. '*.db', '*.md')")
+    ff_p.add_argument("--no-step", action="store_true",
+                        help="Don't count this command as a step")
+
     # finish subcommand
     fin_p = sub.add_parser("finish", help="Signal task completion")
     fin_p.add_argument("--status", required=True, help="'complete' or 'infeasible'")
@@ -325,6 +583,19 @@ def main() -> int:
                         count_step=not args.no_step)
     elif args.subcommand == "tree":
         return cmd_tree()
+    elif args.subcommand == "sql":
+        return cmd_sql(args.db_path, args.sql,
+                        count_step=not args.no_step)
+    elif args.subcommand == "write-file":
+        return cmd_write_file(args.device_path, args.content,
+                               append=args.append,
+                               count_step=not args.no_step)
+    elif args.subcommand == "read-file":
+        return cmd_read_file(args.device_path,
+                              count_step=not args.no_step)
+    elif args.subcommand == "find-files":
+        return cmd_find_files(args.directory, args.pattern,
+                               count_step=not args.no_step)
     elif args.subcommand == "finish":
         return cmd_finish(args.status, args.description)
     return 1

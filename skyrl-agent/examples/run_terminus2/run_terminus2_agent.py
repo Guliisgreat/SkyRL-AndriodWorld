@@ -84,6 +84,8 @@ def build_parser():
                         help="Per-task timeout in seconds (default: 900)")
     parser.add_argument("--reasoning-effort", default=None,
                         help="LLM reasoning effort (for models that support it)")
+    parser.add_argument("--template", default=None,
+                        help="Path to custom template file (overrides default for parser)")
 
     # Reuse --prompt and --effort for output path generation compatibility
     parser.add_argument("--prompt", default="terminus2_json",
@@ -108,6 +110,14 @@ def main():
 
     output_path = resolve_output_path(args)
 
+    # Resolve template override to absolute path
+    template_override = None
+    if args.template:
+        template_override = os.path.abspath(args.template)
+        if not os.path.exists(template_override):
+            print(f"ERROR: Template file not found: {template_override}")
+            return 1
+
     # Bind task runner with all config
     task_runner = partial(
         run_terminus2_task_sync,
@@ -119,6 +129,7 @@ def main():
         command_timeout=args.command_timeout,
         task_timeout=args.task_timeout,
         reasoning_effort=args.reasoning_effort,
+        template_override=template_override,
     )
 
     # Build a system prompt string for ATIF / finalize (not used by agent itself)
