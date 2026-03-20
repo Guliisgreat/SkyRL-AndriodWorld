@@ -169,6 +169,8 @@ def build_parser():
                         help="Number of parallel workers")
     parser.add_argument("--task-timeout", type=int, default=900,
                         help="Per-task timeout in seconds")
+    parser.add_argument("--max-turns", type=int, default=30,
+                        help="(unused, kept for CLI compatibility)")
 
     # For output path generation compatibility
     parser.add_argument("--prompt", default="mini_swe_oracle",
