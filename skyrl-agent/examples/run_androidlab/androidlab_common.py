@@ -59,11 +59,11 @@ def androidlab_reset(container_url, package=""):
     2. Set date to 2024-05-10 12:00:00
     3. Launch target app (if package provided)
     """
-    # Step 1: Restore snapshot
+    # Step 1: Restore snapshot (emulator restart — takes ~60-90s)
     http_post(f"{container_url}/reset", {
         "seed": None,
         "options": {},
-    }, timeout=120)
+    }, timeout=300)
 
     # Step 2: Set fixed date
     _adb_exec(container_url, f"adb shell date '{ANDROIDLAB_DATE}'")

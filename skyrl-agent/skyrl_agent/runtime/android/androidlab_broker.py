@@ -83,7 +83,7 @@ class AndroidLabPoolBroker(ContainerPoolBroker):
             resp = requests.post(
                 f"http://localhost:{server_port}/reset",
                 json={"seed": None, "options": {}},
-                timeout=(5, 120),
+                timeout=(5, 300),  # emulator restart can take ~90s
             )
             if resp.status_code != 200:
                 logger.warning(
