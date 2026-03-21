@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""
+Convert Android-Lab task YAML files to our JSONL format.
+
+Usage:
+    # From the Android-Lab repo root:
+    python convert_tasks.py --yaml-dir evaluation/config/ --output androidlab_tasks.jsonl
+
+    # Or just generate from the embedded data (no Android-Lab clone needed):
+    python convert_tasks.py --output androidlab_tasks.jsonl
+"""
+
+import argparse
+import json
+import os
+
+# ─── Embedded task data ──────────────────────────────────────────────────────
+# All 138 tasks from Android-Lab's 9 YAML configs.
+# This avoids requiring a clone of the Android-Lab repo.
+
+TASKS = [
+    # ── bluecoins (15 tasks) ──
+    {"task_id": "bluecoins_1", "task": "Could you tell me how much I spent on May 10, 2024?", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "query_detect", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    {"task_id": "bluecoins_2", "task": "What was the reason behind the 388.88 CNY I spent on May 3, 2024?", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "query_detect", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    {"task_id": "bluecoins_3", "task": "How much did I shell out in total on May 6, 2024?", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "query_detect", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    {"task_id": "bluecoins_4", "task": "How many transactions did I make all together on May 6, 2024?", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "query_detect", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    {"task_id": "bluecoins_5", "task": "What's the total amount I spent on taxis this week?", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "query_detect", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    {"task_id": "bluecoins_6", "task": "Log an expenditure of 512 CNY in the books.", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "operation", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    {"task_id": "bluecoins_7", "task": "Record an income of 8000 CNY in the books, and mark it as 'salary'.", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "operation", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    {"task_id": "bluecoins_8", "task": "Note down an expense of 768 CNY for May 11, 2024.", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "operation", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    {"task_id": "bluecoins_9", "task": "For March 8, 2024, jot down an income of 3.14 CNY with 'Weixin red packet' as the note.", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "operation", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    {"task_id": "bluecoins_10", "task": "For May 14, 2024, record an expenditure of 256 CNY, marked as 'eating'.", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "operation", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    {"task_id": "bluecoins_11", "task": "Adjust the expenditure on May 15, 2024, to 500 CNY.", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "operation", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    {"task_id": "bluecoins_12", "task": "Shift the income entry from May 12th, 2024, to May 10th, 2024, and update the amount to 18,250 CNY.", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "operation", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    {"task_id": "bluecoins_13", "task": "Switch the May 13, 2024, transaction from 'expense' to 'income' and add 'Gift' as the note.", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "operation", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    {"task_id": "bluecoins_14", "task": "Change the type of the transaction on May 2, 2024, from 'income' to 'expense', adjust the amount to 520 CNY, and change the note to 'Wrong Operation'.", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "operation", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    {"task_id": "bluecoins_15", "task": "Move the expense entry from May 12, 2024, to May 13, 2024, adjust the amount to 936.02 CNY, and update the note to 'Grocery Shopping'.", "app": "bluecoins", "package": "com.rammigsoftware.bluecoins", "metric_type": "operation", "metric_func": "evaluation.tasks.bluecoins", "adb_query": ""},
+    # ── calendar (14 tasks) ──
+    {"task_id": "calendar_1", "task": "I want to add an event at 5:00PM today, whose Title is \"work\".", "app": "calendar", "package": "com.skuld.calendario", "metric_type": "operation", "metric_func": "evaluation.tasks.calendar", "adb_query": ""},
+    {"task_id": "calendar_2", "task": "Arrange an event titled \"homework\" for me at May 21st, and set the notification time to be 10 minutes before.", "app": "calendar", "package": "com.skuld.calendario", "metric_type": "operation", "metric_func": "evaluation.tasks.calendar", "adb_query": ""},
+    {"task_id": "calendar_3", "task": "Help me arrange an event titled \"meeting\" at May 13th with note \"conference room B202\".", "app": "calendar", "package": "com.skuld.calendario", "metric_type": "operation", "metric_func": "evaluation.tasks.calendar", "adb_query": ""},
+    {"task_id": "calendar_4", "task": "Arrange an event which starts at 2024/6/1 and repeats monthly.", "app": "calendar", "package": "com.skuld.calendario", "metric_type": "operation", "metric_func": "evaluation.tasks.calendar", "adb_query": ""},
+    {"task_id": "calendar_5", "task": "Edit the event with title \"work\", change the end time to be 7:00 PM.", "app": "calendar", "package": "com.skuld.calendario", "metric_type": "operation", "metric_func": "evaluation.tasks.calendar", "adb_query": ""},
+    {"task_id": "calendar_6", "task": "Add the note \"classroom 101\" to the event \"homework\".", "app": "calendar", "package": "com.skuld.calendario", "metric_type": "operation", "metric_func": "evaluation.tasks.calendar", "adb_query": ""},
+    {"task_id": "calendar_7", "task": "Change the notification time of event \"meeting\" to be 5 minutes before and 10 minutes before.", "app": "calendar", "package": "com.skuld.calendario", "metric_type": "operation", "metric_func": "evaluation.tasks.calendar", "adb_query": ""},
+    {"task_id": "calendar_8", "task": "Edit the event titled \"work\" and add a Note \"computer\" to it.", "app": "calendar", "package": "com.skuld.calendario", "metric_type": "operation", "metric_func": "evaluation.tasks.calendar", "adb_query": ""},
+    {"task_id": "calendar_9", "task": "For the event titled \"work\", please help me set recurrence to be daily.", "app": "calendar", "package": "com.skuld.calendario", "metric_type": "operation", "metric_func": "evaluation.tasks.calendar", "adb_query": ""},
+    {"task_id": "calendar_10", "task": "Arrange an event \"this day\".", "app": "calendar", "package": "com.skuld.calendario", "metric_type": "operation", "metric_func": "evaluation.tasks.calendar", "adb_query": ""},
+    {"task_id": "calendar_11", "task": "Edit the event titled \"this day\", and make it repeat weekly.", "app": "calendar", "package": "com.skuld.calendario", "metric_type": "operation", "metric_func": "evaluation.tasks.calendar", "adb_query": ""},
+    {"task_id": "calendar_12", "task": "Help me add a note \"Hello\" to the event titled \"Today\".", "app": "calendar", "package": "com.skuld.calendario", "metric_type": "operation", "metric_func": "evaluation.tasks.calendar", "adb_query": ""},
+    {"task_id": "calendar_13", "task": "Arrange an event titled \"exam\".", "app": "calendar", "package": "com.skuld.calendario", "metric_type": "operation", "metric_func": "evaluation.tasks.calendar", "adb_query": ""},
+    {"task_id": "calendar_14", "task": "Edit the event titled \"exam\" and make it an all-day event.", "app": "calendar", "package": "com.skuld.calendario", "metric_type": "operation", "metric_func": "evaluation.tasks.calendar", "adb_query": ""},
+    # ── clock (27 tasks) ──
+    {"task_id": "clock_1", "task": "Set an alarm for 3PM with the label \"meeting\" using Clock.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_2", "task": "Set an alarm for 6:45AM, disable vibrate and change ring song to Argon.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_3", "task": "Help me set an alarm every Monday to Friday, 7AM in morning.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_4", "task": "Change my clock at 9AM, make it ring everyday.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_5", "task": "Help me set an alarm at 10:30AM tomorrow.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_6", "task": "I need to set a 10:30PM clock every weekend, and label it as \"Watch Football Games\" to remind me.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_7", "task": "Turn off all alarms.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_8", "task": "Delete all alarms after 2PM.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_9", "task": "Turn off the alarm at 4PM.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_10", "task": "What is my earliest alarm which is open?", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "query_detect", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_11", "task": "Is there an alarm set on 4PM everyday?", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "query_detect", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_12", "task": "Does my alarm at 4PM turn on vibrate?", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "query_detect", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_13", "task": "How many alarms have been turned on?", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "query_detect", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_14", "task": "Have my alarm at 9AM been turned on?", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "query_detect", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_15", "task": "Add London and Barcelona time in clock.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_16", "task": "Query the current time in Barcelona and the time difference with local time in clock.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "query_detect", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_17", "task": "Delete Barcelona time from clock.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_18", "task": "Set a countdown timer for 1 hour 15 minutes but do not start it.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_19", "task": "Set bedtime for 10PM to sleep, wake up at 7AM.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_20", "task": "Set sleep sounds to deep space.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_21", "task": "Turn on the Wake-up alarm in Bedtime.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_22", "task": "Set alarm style to Analog.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_23", "task": "Change home time zone to Tokyo in clock.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_24", "task": "Modify silence after to 5 minutes.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_25", "task": "Open clock app.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_26", "task": "Close my 7:30AM alarm.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    {"task_id": "clock_27", "task": "Set an alarm at 3PM.", "app": "clock", "package": "com.google.android.deskclock", "metric_type": "operation", "metric_func": "evaluation.tasks.clock", "adb_query": ""},
+    # ── contacts (15 tasks) ──
+    {"task_id": "contacts_1", "task": "Add John as a contacts and set his mobile phone number to be 12345678.", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "operation", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    {"task_id": "contacts_2", "task": "Add a contacts whose first name is \"John\", last name is \"Smith\", mobile phone number is 12345678, and working email as 123456@gmail.com.", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "operation", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    {"task_id": "contacts_3", "task": "Add a contacts whose name is Xu, set the working phone number to be 12345678 and mobile phone number to be 87654321.", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "operation", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    {"task_id": "contacts_4", "task": "Add a contacts named Chen, whose company is Tsinghua University.", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "operation", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    {"task_id": "contacts_5", "task": "Create a new label as work, and add AAA, ABC into it.", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "operation", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    {"task_id": "contacts_6", "task": "Add a work phone number 00112233 to contacts ABC.", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "operation", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    {"task_id": "contacts_7", "task": "Add birthday to AAA as 1996/10/24.", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "operation", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    {"task_id": "contacts_8", "task": "Set contacts ABC's website to be abc.github.com.", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "operation", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    {"task_id": "contacts_9", "task": "Edit a message to ABC, whose content is \"Nice to meet you\", but do not send it.", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "operation", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    {"task_id": "contacts_10", "task": "Call ABC.", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "operation", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    {"task_id": "contacts_11", "task": "Delete contacts AAA.", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "operation", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    {"task_id": "contacts_12", "task": "What is ABC's phone number?", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "query_detect", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    {"task_id": "contacts_13", "task": "Check Li's working email in contacts.", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "query_detect", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    {"task_id": "contacts_14", "task": "When is ABC's birthday?", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "query_detect", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    {"task_id": "contacts_15", "task": "What is AAA's company?", "app": "Contacts", "package": "com.google.android.contacts", "metric_type": "query_detect", "metric_func": "evaluation.tasks.contacts", "adb_query": ""},
+    # ── setting (23 tasks) ──
+    {"task_id": "setting_0", "task": "Turn on airplane mode of my phone.", "app": "Settings", "package": "com.android.settings", "metric_type": "query_detect", "metric_func": "evaluation.tasks.setting", "adb_query": "adb shell settings get global airplane_mode_on"},
+    {"task_id": "setting_1", "task": "I do not want turn on wifi automatically, turn it off.", "app": "Settings", "package": "com.android.settings", "metric_type": "operation", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_2", "task": "Set private DNS to dns.google.", "app": "Settings", "package": "com.android.settings", "metric_type": "operation", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_3", "task": "Turn off my bluetooth.", "app": "Settings", "package": "com.android.settings", "metric_type": "operation", "metric_func": "evaluation.tasks.setting", "adb_query": "adb shell settings get global bluetooth_on"},
+    {"task_id": "setting_4", "task": "Change my bluetooth device name to \"my AVD\".", "app": "Settings", "package": "com.android.settings", "metric_type": "operation", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_5", "task": "Show battery percentage in status bar.", "app": "Settings", "package": "com.android.settings", "metric_type": "operation", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_6", "task": "How much storage does Apps use?", "app": "Settings", "package": "com.android.settings", "metric_type": "query_detect", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_7", "task": "Turn my phone to Dark theme.", "app": "Settings", "package": "com.android.settings", "metric_type": "operation", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_8", "task": "Change my Brightness level to 0%.", "app": "Settings", "package": "com.android.settings", "metric_type": "operation", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_9", "task": "I need to close down my Ring & notification volume to 0%.", "app": "Settings", "package": "com.android.settings", "metric_type": "query_detect", "metric_func": "evaluation.tasks.setting", "adb_query": "adb shell settings list system | grep volume_ring_speaker"},
+    {"task_id": "setting_10", "task": "Set my alarm volume to max.", "app": "Settings", "package": "com.android.settings", "metric_type": "query_detect", "metric_func": "evaluation.tasks.setting", "adb_query": "adb shell settings list system | grep volume_alarm_speaker"},
+    {"task_id": "setting_11", "task": "Change text-to-speech language to Chinese.", "app": "Settings", "package": "com.android.settings", "metric_type": "query_detect", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_12", "task": "Set current time of my phone to 2024-5-1.", "app": "Settings", "package": "com.android.settings", "metric_type": "query_detect", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_13", "task": "Turn off Ring vibration.", "app": "Settings", "package": "com.android.settings", "metric_type": "operation", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_14", "task": "What is my time zone?", "app": "Settings", "package": "com.android.settings", "metric_type": "query_detect", "metric_func": "evaluation.tasks.setting", "adb_query": "adb shell 'getprop persist.sys.timezone'"},
+    {"task_id": "setting_15", "task": "Add Espanol (Estados Unidos) as second favorite languages.", "app": "Settings", "package": "com.android.settings", "metric_type": "operation", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_16", "task": "What is the primary language of my phone?", "app": "Settings", "package": "com.android.settings", "metric_type": "query_detect", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_17", "task": "Check Android Version.", "app": "Settings", "package": "com.android.settings", "metric_type": "query_detect", "metric_func": "evaluation.tasks.setting", "adb_query": "adb shell getprop ro.build.version.release"},
+    {"task_id": "setting_18", "task": "Disable Contacts' APP notifications.", "app": "Settings", "package": "com.android.settings", "metric_type": "operation", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_19", "task": "Check my default browser and change it to firefox.", "app": "Settings", "package": "com.android.settings", "metric_type": "operation", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_20", "task": "Uninstall booking app.", "app": "Settings", "package": "com.android.settings", "metric_type": "operation", "metric_func": "evaluation.tasks.setting", "adb_query": "adb shell pm list packages | grep 'com.booking'"},
+    {"task_id": "setting_21", "task": "Open settings.", "app": "Settings", "package": "com.android.settings", "metric_type": "operation", "metric_func": "evaluation.tasks.setting", "adb_query": ""},
+    {"task_id": "setting_22", "task": "Does my airplane mode open or not?", "app": "Settings", "package": "com.android.settings", "metric_type": "operation", "metric_func": "evaluation.tasks.setting", "adb_query": "adb shell settings get global airplane_mode_on"},
+    # ── map (15 tasks) ──
+    {"task_id": "map_1", "task": "Check the walking distance and time between Bus Stop of Stanford Campus Oval and Bus Stop of Oxford Street & University Avenue.", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "query_detect", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    {"task_id": "map_2", "task": "Check the driving distance and time between Bus stop of 2700 Coast Avenue and Bus Stop Route 51.", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "query_detect", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    {"task_id": "map_3", "task": "Check the riding time between Bus Stop of Stanford Campus Oval and Bus Stop of Oxford Street & University Avenue.", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "query_detect", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    {"task_id": "map_4", "task": "Check the route by public transportation between Bus stop of 2700 Coast Avenue and Bus Stop Route 51.", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "query_detect", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    {"task_id": "map_5", "task": "Compare which takes less time to travel between Bus stop of 2700 Coast Avenue and Bus Stop Route 51, by riding or by public transportation?", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "query_detect", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    {"task_id": "map_6", "task": "Compare which takes less time to travel between Bus Stop of Stanford Campus Oval and Bus Stop of Oxford Street & University Avenue, by riding or by public transportation?", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "query_detect", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    {"task_id": "map_7", "task": "Check the nearest restaurant and tell me what is it.", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "query_detect", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    {"task_id": "map_8", "task": "Check the nearest restaurant, and tell me the time it will take to walk to the restaurant.", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "query_detect", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    {"task_id": "map_9", "task": "Check the nearest hotel, tell me what is it.", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "query_detect", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    {"task_id": "map_10", "task": "Check the nearest IKEA, and tell me how long it will take to drive to the IKEA.", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "query_detect", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    {"task_id": "map_11", "task": "Add the address of openai to my Work place.", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "operation", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    {"task_id": "map_12", "task": "Navigate from my location to Stanford University.", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "operation", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    {"task_id": "map_13", "task": "Navigate from my location to University South.", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "operation", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    {"task_id": "map_14", "task": "Navigate from my location to OpenAI.", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "operation", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    {"task_id": "map_15", "task": "Navigate from my location to University of California, Berkeley.", "app": "map.me", "package": "com.mapswithme.maps.pro", "metric_type": "operation", "metric_func": "evaluation.tasks.map_me", "adb_query": ""},
+    # ── pimusic (12 tasks) ──
+    {"task_id": "pimusic_1", "task": "Tell me how many songs do I have in total?", "app": "Pi Music Player", "package": "com.Project100Pi.themusicplayer", "metric_type": "query_detect", "metric_func": "evaluation.tasks.pimusic", "adb_query": ""},
+    {"task_id": "pimusic_2", "task": "Help me check how many Pink Floyd's songs do I have?", "app": "Pi Music Player", "package": "com.Project100Pi.themusicplayer", "metric_type": "query_detect", "metric_func": "evaluation.tasks.pimusic", "adb_query": ""},
+    {"task_id": "pimusic_3", "task": "What is the album name of the song Wish You Were Here?", "app": "Pi Music Player", "package": "com.Project100Pi.themusicplayer", "metric_type": "query_detect", "metric_func": "evaluation.tasks.pimusic", "adb_query": ""},
+    {"task_id": "pimusic_4", "task": "What is the duration time of the longest song by Pink Floyd?", "app": "Pi Music Player", "package": "com.Project100Pi.themusicplayer", "metric_type": "query_detect", "metric_func": "evaluation.tasks.pimusic", "adb_query": ""},
+    {"task_id": "pimusic_5", "task": "Sort the songs by title in ascending order. What are the second and fourth songs?", "app": "Pi Music Player", "package": "com.Project100Pi.themusicplayer", "metric_type": "query_detect", "metric_func": "evaluation.tasks.pimusic", "adb_query": ""},
+    {"task_id": "pimusic_6", "task": "What is the total duration time of all of Eason Chan's songs?", "app": "Pi Music Player", "package": "com.Project100Pi.themusicplayer", "metric_type": "query_detect", "metric_func": "evaluation.tasks.pimusic", "adb_query": ""},
+    {"task_id": "pimusic_7", "task": "Play the first song in 'Favorite' playlist.", "app": "Pi Music Player", "package": "com.Project100Pi.themusicplayer", "metric_type": "operation", "metric_func": "evaluation.tasks.pimusic", "adb_query": ""},
+    {"task_id": "pimusic_8", "task": "Sort Pink Floyd's songs by duration time in descending order.", "app": "Pi Music Player", "package": "com.Project100Pi.themusicplayer", "metric_type": "operation", "metric_func": "evaluation.tasks.pimusic", "adb_query": ""},
+    {"task_id": "pimusic_9", "task": "Create a playlist named 'Creepy' for me.", "app": "Pi Music Player", "package": "com.Project100Pi.themusicplayer", "metric_type": "operation", "metric_func": "evaluation.tasks.pimusic", "adb_query": ""},
+    {"task_id": "pimusic_10", "task": "Pause the currently playing song and seek to 1 minute and 27 seconds.", "app": "Pi Music Player", "package": "com.Project100Pi.themusicplayer", "metric_type": "operation", "metric_func": "evaluation.tasks.pimusic", "adb_query": ""},
+    {"task_id": "pimusic_11", "task": "Play Lightship by Sonny Boy.", "app": "Pi Music Player", "package": "com.Project100Pi.themusicplayer", "metric_type": "operation", "metric_func": "evaluation.tasks.pimusic", "adb_query": ""},
+    {"task_id": "pimusic_12", "task": "Sort the songs by duration time in ascending order.", "app": "Pi Music Player", "package": "com.Project100Pi.themusicplayer", "metric_type": "operation", "metric_func": "evaluation.tasks.pimusic", "adb_query": ""},
+    # ── cantook (12 tasks) ──
+    {"task_id": "cantook_1", "task": "Do I have Pride and Prejudice on my bookshelf?", "app": "Cantook", "package": "Cantook", "metric_type": "query_detect", "metric_func": "evaluation.tasks.cantook", "adb_query": ""},
+    {"task_id": "cantook_2", "task": "What was the last book I recently read?", "app": "Cantook", "package": "Cantook", "metric_type": "query_detect", "metric_func": "evaluation.tasks.cantook", "adb_query": ""},
+    {"task_id": "cantook_3", "task": "Who is the author of the second book in my recently added?", "app": "Cantook", "package": "Cantook", "metric_type": "query_detect", "metric_func": "evaluation.tasks.cantook", "adb_query": ""},
+    {"task_id": "cantook_4", "task": "How many Charles Dickens books do I have?", "app": "Cantook", "package": "Cantook", "metric_type": "query_detect", "metric_func": "evaluation.tasks.cantook", "adb_query": ""},
+    {"task_id": "cantook_5", "task": "What is my progress in reading Romeo and Juliet?", "app": "Cantook", "package": "Cantook", "metric_type": "query_detect", "metric_func": "evaluation.tasks.cantook", "adb_query": ""},
+    {"task_id": "cantook_6", "task": "Import Alice's Advantures in Wonderland from folder /Download/Ebooks/.", "app": "Cantook", "package": "Cantook", "metric_type": "operation", "metric_func": "evaluation.tasks.cantook", "adb_query": ""},
+    {"task_id": "cantook_7", "task": "Delete Don Quixote from my books.", "app": "Cantook", "package": "Cantook", "metric_type": "operation", "metric_func": "evaluation.tasks.cantook", "adb_query": ""},
+    {"task_id": "cantook_8", "task": "Mark Hamlet as read.", "app": "Cantook", "package": "Cantook", "metric_type": "operation", "metric_func": "evaluation.tasks.cantook", "adb_query": ""},
+    {"task_id": "cantook_9", "task": "Mark the second book I recently read as unread.", "app": "Cantook", "package": "Cantook", "metric_type": "operation", "metric_func": "evaluation.tasks.cantook", "adb_query": ""},
+    {"task_id": "cantook_10", "task": "Open Romeo and Juliet.", "app": "Cantook", "package": "Cantook", "metric_type": "operation", "metric_func": "evaluation.tasks.cantook", "adb_query": ""},
+    {"task_id": "cantook_11", "task": "Open the category named 'Tragedies'.", "app": "Cantook", "package": "Cantook", "metric_type": "operation", "metric_func": "evaluation.tasks.cantook", "adb_query": ""},
+    {"task_id": "cantook_12", "task": "Create a new collection called \"Favorite\".", "app": "Cantook", "package": "Cantook", "metric_type": "operation", "metric_func": "evaluation.tasks.cantook", "adb_query": ""},
+    # ── zoom (5 tasks) ──
+    {"task_id": "zoom_1", "task": "Join meeting 1234567890. (You should not click join button, and leave it to user)", "app": "zoom", "package": "us.zoom.videomeetings", "metric_type": "operation", "metric_func": "evaluation.tasks.zoom", "adb_query": ""},
+    {"task_id": "zoom_2", "task": "Join meeting 0987654321, and set my name as 'Alice'. (You should not click join button, and leave it to user)", "app": "zoom", "package": "us.zoom.videomeetings", "metric_type": "operation", "metric_func": "evaluation.tasks.zoom", "adb_query": ""},
+    {"task_id": "zoom_3", "task": "I need to join meeting 1234567890 without audio and video. (You should not click join button, and leave it to user)", "app": "zoom", "package": "us.zoom.videomeetings", "metric_type": "operation", "metric_func": "evaluation.tasks.zoom", "adb_query": ""},
+    {"task_id": "zoom_4", "task": "Set auto connect to audio when wifi is connected in zoom settings.", "app": "zoom", "package": "us.zoom.videomeetings", "metric_type": "operation", "metric_func": "evaluation.tasks.zoom", "adb_query": ""},
+    {"task_id": "zoom_5", "task": "Change my reaction skin to Medium-light in zoom settings.", "app": "zoom", "package": "us.zoom.videomeetings", "metric_type": "operation", "metric_func": "evaluation.tasks.zoom", "adb_query": ""},
+]
+
+
+def generate_jsonl(output_path: str):
+    """Write all 138 tasks to JSONL."""
+    # Add seed field (always 0 for Android-Lab)
+    with open(output_path, "w") as f:
+        for t in TASKS:
+            row = {**t, "seed": 0}
+            f.write(json.dumps(row) + "\n")
+
+    # Print summary
+    apps = {}
+    metric_types = {"operation": 0, "query_detect": 0}
+    for t in TASKS:
+        app = t["app"]
+        apps[app] = apps.get(app, 0) + 1
+        mt = t["metric_type"]
+        if mt in metric_types:
+            metric_types[mt] += 1
+        else:
+            metric_types[mt] = 1
+
+    print(f"Wrote {len(TASKS)} tasks to {output_path}")
+    print(f"\nPer-app breakdown:")
+    for app, count in sorted(apps.items()):
+        print(f"  {app:20s} {count:3d}")
+    print(f"\nMetric type breakdown:")
+    for mt, count in metric_types.items():
+        print(f"  {mt:20s} {count:3d}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate Android-Lab task JSONL from embedded data"
+    )
+    parser.add_argument(
+        "--output", "-o",
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "androidlab_tasks.jsonl"),
+        help="Output JSONL path",
+    )
+    args = parser.parse_args()
+    generate_jsonl(args.output)
+
+
+if __name__ == "__main__":
+    main()
