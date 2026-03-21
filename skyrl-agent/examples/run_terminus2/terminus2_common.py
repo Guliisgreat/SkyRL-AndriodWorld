@@ -108,6 +108,7 @@ async def run_terminus2_task(
     auto_finish: bool = True,
     reasoning_effort: str | None = None,
     template_override: str | None = None,
+    max_tokens: int | None = None,
 ) -> dict:
     """Run one Terminus_2 attempt on a task. Returns a result dict compatible
     with ``claude_cli_common.finalize_results``.
@@ -164,6 +165,7 @@ async def run_terminus2_task(
         command_timeout=command_timeout,
         reasoning_effort=reasoning_effort,
         template_override=template_override,
+        max_tokens=max_tokens,
     )
     agent.setup(env)
 

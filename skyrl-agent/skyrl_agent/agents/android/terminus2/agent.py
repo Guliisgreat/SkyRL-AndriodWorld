@@ -180,6 +180,7 @@ class AndroidTerminus2Agent:
         command_timeout: int = 60,
         reasoning_effort: str | None = None,
         template_override: str | None = None,
+        max_tokens: int | None = None,
     ):
         self.model_name = model_name
         self.android_env_script = android_env_script
@@ -190,6 +191,7 @@ class AndroidTerminus2Agent:
         self.command_timeout = command_timeout
         self.reasoning_effort = reasoning_effort
         self.template_override = template_override
+        self.max_tokens = max_tokens
 
         self.parser = _make_parser(parser_name)
         self.environment: SkyrlServerEnvironment | None = None
@@ -204,12 +206,15 @@ class AndroidTerminus2Agent:
 
     def setup(self, environment: SkyrlServerEnvironment) -> None:
         self.environment = environment
-        self._llm = LiteLLM(
+        llm_kwargs: dict = dict(
             model_name=self.model_name,
             temperature=self.temperature,
             api_base=self.api_base,
             reasoning_effort=self.reasoning_effort,
         )
+        if self.max_tokens is not None:
+            llm_kwargs["max_tokens"] = self.max_tokens
+        self._llm = LiteLLM(**llm_kwargs)
         self._chat = Chat(model=self._llm)
 
     # ------------------------------------------------------------------
