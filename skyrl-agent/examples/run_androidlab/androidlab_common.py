@@ -65,16 +65,20 @@ def androidlab_reset(container_url, package=""):
         "options": {},
     }, timeout=300)
 
-    # Step 2: Set fixed date
+    # Step 2: Get root access (needed for date setting)
+    _adb_exec(container_url, "adb root")
+    time.sleep(2)
+
+    # Step 3: Set fixed date
     _adb_exec(container_url, f"adb shell date '{ANDROIDLAB_DATE}'")
 
-    # Step 3: Set GPS
+    # Step 4: Set GPS
     _adb_exec(
         container_url,
         "adb shell settings put secure location_providers_allowed gps"
     )
 
-    # Step 4: Launch target app
+    # Step 5: Launch target app
     if package:
         _adb_exec(
             container_url,

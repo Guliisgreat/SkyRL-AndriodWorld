@@ -1,7 +1,8 @@
-FROM python:3.11-slim
+FROM python:3.11
 
 RUN apt-get update && apt-get install -y \
     vim wget unzip libpulse-dev libnss3 cpu-checker procps \
+    fonts-dejavu libxi6 libxrender1 libxtst6 libx11-6 libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install flask
@@ -9,8 +10,9 @@ RUN pip install flask
 # Install OpenJDK 8
 RUN mkdir -p /root/install-android
 COPY openlogic-openjdk-8u412-b08-linux-x64-deb.deb /tmp/
-RUN apt install -y /tmp/openlogic-openjdk-8u412-b08-linux-x64-deb.deb \
-    && rm /tmp/openlogic-openjdk-8u412-b08-linux-x64-deb.deb
+RUN apt-get update && apt install -y /tmp/openlogic-openjdk-8u412-b08-linux-x64-deb.deb \
+    && rm /tmp/openlogic-openjdk-8u412-b08-linux-x64-deb.deb \
+    && rm -rf /var/lib/apt/lists/*
 
 # Android SDK setup
 ENV ANDROID_HOME=/root/.android

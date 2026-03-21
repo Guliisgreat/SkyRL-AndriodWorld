@@ -23,6 +23,10 @@ AVD_NAME = os.environ.get("AVD_NAME", "Pixel_7_Pro_API_33")
 ADB_PATH = "/root/.android/platform-tools/adb"
 EMULATOR_PATH = "/root/.android/emulator/emulator"
 SERVER_PORT = int(os.environ.get("SERVER_PORT", 5000))
+# ADB port for this emulator — each container gets its own port
+# so ADB commands target the right device even in host-network mode.
+ADB_PORT = int(os.environ.get("ADB_PORT", 5037))
+EMULATOR_PORT = int(os.environ.get("EMULATOR_PORT", 5554))
 
 app = Flask(__name__)
 
@@ -39,12 +43,21 @@ class EmulatorManager:
     def execute_adb(self, command):
         """Execute an ADB command, return (stdout, returncode)."""
         if command.startswith("adb"):
-            command = ADB_PATH + command[3:]
+            # Target our specific device and ADB port to avoid conflicts
+            # in host-network mode where many emulators share the ADB server
+            rest = command[3:]
+            # If command already specifies -s, don't override
+            if " -s " not in rest and self.device:
+                command = f"{ADB_PATH} -P {ADB_PORT} -s {self.device}" + rest
+            else:
+                command = f"{ADB_PATH} -P {ADB_PORT}" + rest
+        env = os.environ.copy()
+        env["ANDROID_ADB_SERVER_PORT"] = str(ADB_PORT)
         try:
             result = subprocess.run(
                 command, shell=True,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, timeout=120,
+                text=True, timeout=120, env=env,
             )
             return result.stdout.strip(), result.returncode
         except subprocess.TimeoutExpired:
@@ -58,28 +71,46 @@ class EmulatorManager:
             print("Emulator already running, skipping start")
             return True
 
-        print(f"Starting emulator: {AVD_NAME}")
+        # Kill any existing ADB server on our port
+        subprocess.run(
+            f"{ADB_PATH} -P {ADB_PORT} kill-server",
+            shell=True, capture_output=True,
+        )
+        time.sleep(1)
+        # Start dedicated ADB server on our port
+        subprocess.Popen(
+            f"{ADB_PATH} -P {ADB_PORT} start-server",
+            shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env={**os.environ, "ANDROID_ADB_SERVER_PORT": str(ADB_PORT)},
+        )
+        time.sleep(2)
+
+        print(f"Starting emulator: {AVD_NAME} (port={EMULATOR_PORT}, adb_port={ADB_PORT})")
         os.makedirs("/logs", exist_ok=True)
         self._log_file = open("/logs/emulator_output.txt", "a")
 
         self.process = subprocess.Popen(
             [EMULATOR_PATH, "-avd", AVD_NAME,
              "-no-snapshot-save", "-no-window", "-no-audio",
-             "-gpu", "swiftshader_indirect"],
+             "-gpu", "swiftshader_indirect",
+             "-port", str(EMULATOR_PORT),
+             "-read-only"],
             stdout=self._log_file,
             stderr=self._log_file,
+            env={**os.environ, "ANDROID_ADB_SERVER_PORT": str(ADB_PORT)},
         )
 
-        # Wait for boot
-        print("Waiting for emulator boot...")
+        # Wait for boot — target our specific emulator device
+        self.device = f"emulator-{EMULATOR_PORT}"
+        print(f"Waiting for emulator boot (device={self.device})...")
         for _ in range(180):  # up to 3 minutes
             time.sleep(1)
-            out, rc = self.execute_adb("adb shell getprop init.svc.bootanim")
+            out, rc = self.execute_adb(
+                f"adb -s {self.device} shell getprop init.svc.bootanim"
+            )
             if rc == 0 and out.strip() == "stopped":
                 print("Emulator boot complete")
-                self.device = self._get_device()
                 self.ready = True
-                # Give apps a moment to settle
                 time.sleep(3)
                 return True
 
@@ -202,6 +233,28 @@ def step():
 
     else:
         return jsonify({"error": f"Unknown action_type: {action_type}"}), 400
+
+
+@app.route("/step_adb", methods=["POST"])
+def step_adb():
+    """Execute ADB command — compatible with android_env.py's /step_adb.
+
+    Expects: {"command": "adb shell ...", "thought": "...", "count_step": true}
+    Returns: {"command_output": "...", "reward": 0.0, ...}
+    """
+    data = request.json or {}
+    command = data.get("command", "")
+    if not command:
+        return jsonify({"error": "No command provided"}), 400
+
+    output, rc = emu.execute_adb(command)
+    return jsonify({
+        "command_output": output,
+        "reward": 0.0,
+        "terminated": False,
+        "truncated": False,
+        "step_count": 0,
+    })
 
 
 # Also keep Android-Lab's original /execute endpoint for compatibility
