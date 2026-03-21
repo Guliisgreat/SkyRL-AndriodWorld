@@ -95,6 +95,7 @@ def run_one_task_with_retries(
     max_attempts: int,
     reasoning_effort: str | None = None,
     template_override: str | None = None,
+    max_tokens: int | None = None,
 ) -> dict:
     """Run a task with up to *max_attempts*, feeding eval reward as signal."""
     task_id = task_def["task_id"]
@@ -115,6 +116,7 @@ def run_one_task_with_retries(
             task_timeout=task_timeout,
             reasoning_effort=reasoning_effort,
             template_override=template_override,
+            max_tokens=max_tokens,
         )
 
         # Force-evaluate if agent didn't finish
@@ -222,6 +224,8 @@ def build_parser():
                         help="LLM reasoning effort")
     parser.add_argument("--template", default=None,
                         help="Path to custom template file (overrides default for parser)")
+    parser.add_argument("--max-tokens", type=int, default=None,
+                        help="Max output tokens per LLM call (for reasoning models)")
 
     # For output path generation compatibility
     parser.add_argument("--prompt", default="terminus2_json",
@@ -266,6 +270,7 @@ def main():
         max_attempts=args.max_attempts,
         reasoning_effort=args.reasoning_effort,
         template_override=template_override,
+        max_tokens=args.max_tokens,
     )
 
     system_prompt = (

@@ -86,6 +86,8 @@ def build_parser():
                         help="LLM reasoning effort (for models that support it)")
     parser.add_argument("--template", default=None,
                         help="Path to custom template file (overrides default for parser)")
+    parser.add_argument("--max-tokens", type=int, default=None,
+                        help="Max output tokens per LLM call (for reasoning models)")
 
     # Reuse --prompt and --effort for output path generation compatibility
     parser.add_argument("--prompt", default="terminus2_json",
@@ -130,6 +132,7 @@ def main():
         task_timeout=args.task_timeout,
         reasoning_effort=args.reasoning_effort,
         template_override=template_override,
+        max_tokens=args.max_tokens,
     )
 
     # Build a system prompt string for ATIF / finalize (not used by agent itself)
