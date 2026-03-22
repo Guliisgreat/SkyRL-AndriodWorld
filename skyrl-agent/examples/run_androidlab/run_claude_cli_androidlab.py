@@ -37,6 +37,7 @@ from androidlab_common import (
     broker_release,
     check_health,
     format_androidlab_instruction,
+    http_post,
     load_androidlab_tasks,
     post_agent_xml_dump,
     print_summary,
@@ -216,31 +217,37 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
         except OSError:
             pass
 
-    reward = state.get("reward", 0.0)
     step_count = state.get("step_count", 0)
     finished = state.get("terminated", False)
     finish_description = state.get("finish_description", "")
 
-    # For Android-Lab: if agent didn't explicitly finish, try force eval
-    if not finished:
-        print(f"  Agent didn't call finish — attempting force eval...")
-        try:
-            from androidlab_common import http_post
-            resp = http_post(f"{container_url}/step", {
-                "action": {
-                    "action_type": "status",
-                    "goal_status": "complete",
-                    "text": "forced evaluation",
-                },
-                "thought": "forced evaluation",
-            })
-            reward = resp.get("reward", 0.0)
-            finished = True
-        except Exception:
-            reward = 0.0
+    # Evaluate using ADB verifiers
+    reward = 0.0
+    eval_result = {}
+    if metric_type == "query_detect":
+        from verifiers.query_detect_judge import judge_query_detect
+        eval_result = judge_query_detect(
+            task_id, task_def["task"], finish_description,
+            adb_func=lambda cmd: _adb_for_verify(container_url, cmd),
+        )
+        reward = 1.0 if eval_result.get("complete") else 0.0
+    else:
+        from verifiers.verifier_map import get_verifier
+        verifier_cls = get_verifier(task_id)
+        if verifier_cls:
+            verifier = verifier_cls(container_url)
+            try:
+                eval_result = verifier.is_successful()
+                reward = 1.0 if eval_result.get("complete") else 0.0
+            except Exception as e:
+                print(f"  Verifier error: {e}")
+                eval_result = {"error": str(e)}
+        else:
+            print(f"  No verifier for {task_id}")
 
     status = "OK" if reward > 0 else "FAIL"
-    print(f"  >>> REWARD: {reward} ({status}), steps={step_count}")
+    print(f"  >>> REWARD: {reward} ({status}), steps={step_count}, "
+          f"eval={eval_result}")
     print(f"      tokens: in={input_tokens}, out={output_tokens}, "
           f"cost=${cost_usd:.4f}")
     sys.stdout.flush()
@@ -262,6 +269,17 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
         "cost_usd": cost_usd,
         "num_turns": num_turns,
     }
+
+
+def _adb_for_verify(container_url, cmd):
+    """ADB executor for verifier use."""
+    try:
+        resp = http_post(f"{container_url}/step_adb", {
+            "command": cmd, "thought": "verify",
+        }, timeout=30)
+        return resp.get("command_output", "")
+    except Exception:
+        return ""
 
 
 def _error_result(task_def, error_msg):
