@@ -23,8 +23,22 @@ VERIFIER_MAP.update(CALENDAR_MAP)     # 14 tasks
 VERIFIER_MAP.update(ZOOM_MAP)         #  5 tasks
                                       # Total: 93
 
-# No unverifiable tasks — all 93 operation tasks have verifiers
-UNVERIFIABLE_TASKS = set()
+# Tasks excluded from terminal evaluation (GUI-only, no terminal path)
+EXCLUDED_TASKS = {
+    # Calendar (14) — Realm DB, no content provider, no CLI API
+    "calendar_1", "calendar_2", "calendar_3", "calendar_4", "calendar_5",
+    "calendar_6", "calendar_7", "calendar_8", "calendar_9", "calendar_10",
+    "calendar_11", "calendar_12", "calendar_13", "calendar_14",
+    # Maps.me operation (5) — location search + navigation require GUI
+    "map_11", "map_12", "map_13", "map_14", "map_15",
+    # Zoom (5) — no local DB/prefs, all UI form filling
+    "zoom_1", "zoom_2", "zoom_3", "zoom_4", "zoom_5",
+    # PiMusic sort (2) — sort order is UI-only state
+    "pimusic_8", "pimusic_12",
+}
+
+# Kept for backward compat
+UNVERIFIABLE_TASKS = EXCLUDED_TASKS
 
 
 def get_verifier(task_id: str):
