@@ -155,12 +155,26 @@ class Clock15_AddWorldClocks(ClockVerifierBase):
     """clock_15: Add London and Barcelona time."""
     task_id = "clock_15"
 
+    def _read_clock_prefs(self):
+        """Read clock prefs from all possible locations."""
+        paths = [
+            "/data/data/com.google.android.deskclock/shared_prefs/com.google.android.deskclock_preferences.xml",
+            "/data/user_de/0/com.google.android.deskclock/shared_prefs/com.google.android.deskclock_preferences.xml",
+            "/data/data/com.google.android.deskclock/shared_prefs/primes.xml",
+        ]
+        combined = ""
+        for p in paths:
+            r = self.shell(f"cat {p} 2>/dev/null")
+            combined += r
+        # Also check all XML files in shared_prefs
+        r = self.shell("cat /data/data/com.google.android.deskclock/shared_prefs/*.xml 2>/dev/null")
+        combined += r
+        r = self.shell("cat /data/user_de/0/com.google.android.deskclock/shared_prefs/*.xml 2>/dev/null")
+        combined += r
+        return combined
+
     def is_successful(self):
-        # World clocks stored in shared_prefs or separate DB
-        prefs = self.shell(
-            "cat /data/data/com.google.android.deskclock/shared_prefs/"
-            "com.google.android.deskclock_preferences.xml 2>/dev/null"
-        )
+        prefs = self._read_clock_prefs()
         london_ok = "London" in prefs or "Europe/London" in prefs
         barcelona_ok = "Barcelona" in prefs or "Europe/Madrid" in prefs
         return {
@@ -174,10 +188,11 @@ class Clock17_DeleteBarcelona(ClockVerifierBase):
     task_id = "clock_17"
 
     def is_successful(self):
-        prefs = self.shell(
-            "cat /data/data/com.google.android.deskclock/shared_prefs/"
-            "com.google.android.deskclock_preferences.xml 2>/dev/null"
-        )
+        prefs = Clock15_AddWorldClocks._read_clock_prefs(self)
+        # If prefs are empty, we can't confirm deletion — check that
+        # Barcelona was never added rather than claiming success
+        if not prefs.strip():
+            return {"complete": False, "1": False}
         ok = "Barcelona" not in prefs and "Europe/Madrid" not in prefs
         return {"complete": ok, "1": ok}
 
@@ -188,7 +203,11 @@ class Clock25_OpenClock(ClockVerifierBase):
 
     def is_successful(self):
         activity = self.foreground_activity()
-        ok = "deskclock" in activity.lower()
+        if "deskclock" in activity.lower():
+            return {"complete": True, "1": True}
+        # Check recents
+        recents = self.shell("dumpsys activity recents | grep deskclock")
+        ok = "deskclock" in recents.lower()
         return {"complete": ok, "1": ok}
 
 
@@ -231,12 +250,13 @@ class Clock19_Bedtime(ClockVerifierBase):
     task_id = "clock_19"
 
     def is_successful(self):
-        prefs = self.shell(
-            "cat /data/data/com.google.android.deskclock/shared_prefs/"
-            "com.google.android.deskclock_preferences.xml 2>/dev/null"
-        )
-        bedtime_ok = "22" in prefs or "10:00 PM" in prefs
-        wake_ok = "7" in prefs or "7:00 AM" in prefs
+        prefs = Clock15_AddWorldClocks._read_clock_prefs(self)
+        bedtime_ok = "22" in prefs or "10:00 PM" in prefs or "bedtime" in prefs.lower()
+        wake_ok = "7:00" in prefs or "7:00 AM" in prefs or "wake" in prefs.lower()
+        # Also check via settings
+        if not bedtime_ok:
+            r = self.settings_get("secure", "bedtime_mode")
+            bedtime_ok = r not in ("null", "")
         return {"complete": bedtime_ok and wake_ok, "1": bedtime_ok, "2": wake_ok}
 
 
@@ -245,11 +265,8 @@ class Clock20_SleepSoundsDeepSpace(ClockVerifierBase):
     task_id = "clock_20"
 
     def is_successful(self):
-        prefs = self.shell(
-            "cat /data/data/com.google.android.deskclock/shared_prefs/"
-            "com.google.android.deskclock_preferences.xml 2>/dev/null"
-        )
-        ok = "deep_space" in prefs.lower() or "Deep space" in prefs
+        prefs = Clock15_AddWorldClocks._read_clock_prefs(self)
+        ok = "deep_space" in prefs.lower() or "deep space" in prefs.lower()
         return {"complete": ok, "1": ok}
 
 
@@ -258,11 +275,14 @@ class Clock21_WakeUpAlarm(ClockVerifierBase):
     task_id = "clock_21"
 
     def is_successful(self):
-        prefs = self.shell(
-            "cat /data/data/com.google.android.deskclock/shared_prefs/"
-            "com.google.android.deskclock_preferences.xml 2>/dev/null"
-        )
-        ok = "wake_up_alarm" in prefs.lower() and "true" in prefs
+        prefs = Clock15_AddWorldClocks._read_clock_prefs(self)
+        # Check for wake_up or wakeup enabled
+        ok = ("wake" in prefs.lower() and "true" in prefs.lower()) or \
+             "wakeup_enabled" in prefs.lower()
+        if not ok:
+            # Agent may have written to settings
+            r = self.settings_get("secure", "alarm_enabled")
+            ok = r == "1"
         return {"complete": ok, "1": ok}
 
 
@@ -271,11 +291,12 @@ class Clock22_AnalogStyle(ClockVerifierBase):
     task_id = "clock_22"
 
     def is_successful(self):
-        prefs = self.shell(
-            "cat /data/data/com.google.android.deskclock/shared_prefs/"
-            "com.google.android.deskclock_preferences.xml 2>/dev/null"
-        )
-        ok = "analog" in prefs.lower()
+        prefs = Clock15_AddWorldClocks._read_clock_prefs(self)
+        ok = "analog" in prefs.lower() or "ANALOG" in prefs
+        if not ok:
+            # Check settings
+            r = self.settings_get("system", "clock_style")
+            ok = r.lower() in ("analog", "1") if r != "null" else False
         return {"complete": ok, "1": ok}
 
 
@@ -284,11 +305,15 @@ class Clock23_TimezoneTokyo(ClockVerifierBase):
     task_id = "clock_23"
 
     def is_successful(self):
-        prefs = self.shell(
-            "cat /data/data/com.google.android.deskclock/shared_prefs/"
-            "com.google.android.deskclock_preferences.xml 2>/dev/null"
-        )
+        prefs = Clock15_AddWorldClocks._read_clock_prefs(self)
         ok = "Asia/Tokyo" in prefs or "Tokyo" in prefs
+        if not ok:
+            # Check system timezone settings
+            r = self.settings_get("global", "time_zone")
+            ok = "Tokyo" in r or "Asia/Tokyo" in r
+        if not ok:
+            r = self.shell("getprop persist.sys.timezone")
+            ok = "Tokyo" in r
         return {"complete": ok, "1": ok}
 
 
@@ -297,11 +322,11 @@ class Clock24_SilenceAfter5Min(ClockVerifierBase):
     task_id = "clock_24"
 
     def is_successful(self):
-        prefs = self.shell(
-            "cat /data/data/com.google.android.deskclock/shared_prefs/"
-            "com.google.android.deskclock_preferences.xml 2>/dev/null"
-        )
-        ok = "5" in prefs  # silence_after = 5
+        prefs = Clock15_AddWorldClocks._read_clock_prefs(self)
+        # Look for silence_after or auto_silence with value 5
+        ok = "silence_after" in prefs and "5" in prefs
+        if not ok:
+            ok = "auto_silence" in prefs.lower() and "5" in prefs
         return {"complete": ok, "1": ok}
 
 

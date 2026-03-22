@@ -8,8 +8,10 @@ class Setting1_WifiAutoOff(ADBVerifier):
     task_id = "setting_1"
 
     def is_successful(self):
-        val = self.settings_get("global", "wifi_scan_always_enabled")
-        ok = val == "0"
+        # Android has two related keys — either being 0 counts
+        v1 = self.settings_get("global", "wifi_scan_always_enabled")
+        v2 = self.settings_get("global", "wifi_wakeup_enabled")
+        ok = v1 == "0" or v2 == "0"
         return {"complete": ok, "1": ok}
 
 
@@ -50,12 +52,21 @@ class Setting5_BatteryPercentage(ADBVerifier):
     task_id = "setting_5"
 
     def is_successful(self):
-        # Android 13: settings secure battery_percentage_enabled or
-        # system status_bar_show_battery_percent
-        val1 = self.settings_get("system", "status_bar_show_battery_percent")
-        val2 = self.settings_get("secure", "battery_percentage_enabled")
-        ok = val1 == "1" or val2 == "1"
-        return {"complete": ok, "1": ok}
+        # Try multiple possible keys across Android versions
+        for ns, key in [
+            ("system", "status_bar_show_battery_percent"),
+            ("secure", "battery_percentage_enabled"),
+            ("system", "show_battery_percent"),
+            ("global", "battery_percentage_enabled"),
+        ]:
+            val = self.settings_get(ns, key)
+            if val == "1":
+                return {"complete": True, "1": True}
+        # Fallback: check via QS tiles or statusbar dump
+        result = self.shell("dumpsys statusbar | grep -i battery_percent")
+        if "true" in result.lower():
+            return {"complete": True, "1": True}
+        return {"complete": False, "1": False}
 
 
 class Setting7_DarkTheme(ADBVerifier):
@@ -149,7 +160,9 @@ class Setting21_OpenSettings(ADBVerifier):
 
     def is_successful(self):
         activity = self.foreground_activity()
-        ok = "com.android.settings" in activity
+        # Must be the actual Settings activity, not FallbackHome
+        ok = ("com.android.settings" in activity
+              and "FallbackHome" not in activity)
         return {"complete": ok, "1": ok}
 
 

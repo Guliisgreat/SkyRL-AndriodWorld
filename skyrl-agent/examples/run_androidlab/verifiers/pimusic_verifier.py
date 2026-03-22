@@ -84,8 +84,16 @@ class PiMusic9_CreatePlaylist(PiMusicVerifierBase):
     task_id = "pimusic_9"
 
     def is_successful(self):
+        # Check PiMusic's own database
         playlists = self.get_playlists()
         ok = any("creepy" in p["name"].lower() for p in playlists)
+        if not ok:
+            # Also check Android MediaStore playlists (agent may use content provider)
+            result = self.content_query(
+                "content://media/external/audio/playlists",
+                projection="name",
+            )
+            ok = "creepy" in result.lower()
         return {"complete": ok, "1": ok}
 
 

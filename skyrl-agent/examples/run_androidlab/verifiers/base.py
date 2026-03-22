@@ -81,9 +81,14 @@ class ADBVerifier:
 
     def foreground_activity(self) -> str:
         """Get the current foreground activity."""
+        # mFocusedApp is more reliable than mResumedActivity
         result = self.shell(
-            "dumpsys activity activities | grep mResumedActivity"
+            "dumpsys activity activities | grep mFocusedApp"
         )
+        if not result.strip():
+            result = self.shell(
+                "dumpsys window | grep mCurrentFocus"
+            )
         return result.strip()
 
     def parse_content_rows(self, output: str) -> list:
