@@ -50,11 +50,12 @@ def _evaluate_task(task_def, container_url, finish_description=""):
     metric_type = task_def["metric_type"]
 
     if metric_type == "query_detect":
-        from verifiers.query_detect_judge import judge_query_detect
-        return judge_query_detect(
-            task_id, task_def["task"], finish_description,
-            adb_func=lambda cmd: _adb_for_verify(container_url, cmd),
-        )
+        from verifiers.query_detect_verifier import FUNCTION_MAP as QD_MAP
+        qd_cls = QD_MAP.get(task_id)
+        if qd_cls:
+            qd = qd_cls(container_url)
+            return qd.is_successful(agent_answer=finish_description)
+        return {"complete": False, "no_verifier": True}
     else:
         from verifiers.verifier_map import get_verifier
         verifier_cls = get_verifier(task_id)

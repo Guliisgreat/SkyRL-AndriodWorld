@@ -66,47 +66,17 @@ if not os.path.exists(ANDROID_ENV_SCRIPT):
 
 # ─── System prompt ───────────────────────────────────────────────────────────
 
-ANDROIDLAB_SYSTEM_PROMPT = """You are an Android device automation agent. You interact with an Android emulator through ADB commands via a helper script.
-
-## Tool
-
-You have one tool: `python {android_env_script} adb "<adb_command>"`
-
-Examples:
-- `python {android_env_script} adb "adb shell input tap 540 960"`
-- `python {android_env_script} adb "adb shell settings get system screen_brightness"`
-- `python {android_env_script} adb "adb shell content query --uri content://com.android.calendar/events"`
-- `python {android_env_script} adb "adb shell am start -n com.android.settings/.Settings"`
-
-When done, call: `python {android_env_script} finish --status complete --description "<your answer or summary>"`
-If the task asks a question, put the answer in the --description field.
-
-## Important Context
-
-- The current date on the device is **May 10, 2024** (2024-05-10).
-- You are interacting with an Android emulator that has specific apps pre-installed with pre-loaded data.
-- Use ADB shell commands to interact with the device. You can:
-  - Tap, swipe, type text via `input` commands
-  - Query app databases via `content query`
-  - Modify settings via `settings put`
-  - Launch apps via `am start` or `monkey`
-  - Query system state via `getprop`, `dumpsys`, etc.
-- After each ADB command, you'll see the accessibility tree showing current UI state.
-- For information retrieval tasks, explore the app to find the answer, then call finish with the answer.
-- For operation tasks, perform the required action, then call finish.
-
-## Strategy
-
-1. First understand what the task requires (query vs operation)
-2. Launch the target app if needed
-3. For queries: navigate to find the information, then finish with the answer
-4. For operations: perform the action step by step, then finish
-5. Use the accessibility tree to understand current UI state and find interactive elements
-"""
-
-
 def build_system_prompt():
-    return ANDROIDLAB_SYSTEM_PROMPT.format(android_env_script=ANDROID_ENV_SCRIPT)
+    """Load the optimized_terminal_v2 prompt from AndroidWorld — unchanged."""
+    import importlib.util
+    prompt_path = os.path.join(
+        os.path.dirname(ANDROID_ENV_SCRIPT),
+        "prompts", "optimized_terminal_v2.py",
+    )
+    spec = importlib.util.spec_from_file_location("prompt_mod", prompt_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.build_system_prompt(ANDROID_ENV_SCRIPT)
 
 
 # ─── Core: run one task ─────────────────────────────────────────────────────
@@ -225,12 +195,14 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     reward = 0.0
     eval_result = {}
     if metric_type == "query_detect":
-        from verifiers.query_detect_judge import judge_query_detect
-        eval_result = judge_query_detect(
-            task_id, task_def["task"], finish_description,
-            adb_func=lambda cmd: _adb_for_verify(container_url, cmd),
-        )
-        reward = 1.0 if eval_result.get("complete") else 0.0
+        from verifiers.query_detect_verifier import FUNCTION_MAP as QD_MAP
+        qd_cls = QD_MAP.get(task_id)
+        if qd_cls:
+            qd = qd_cls(container_url)
+            eval_result = qd.is_successful(agent_answer=finish_description)
+            reward = 1.0 if eval_result.get("complete") else 0.0
+        else:
+            eval_result = {"complete": False, "no_verifier": True}
     else:
         from verifiers.verifier_map import get_verifier
         verifier_cls = get_verifier(task_id)

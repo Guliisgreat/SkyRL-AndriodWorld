@@ -73,6 +73,13 @@ def get_dynamic_answer(task_id: str, adb_func) -> str:
         return adb_func("adb shell settings list system | grep volume_ring_speaker").strip()
     elif task_id == "setting_10":
         return adb_func("adb shell settings list system | grep volume_alarm_speaker").strip()
+    elif task_id == "setting_11":
+        locale = adb_func("adb shell settings get secure tts_default_locale").strip()
+        if locale.startswith("zh"):
+            return "Chinese"
+        return locale
+    elif task_id == "setting_12":
+        return adb_func("adb shell date").strip()
     elif task_id == "setting_14":
         return adb_func("adb shell getprop persist.sys.timezone").strip()
     elif task_id == "setting_17":
