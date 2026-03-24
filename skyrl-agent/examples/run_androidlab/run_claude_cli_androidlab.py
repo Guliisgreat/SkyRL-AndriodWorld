@@ -66,12 +66,16 @@ if not os.path.exists(ANDROID_ENV_SCRIPT):
 
 # ─── System prompt ───────────────────────────────────────────────────────────
 
-def build_system_prompt():
-    """Load the optimized_terminal_v2 prompt from AndroidWorld — unchanged."""
+def build_system_prompt(version="v2"):
+    """Load AndroidWorld prompt. v1=bash-only, v2=bash+tools."""
     import importlib.util
+    filename = {
+        "v1": "optimized_terminal_v1.py",
+        "v2": "optimized_terminal_v2.py",
+    }.get(version, "optimized_terminal_v2.py")
     prompt_path = os.path.join(
         os.path.dirname(ANDROID_ENV_SCRIPT),
-        "prompts", "optimized_terminal_v2.py",
+        "prompts", filename,
     )
     spec = importlib.util.spec_from_file_location("prompt_mod", prompt_path)
     mod = importlib.util.module_from_spec(spec)
@@ -395,6 +399,9 @@ def main():
 
     parser.add_argument("--pool-size", type=int, default=8,
                         help="Parallel workers (broker mode)")
+    parser.add_argument("--prompt-version", default="v2",
+                        choices=["v1", "v2"],
+                        help="v1=bash-only, v2=bash+tools (default: v2)")
 
     args = parser.parse_args()
 
@@ -415,7 +422,7 @@ def main():
     else:
         model_short = args.model.replace("-", "").replace(".", "").replace("/", "")
         ts = time.strftime("%y%m%d_%H%M")
-        exp_name = f"AndroidLab_ClaudeCLI_{model_short}_{ts}"
+        exp_name = f"AndroidLab_ClaudeCLI_{model_short}_{args.prompt_version}_{ts}"
         output_dir = os.path.join(_EXAMPLES_DIR, os.pardir, "results", exp_name)
         output_dir = os.path.abspath(output_dir)
         os.makedirs(output_dir, exist_ok=True)
@@ -427,7 +434,7 @@ def main():
         print(f"ERROR: android_env.py not found at {ANDROID_ENV_SCRIPT}")
         return 1
 
-    system_prompt = build_system_prompt()
+    system_prompt = build_system_prompt(version=args.prompt_version)
 
     from functools import partial
     task_runner = partial(
