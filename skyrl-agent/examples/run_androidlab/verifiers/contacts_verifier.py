@@ -9,20 +9,31 @@ class ContactsVerifierBase(ADBVerifier):
     CONTACTS_URI = "content://com.android.contacts"
 
     def get_contact_data(self, display_name: str) -> list:
-        """Get all data rows for a contact by display name."""
-        result = self.content_query(
-            f"{self.CONTACTS_URI}/data",
-            projection="raw_contact_id:mimetype:data1:data2:data3",
-        )
-        rows = self.parse_content_rows(result)
-        # Find raw_contact_id(s) for this name
-        contact_ids = set()
-        for row in rows:
-            if (row.get("mimetype") == "vnd.android.cursor.item/name"
-                    and row.get("data1", "").strip() == display_name):
-                contact_ids.add(row.get("raw_contact_id"))
-        # Return all data for those contact IDs
-        return [r for r in rows if r.get("raw_contact_id") in contact_ids]
+        """Get all data rows for a contact by display name.
+
+        Retries once after 2s if no match found (content provider sync delay).
+        """
+        import time as _time
+        for attempt in range(2):
+            result = self.content_query(
+                f"{self.CONTACTS_URI}/data",
+                projection="raw_contact_id:mimetype:data1:data2:data3",
+            )
+            rows = self.parse_content_rows(result)
+            # Find raw_contact_id(s) (case-insensitive, partial match)
+            contact_ids = set()
+            target = display_name.strip().lower()
+            for row in rows:
+                if row.get("mimetype") == "vnd.android.cursor.item/name":
+                    data1 = row.get("data1", "").strip().lower()
+                    if data1 == target or target in data1 or data1 in target:
+                        contact_ids.add(row.get("raw_contact_id"))
+            data = [r for r in rows if r.get("raw_contact_id") in contact_ids]
+            if data:
+                return data
+            if attempt == 0:
+                _time.sleep(2)  # retry after sync delay
+        return []
 
     def contact_exists(self, display_name: str) -> bool:
         return len(self.get_contact_data(display_name)) > 0

@@ -57,12 +57,21 @@ class ADBVerifier:
         return self.shell(f"settings get {namespace} {key}").strip()
 
     def sqlite_query(self, db_path: str, sql: str) -> str:
-        """Query a SQLite database. Returns pipe-separated output."""
-        # Escape single quotes in SQL by doubling them
-        escaped_sql = sql.replace("'", "'\\''")
-        return self.shell(
-            f"'sqlite3 -header {db_path} \"{escaped_sql}\"'"
-        )
+        """Query a SQLite database. Returns pipe-separated output.
+
+        Uses base64 encoding to bypass shell quoting issues.
+        Runs WAL checkpoint first for WAL-mode databases.
+        """
+        import base64
+        # Checkpoint WAL for known WAL-mode databases
+        wal_dbs = ["cantook.db", "songinfodatabase"]
+        if any(w in db_path for w in wal_dbs):
+            wal_sql = "PRAGMA wal_checkpoint(TRUNCATE);"
+            wal_enc = base64.b64encode(wal_sql.encode()).decode()
+            self.adb(f'adb shell "echo {wal_enc} | base64 -d | sqlite3 {db_path}"')
+        # Run the actual query (with -header flag for column names)
+        encoded = base64.b64encode(sql.encode()).decode()
+        return self.adb(f'adb shell "echo {encoded} | base64 -d | sqlite3 -header {db_path}"')
 
     def content_query(self, uri: str, projection: str = "",
                       where: str = "") -> str:
