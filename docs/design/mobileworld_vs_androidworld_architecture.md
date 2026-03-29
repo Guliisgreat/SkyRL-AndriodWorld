@@ -143,20 +143,27 @@
 
 | Feature | AndroidWorld (2026) | MobileWorld |
 |---------|-------------------|-------------|
-| **Docker Image** | `androidworld:v9` (~5GB) | `ghcr.io/tongyi-mai/mobile_world:latest` (~21GB) |
-| **Network Mode** | Host | Bridge |
+| **Docker Image** | `androidworld:full_adb_agent` (~5GB) | `ghcr.io/tongyi-mai/mobile_world:latest` (~21GB) |
+| **Network Mode** | Host (shared namespace) | Bridge (isolated, port-mapped) |
 | **Emulator** | Pixel 6, API 33/34 | Pixel 8, API 34 |
 | **Total Tasks** | 116 | 201 |
 | **Task Types** | GUI-only | GUI-only + User-Interaction + MCP |
-| **Apps** | ~15 (open-source: Simple*, Markor, etc.) | ~20 (Google + Mastodon + Mattermost + Mall) |
-| **Backend Services** | None | Mastodon (6 containers) + Mattermost (2 containers) |
+| **Apps** | ~15 (open-source: Simple*, Markor, Bluecoins, Joplin, etc.) | ~20 (Google + Mastodon + Mattermost + Mall) |
+| **Backend Services** | None (standalone) | Mastodon (6 containers) + Mattermost (2 containers) |
 | **Docker-in-Docker** | No | Yes (8 sub-containers for backends) |
-| **State Management** | Programmatic setup/teardown | AVD snapshot restore (`init_state`) |
-| **Server Port** | Dynamic (env_id-based) | 6800 (configurable) |
-| **ADB Port** | 5037 + env_id (host network) | 5556 (bridge, socat relay) |
+| **State Management** | Snapshot restore via `/reset` + gRPC | AVD snapshot restore via `/task/init` |
+| **Server Port** | 5000 + 2*env_id (dynamic) | 6800 (configurable via SERVER_PORT) |
+| **ADB Port** | 5037 + env_id (host) | 5556 internal, mapped externally (bridge) |
+| **gRPC Port** | emulator_port + 3000 | N/A |
 | **Verification** | Python functions (host-side) | Rule-based (server-side via /task/eval) |
 | **Eval Location** | Host process calls verifier | Container server runs verifier |
-| **Server Endpoints** | 4 (/health, /deep_health, /reset, /step_adb) | 15+ (task lifecycle, screenshots, XML, SMS, etc.) |
+| **Server Endpoints** | 7 (/health, /deep_health, /reset, /step, /step_adb, /get_n_tasks, /env_log) | 15+ (task lifecycle, screenshots, XML, SMS, etc.) |
+| **Observation** | Screenshot (base64) + UI a11y tree + task text | Screenshot + a11y tree (via /xml) |
+| **Orchestration** | Full: PortAllocator → ContainerFactory → ContainerManager → PoolBroker | Lightweight: mw_cli_common.py wrapper |
+| **Health Monitoring** | Background async + instant failover with backup pool | None (manual restart) |
+| **Failover** | Replace-not-restart with backup containers (<1s) | Manual container restart |
+| **Max Parallel** | 27+ (tested, host network) | 8+ (tested, bridge network) |
+| **Image Variants** | v8, v9, adb, full_adb_agent, 2026 | latest, skyrl, updated |
 
 ## Key Architectural Differences
 
@@ -217,7 +224,40 @@ Host ──────────────────────     Host
 └──────────────────────────┘    └──────────────────────────────┘
 ```
 
-### 4. CLI Solvability (Ground Truth)
+### 4. Container Orchestration Stack
+```
+AndroidWorld:                           MobileWorld:
+
+┌─────────────────────────────────┐    ┌─────────────────────────────┐
+│  ContainerPoolBroker (HTTP)     │    │  (No broker)                │
+│  POST /acquire → lease container│    │                             │
+│  POST /return  → snapshot reset │    │                             │
+│  GET  /status  → pool metrics   │    │                             │
+├─────────────────────────────────┤    │                             │
+│  HealthMonitor (background)     │    │  (No health monitoring)     │
+│  Periodic /health checks        │    │                             │
+│  Instant failover w/ backup     │    │                             │
+│  Replace-not-restart policy     │    │                             │
+├─────────────────────────────────┤    ├─────────────────────────────┤
+│  ContainerManager               │    │  mw_cli_common.py           │
+│  Creates N containers at start  │    │  Simple HTTP wrappers       │
+│  Pool management in memory      │    │  Sequential or threaded     │
+│  Auto-replacement on failure    │    │  Manual health checks       │
+├─────────────────────────────────┤    ├─────────────────────────────┤
+│  ContainerFactory               │    │  `mw env run`  (CLI)        │
+│  Docker API container creation  │    │  Docker API launch          │
+│  Port allocation (PortAllocator)│    │  Static port assignment     │
+│  Health check wait (600s max)   │    │  Ready wait (120s max)      │
+├─────────────────────────────────┤    ├─────────────────────────────┤
+│  PortAllocator                  │    │  Incremental ports          │
+│  server: 5000+2*env_id          │    │  server: 6800+offset        │
+│  emulator: 5574+2*env_id (even) │    │  emulator: 5554 (internal)  │
+│  adb: 5037+env_id               │    │  adb: 5556 (socat relay)    │
+│  grpc: emulator+3000            │    │  viewer: 7860               │
+└─────────────────────────────────┘    └─────────────────────────────┘
+```
+
+### 5. CLI Solvability (Ground Truth)
 ```
 AndroidWorld:                    MobileWorld:
 ┌────────────────────────┐      ┌────────────────────────────┐
