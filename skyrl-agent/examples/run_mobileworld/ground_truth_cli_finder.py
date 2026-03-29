@@ -165,7 +165,26 @@ _ssl_ctx.check_hostname = False
 _ssl_ctx.verify_mode = ssl.CERT_NONE
 
 
-DOCKER_CONTAINER = os.environ.get("MW_DOCKER_CONTAINER", "")
+_DOCKER_CONTAINER_DEFAULT = os.environ.get("MW_DOCKER_CONTAINER", "")
+_thread_local = threading.local()
+
+
+@property
+def _get_docker_container():
+    return getattr(_thread_local, 'docker_container', _DOCKER_CONTAINER_DEFAULT)
+
+
+# Module-level accessor — thread-safe
+def get_docker_container():
+    return getattr(_thread_local, 'docker_container', _DOCKER_CONTAINER_DEFAULT)
+
+
+def set_docker_container(name):
+    _thread_local.docker_container = name
+
+
+# Keep backward compat — but now it's a function
+DOCKER_CONTAINER = _DOCKER_CONTAINER_DEFAULT
 
 
 def mastodon_psql(query, container=None):
@@ -173,24 +192,28 @@ def mastodon_psql(query, container=None):
 
     Returns raw output string. The Mastodon DB runs as docker-in-docker:
     host -> MW container -> mastodon-docker-db-1 -> psql
+
+    Uses subprocess list args (no shell=True) to avoid $$ and quote issues.
     """
-    c = container or DOCKER_CONTAINER
+    c = container or get_docker_container()
     if not c:
         raise RuntimeError("MW_DOCKER_CONTAINER not set for mastodon_psql")
-    cmd = (f'docker exec {c} docker exec mastodon-docker-db-1 '
-           f'psql -U postgres -d mastodon -t -c "{query}"')
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+    r = subprocess.run(
+        ["docker", "exec", c, "docker", "exec", "mastodon-docker-db-1",
+         "psql", "-U", "postgres", "-d", "mastodon", "-t", "-c", query],
+        capture_output=True, text=True, timeout=30)
     return r.stdout.strip()
 
 
 def mastodon_api(method, endpoint, token, data=None, host="localhost"):
     """Call Mastodon REST API. Returns parsed JSON.
 
-    If DOCKER_CONTAINER is set, routes via docker exec curl (bridge mode).
+    If docker container is set (via set_docker_container), routes via docker exec curl (bridge mode).
     """
-    if DOCKER_CONTAINER:
+    _dc = get_docker_container()
+    if _dc:
         # Route through docker exec for bridge-network containers
-        cmd = f'docker exec {DOCKER_CONTAINER} curl -sk -X {method}'
+        cmd = f'docker exec {_dc} curl -sk -X {method}'
         cmd += f' -H "Authorization: Bearer {token}"'
         cmd += f' -H "Host: 10.0.2.2"'
         if data:
@@ -333,7 +356,7 @@ def mm_api(method, endpoint, token, data=None, host="localhost", port=8065):
 
 def mattermost_psql(query, container=None):
     """Execute a PostgreSQL query on the Mattermost DB inside the container."""
-    c = container or DOCKER_CONTAINER
+    c = container or get_docker_container()
     if not c:
         raise RuntimeError("MW_DOCKER_CONTAINER not set for mattermost_psql")
     cmd = (f'docker exec {c} docker exec mattermost-docker-postgres-1 '
@@ -366,7 +389,7 @@ def mm_post_message(channel_id, user_id, message, root_id=""):
     import hashlib
     post_id = hashlib.md5(f"{ts}{channel_id}{message[:20]}".encode()).hexdigest()[:26]
     root_escaped = root_id if root_id else ""
-    c = DOCKER_CONTAINER
+    c = get_docker_container()
     # Write SQL to temp file, copy to MW container, pipe to postgres via stdin
     import tempfile as _tf2
     with _tf2.NamedTemporaryFile(mode='w', suffix='.sql', delete=False) as f:
@@ -415,7 +438,7 @@ def restart_mw_server(base_url, container=None):
     Some tasks have a bug where initialize_task_hook() appends to instance lists
     without clearing them. Restarting the server creates fresh task instances.
     """
-    c = container or DOCKER_CONTAINER
+    c = container or get_docker_container()
     if not c:
         return
     log(f"  Restarting MW server in {c}...")
@@ -1384,7 +1407,7 @@ done
     if not old_fnames:
         return
 
-    c = DOCKER_CONTAINER
+    c = get_docker_container()
     if not c:
         return
 
@@ -1487,7 +1510,7 @@ def _(s, url, dev):
     # Verifier: 3 images from toot 115319571928036858 saved to device, matching by MD5/phash
     # Get image file paths from DB, copy from Mastodon media dir, push to device
     _mastodon_setup(s)
-    c = DOCKER_CONTAINER
+    c = get_docker_container()
     # Get media attachment file paths from DB
     raw = mastodon_psql(
         "SELECT file_file_name FROM media_attachments WHERE status_id=115319571928036858"
@@ -1852,7 +1875,7 @@ def _next_friday():
 @gt("MattermostSendFileTask")
 def _(s, url, dev):
     _mm_setup()
-    c = DOCKER_CONTAINER
+    c = get_docker_container()
     # Get admin token via docker cp + bash (avoids quoting hell)
     import tempfile as _tf3
     login_script = (
@@ -2065,7 +2088,7 @@ def _(s, url, dev):
                                    tzinfo=timezone.utc).timestamp())
         insert_calendar_event(s, title, ts, ts + 3600)
     # DM to Alex about conflict — create DM via Mattermost API (most reliable)
-    c = DOCKER_CONTAINER
+    c = get_docker_container()
     import tempfile as _tf_rc
     login_sh = (
         '#!/bin/bash\n'
@@ -2192,7 +2215,7 @@ def _(s, url, dev):
             break
         time.sleep(2)
     # Get raw byte count
-    raw = mastodon_psql("SELECT pg_database_size($$mastodon$$)")
+    raw = mastodon_psql("SELECT pg_database_size('mastodon')")
     size_bytes = int(raw.strip()) if raw.strip().isdigit() else 0
     # Custom format matching verifier's _format_size_pretty
     size = float(size_bytes)
@@ -2212,14 +2235,14 @@ def _(s, url, dev):
     else:
         # Fallback: direct DB insert
         owner_acct = mastodon_psql(
-            "SELECT id FROM accounts WHERE username=$$owner$$").strip()
+            "SELECT id FROM accounts WHERE username='owner'").strip()
         mastodon_psql(
             f"INSERT INTO statuses (id, text, account_id, visibility, "
             f"created_at, updated_at, local, uri, url) VALUES ("
-            f"timestamp_id($$statuses$$), $${db_size} {no_space}$$, "
+            f"timestamp_id('statuses'), '{db_size} {no_space}', "
             f"{owner_acct}, 0, NOW(), NOW(), true, "
-            f"$$tag:10.0.2.2,$$ || currval($$statuses_id_seq$$), "
-            f"$$https://10.0.2.2/@owner/$$ || currval($$statuses_id_seq$$))"
+            f"'tag:10.0.2.2,' || currval('statuses_id_seq'), "
+            f"'https://10.0.2.2/@owner/' || currval('statuses_id_seq'))"
         )
 
 
@@ -2236,7 +2259,7 @@ MALL_CALLBACK_DIR = "/app/service/artifacts/emulator-5554/task_callbacks"
 
 def write_mall_callback(task_name, data, container=None):
     """Write a Mall callback JSON file to the server's artifacts directory."""
-    c = container or DOCKER_CONTAINER
+    c = container or get_docker_container()
     import tempfile as _tf_mall
     ts = time.strftime("%Y%m%d_%H%M%S")
     callback = json.dumps(data, ensure_ascii=False)
@@ -2253,7 +2276,7 @@ def write_mall_callback(task_name, data, container=None):
 def _(s, url, dev):
     # Verifier calls GitHub API for fresh stats, then checks email.
     # We call the same API via curl (from the container which has internet).
-    c = DOCKER_CONTAINER
+    c = get_docker_container()
     r = subprocess.run(
         ["docker", "exec", c, "curl", "-s", "https://api.github.com/repos/google-research/android_world"],
         capture_output=True, text=True, timeout=30)
@@ -2279,7 +2302,7 @@ def _(s, url, dev):
 @gt("ChromeSearchBeijingWeatherTask")
 def _(s, url, dev):
     # Verifier calls open-meteo.com for Beijing max temp. We call the same API.
-    c = DOCKER_CONTAINER
+    c = get_docker_container()
     from datetime import datetime
     today = datetime.now().strftime("%Y-%m-%d")
     r = subprocess.run(
@@ -2346,7 +2369,7 @@ def _(s, url, dev):
     # Use Mastodon API to update header with the file.
     _mastodon_setup(s)
     token = get_mastodon_token(s)
-    c = DOCKER_CONTAINER
+    c = get_docker_container()
     # Pull tiger.jpg from device to container
     subprocess.run(["docker", "exec", c, "adb", "-s", "emulator-5554",
                     "pull", "/sdcard/Pictures/tiger.jpg", "/tmp/tiger.jpg"],
@@ -2367,11 +2390,14 @@ def _(s, url, dev):
     # Create a 9:16 image using Python PIL in the container
     _mastodon_setup(s)
     token = get_mastodon_token(s)
-    c = DOCKER_CONTAINER
-    # Create 9:16 image (e.g., 540x960) from existing photo
+    c = get_docker_container()
+    # Pull image from device, crop to 9:16 (540x960) using PIL
+    subprocess.run(["docker", "exec", c, "adb", "-s", "emulator-5554",
+                    "pull", "/sdcard/Pictures/tiger.jpg", "/tmp/src_photo.jpg"],
+                   capture_output=True, timeout=30)
     subprocess.run(
         ["docker", "exec", c, "/app/service/.venv/bin/python3", "-c",
-         "from PIL import Image; img=Image.open('/tmp/tiger.jpg').resize((540,960)); img.save('/tmp/cropped.jpg')"],
+         "from PIL import Image; img=Image.open('/tmp/src_photo.jpg').resize((540,960)); img.save('/tmp/cropped.jpg')"],
         capture_output=True, timeout=15)
     # Upload media
     media_resp = subprocess.run(
@@ -2421,7 +2447,7 @@ def _(s, url, dev):
     # Use a real Google Maps short link for Eiffel Tower.
     _mastodon_setup(s)
     token = get_mastodon_token(s)
-    c = DOCKER_CONTAINER
+    c = get_docker_container()
     # Pull Eiffel Tower image from device
     subprocess.run(["docker", "exec", c, "adb", "-s", "emulator-5554",
                     "pull", "/sdcard/Download/Eiffel_Tower.jpg", "/tmp/eiffel.jpg"],
@@ -2465,7 +2491,7 @@ def _(s, url, dev):
     # Verifier: toot with "智能手表" + "1199" + matching image (watch.jpg)
     _mastodon_setup(s)
     token = get_mastodon_token(s)
-    c = DOCKER_CONTAINER
+    c = get_docker_container()
     # Upload watch image from assets
     media_resp = subprocess.run(
         ["docker", "exec", c, "curl", "-sk", "-X", "POST",
@@ -2504,6 +2530,10 @@ def log(msg):
 def run_single_task(task_name, base_url, serial, device_id="emulator-5554",
                     max_attempts=2):
     """Run ground truth for a single task with retry."""
+    # Set thread-local DOCKER_CONTAINER based on adb_serial
+    if serial.startswith("docker:"):
+        set_docker_container(serial.split(":")[1])
+
     if task_name in GUI_REQUIRED:
         return {
             "task_name": task_name, "status": "gui_required",
