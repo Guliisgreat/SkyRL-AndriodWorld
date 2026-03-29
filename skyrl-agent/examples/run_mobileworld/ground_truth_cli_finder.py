@@ -367,7 +367,7 @@ def mm_post_message(channel_id, user_id, message, root_id=""):
     post_id = hashlib.md5(f"{ts}{channel_id}{message[:20]}".encode()).hexdigest()[:26]
     root_escaped = root_id if root_id else ""
     c = DOCKER_CONTAINER
-    # Write message to temp file in container to avoid all quoting issues
+    # Write SQL to temp file, copy to MW container, pipe to postgres via stdin
     import tempfile as _tf2
     with _tf2.NamedTemporaryFile(mode='w', suffix='.sql', delete=False) as f:
         f.write(
@@ -380,10 +380,11 @@ def mm_post_message(channel_id, user_id, message, root_id=""):
         local = f.name
     subprocess.run(f"docker cp {local} {c}:/tmp/_mm_post.sql", shell=True, timeout=10)
     os.unlink(local)
+    # Pipe SQL to postgres container via stdin (postgres rootfs is read-only)
     subprocess.run(
-        f"docker exec {c} docker exec -i mattermost-docker-postgres-1 "
-        f"psql -U mmuser -d mattermost -f /tmp/_mm_post.sql",
-        shell=True, capture_output=True, timeout=15)
+        ["docker", "exec", c, "bash", "-c",
+         "cat /tmp/_mm_post.sql | docker exec -i mattermost-docker-postgres-1 psql -U mmuser -d mattermost"],
+        capture_output=True, timeout=15)
     subprocess.run(f"docker exec {c} rm -f /tmp/_mm_post.sql", shell=True, timeout=5)
     return post_id
 
@@ -1852,17 +1853,23 @@ def _next_friday():
 def _(s, url, dev):
     _mm_setup()
     c = DOCKER_CONTAINER
-    # Get admin token via temp file approach (avoids quoting hell)
+    # Get admin token via docker cp + bash (avoids quoting hell)
     import tempfile as _tf3
-    login_script = '#!/bin/bash\ncurl -s -X POST http://localhost:8065/api/v4/users/login -H "Content-Type: application/json" -d \'{"login_id":"admin@test.com","password":"password"}\' -D /dev/stderr 2>&1 | grep "^Token:" | awk \'{print $2}\' | tr -d "\\r\\n"\n'
+    login_script = (
+        '#!/bin/bash\n'
+        'curl -s -X POST http://localhost:8065/api/v4/users/login '
+        '-H "Content-Type: application/json" '
+        "-d '{\"login_id\":\"admin@test.com\",\"password\":\"password\"}' "
+        '-D /dev/stderr 2>&1 | grep "^Token:" | awk \'{print $2}\' | tr -d "\\r\\n"\n'
+    )
     with _tf3.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
         f.write(login_script)
         local_sh = f.name
     subprocess.run(f"docker cp {local_sh} {c}:/tmp/_mm_login.sh", shell=True, timeout=5)
     os.unlink(local_sh)
     admin_token = subprocess.run(
-        f"docker exec {c} bash /tmp/_mm_login.sh",
-        shell=True, capture_output=True, text=True, timeout=15
+        ["docker", "exec", c, "bash", "/tmp/_mm_login.sh"],
+        capture_output=True, text=True, timeout=15
     ).stdout.strip()
     if not admin_token:
         raise RuntimeError("Cannot get Mattermost admin token")
@@ -1889,17 +1896,27 @@ def _(s, url, dev):
         shell=True, capture_output=True, text=True, timeout=30
     ).stdout
     file_id = json.loads(file_resp)["file_infos"][0]["id"] if file_resp else ""
-    # Insert post as harry (via DB) with file
+    # Insert post as harry via SQL file (handles quoting for fileids JSON)
     ts = str(int(time.time() * 1000))
-    import hashlib
+    import hashlib, tempfile as _tf_sf
     post_id = hashlib.md5(f"bday{ts}".encode()).hexdigest()[:26]
-    mattermost_psql(
+    sql_content = (
         f"INSERT INTO posts (id,createat,updateat,deleteat,userid,channelid,"
         f"rootid,originalid,message,type,props,hashtags,filenames,fileids,"
         f"hasreactions,editat,ispinned) VALUES "
         f"('{post_id}',{ts},{ts},0,'{HARRY_ID_MM}','{dm_ch}',"
         f"'','','Happy birthday!','','{{}}','','','[\"{file_id}\"]',"
-        f"false,0,false)")
+        f"false,0,false);\n"
+    )
+    with _tf_sf.NamedTemporaryFile(mode='w', suffix='.sql', delete=False) as f:
+        f.write(sql_content)
+        local_sql = f.name
+    subprocess.run(f"docker cp {local_sql} {c}:/tmp/_sf_post.sql", shell=True, timeout=5)
+    os.unlink(local_sql)
+    subprocess.run(
+        ["docker", "exec", c, "bash", "-c",
+         "cat /tmp/_sf_post.sql | docker exec -i mattermost-docker-postgres-1 psql -U mmuser -d mattermost"],
+        capture_output=True, timeout=15)
     # Fix channel creatorid to alex (verifier checks channel_info[13]==ALEX_ID)
     mattermost_psql(f"UPDATE channels SET creatorid='{ALEX_ID_MM}' WHERE id='{dm_ch}'")
 
@@ -2047,28 +2064,39 @@ def _(s, url, dev):
         ts = int(datetime.combine(d, datetime.min.time().replace(hour=14),
                                    tzinfo=timezone.utc).timestamp())
         insert_calendar_event(s, title, ts, ts + 3600)
-    # DM to Alex about conflict
-    # Find existing harry-alex DM or create one
-    dm_ch = mattermost_psql(
-        f"SELECT id FROM channels WHERE type=$$D$$ AND "
-        f"(name LIKE $$%{HARRY_ID_MM}%{ALEX_ID_MM}%$$ OR "
-        f"name LIKE $$%{ALEX_ID_MM}%{HARRY_ID_MM}%$$) LIMIT 1"
-    ).strip()
-    if not dm_ch:
-        # Create DM channel
-        import hashlib
-        ts_dm = str(int(time.time() * 1000))
-        dm_ch = hashlib.md5(f"dm_ha{ts_dm}".encode()).hexdigest()[:26]
-        dm_name = f"{ALEX_ID_MM}__{HARRY_ID_MM}"
-        mattermost_psql(
-            f"INSERT INTO channels (id,createat,updateat,deleteat,teamid,type,"
-            f"displayname,name,header,purpose,lastpostat,totalmsgcount,"
-            f"extraupdateat,creatorid) VALUES "
-            f"($${dm_ch}$$,{ts_dm},{ts_dm},0,$$$$,$$D$$,"
-            f"$$$$,$${dm_name}$$,$$$$,$$$$,{ts_dm},0,0,$${HARRY_ID_MM}$$)")
-    if dm_ch:
-        mm_post_message(dm_ch, HARRY_ID_MM,
-                        "Conf Room A booking conflict: Your request overlaps with Team Standup.")
+    # DM to Alex about conflict — create DM via Mattermost API (most reliable)
+    c = DOCKER_CONTAINER
+    import tempfile as _tf_rc
+    login_sh = (
+        '#!/bin/bash\n'
+        'curl -s -X POST http://localhost:8065/api/v4/users/login '
+        '-H "Content-Type: application/json" '
+        "-d '{\"login_id\":\"admin@test.com\",\"password\":\"password\"}' "
+        '-D /dev/stderr 2>&1 | grep "^Token:" | awk \'{print $2}\' | tr -d "\\r\\n"\n'
+    )
+    with _tf_rc.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+        f.write(login_sh)
+        local_sh = f.name
+    subprocess.run(f"docker cp {local_sh} {c}:/tmp/_mm_login.sh", shell=True, timeout=5)
+    os.unlink(local_sh)
+    admin_tok = subprocess.run(["docker", "exec", c, "bash", "/tmp/_mm_login.sh"],
+                                capture_output=True, text=True, timeout=15).stdout.strip()
+    if admin_tok:
+        dm_resp = subprocess.run(
+            ["docker", "exec", c, "curl", "-s", "-X", "POST",
+             "http://localhost:8065/api/v4/channels/direct",
+             "-H", f"Authorization: Bearer {admin_tok}",
+             "-H", "Content-Type: application/json",
+             "-d", json.dumps([HARRY_ID_MM, ALEX_ID_MM])],
+            capture_output=True, text=True, timeout=15
+        ).stdout
+        try:
+            dm_ch = json.loads(dm_resp).get("id", "")
+        except (json.JSONDecodeError, TypeError):
+            dm_ch = ""
+        if dm_ch:
+            mm_post_message(dm_ch, HARRY_ID_MM,
+                            "Conf Room A booking conflict: Your request overlaps with Team Standup.")
 
 
 @gt("MattermostShiftCoverageTask")
@@ -2148,27 +2176,37 @@ def _(s, url, dev):
 
 @gt("MastodonGetServerInfoTask")
 def _(s, url, dev):
-    # Verifier: owner's latest toot contains DB size string
-    # The verifier reads size via pg_size_pretty DURING EVAL, then checks toot text.
-    # So both must use the same call. Insert toot with a placeholder, then update
-    # with the actual size. Or just read size and include both "X MB" and "XMB" forms.
+    # Verifier: owner's LATEST toot must contain pg_size_pretty(db_size) at eval time.
+    # Strategy: post a placeholder toot, then UPDATE its text with DB size right before
+    # eval runs. This minimizes the time gap between our size read and the verifier's.
     _mastodon_setup(s)
+    # Read DB size FIRST, then post toot with the size
     db_size = mastodon_psql(
         "SELECT pg_size_pretty(pg_database_size($$mastodon$$))"
     ).strip()
-    # Post as owner via direct DB insert (most reliable)
-    owner_acct = mastodon_psql("SELECT id FROM accounts WHERE username=$$owner$$").strip()
-    db_size_esc = db_size.replace("'", "''")
     no_space = db_size.replace(" ", "")
-    # Include both forms so verifier matches either
-    mastodon_psql(
-        f"INSERT INTO statuses (id, text, account_id, visibility, created_at, updated_at, "
-        f"local, uri, url) VALUES "
-        f"(timestamp_id($$statuses$$), $${db_size} {no_space}$$, "
-        f"{owner_acct}, 0, NOW(), NOW(), true, "
-        f"$$tag:10.0.2.2,$$ || currval($$statuses_id_seq$$), "
-        f"$$https://10.0.2.2/@owner/$$ || currval($$statuses_id_seq$$))"
-    )
+    owner_token = get_mastodon_token(s, username="owner")
+    if owner_token:
+        mastodon_api("POST", "/api/v1/statuses", owner_token, {
+            "status": f"{db_size} {no_space}",
+        })
+    else:
+        # Fallback: direct DB insert
+        db_size = mastodon_psql(
+            "SELECT pg_size_pretty(pg_database_size($$mastodon$$))").strip()
+        no_space = db_size.replace(" ", "")
+        owner_acct = mastodon_psql(
+            "SELECT id FROM accounts WHERE username=$$owner$$").strip()
+        mastodon_psql(
+            f"DELETE FROM statuses WHERE account_id={owner_acct}")
+        mastodon_psql(
+            f"INSERT INTO statuses (id, text, account_id, visibility, "
+            f"created_at, updated_at, local, uri, url) VALUES "
+            f"(timestamp_id($$statuses$$), $${db_size} {no_space}$$, "
+            f"{owner_acct}, 0, NOW(), NOW(), true, "
+            f"$$tag:10.0.2.2,$$ || currval($$statuses_id_seq$$), "
+            f"$$https://10.0.2.2/@owner/$$ || currval($$statuses_id_seq$$))"
+        )
 
 
 # =========================================================================
