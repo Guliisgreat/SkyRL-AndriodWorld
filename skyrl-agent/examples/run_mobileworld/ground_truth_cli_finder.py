@@ -408,6 +408,44 @@ def teardown_task(base_url, task_name, device_id):
                      {"task_name": task_name, "req_device": device_id})
 
 
+def restart_mw_server(base_url, container=None):
+    """Restart the MobileWorld server process to clear accumulated task state.
+
+    Some tasks have a bug where initialize_task_hook() appends to instance lists
+    without clearing them. Restarting the server creates fresh task instances.
+    """
+    c = container or DOCKER_CONTAINER
+    if not c:
+        return
+    log(f"  Restarting MW server in {c}...")
+    subprocess.run(f"docker exec {c} pkill -f 'mobile-world server'",
+                   shell=True, capture_output=True, timeout=10)
+    time.sleep(3)
+    subprocess.run(
+        f"docker exec {c} bash -c 'cd /app/service && "
+        f"nohup uv run mobile-world server --port 6800 > /var/log/server.log 2>&1 &'",
+        shell=True, capture_output=True, timeout=15)
+    # Wait for server to be ready
+    for _ in range(20):
+        try:
+            if check_health(base_url):
+                # Re-init device
+                http_post(f"{base_url}/init", {"device": "emulator-5554"})
+                log(f"  Server restarted OK")
+                return
+        except Exception:
+            pass
+        time.sleep(1)
+    log(f"  WARNING: Server restart may have failed")
+
+
+# Tasks that need server restart before init (state accumulation bug)
+NEEDS_SERVER_RESTART = {
+    "BidFileRenameTask", "InvoiceReceiptCopyTask", "InvoiceReceiptCopyAskUserTask",
+    "CVEmailTask", "ReviewPaperEmailTask",
+}
+
+
 def send_answer(base_url, device_id, answer_text):
     """Send answer action to populate interaction_cache."""
     return http_post(f"{base_url}/step", {
@@ -792,15 +830,13 @@ done
 
 @gt("ReviewPaperEmailTask")
 def _(s, url, dev):
-    # Write a shell script to find and move review PDFs
+    # Move review_*.pdf to paper dir. Simple mv preserving original names.
     script = r"""#!/system/bin/sh
 mkdir -p /sdcard/Documents/paper
-# Find review_*.pdf files NOT already in paper/
 find /sdcard/Documents -name 'review_*.pdf' ! -path '*/paper/*' 2>/dev/null | while read f; do
   bn=$(basename "$f")
   mv "$f" "/sdcard/Documents/paper/$bn"
 done
-# List all files in paper dir
 ls /sdcard/Documents/paper/
 """
     write_file(s, "/sdcard/move_reviews.sh", script)
@@ -2195,6 +2231,10 @@ def run_single_task(task_name, base_url, serial, device_id="emulator-5554",
                     teardown_task(base_url, task_name, device_id)
                 except Exception:
                     pass
+
+            # Restart server for tasks with state accumulation bug
+            if task_name in NEEDS_SERVER_RESTART and attempt == 1:
+                restart_mw_server(base_url)
 
             # Init
             init_task(base_url, task_name, device_id)
