@@ -189,18 +189,20 @@ def exec_on_container(container, device, command, timeout=30):
 
         else:
             # Mastodon/external API — route via docker exec curl
+            # Rebuild curl command from the http command
             curl_cmd = ["docker", "exec", container, "curl", "-sk", "-X", method]
 
-            # Parse headers
+            # Parse all headers
             for hm in re.finditer(r'--headers\s+"([^"]+)"', rest):
                 curl_cmd.extend(["-H", hm.group(1)])
 
-            # Parse data
-            data_m = re.search(r"--data\s+'(.+?)(?:'|$)", rest)
+            # Parse data (try single-quoted first, then double-quoted)
+            data_m = re.search(r"--data\s+'(.+?)'(?:\s|$)", rest, re.DOTALL)
+            if not data_m:
+                data_m = re.search(r'--data\s+"(.+?)"(?:\s|$)', rest, re.DOTALL)
             if data_m:
-                curl_cmd.extend(["-d", data_m.group(1)])
-                if "Content-Type" not in rest:
-                    curl_cmd.extend(["-H", "Content-Type: application/json"])
+                data_str = data_m.group(1)
+                curl_cmd.extend(["-H", "Content-Type: application/json", "-d", data_str])
 
             # Handle multipart
             if "multipart:" in rest:
@@ -210,8 +212,17 @@ def exec_on_container(container, device, command, timeout=30):
 
             curl_cmd.append(url)
 
-            r = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=timeout)
-            return r.stdout.strip()[:2000]
+            try:
+                r = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=timeout)
+                return r.stdout.strip()[:2000]
+            except subprocess.TimeoutExpired:
+                return "ERROR: curl timeout"
+            except Exception as e:
+                return f"ERROR: {e}"
+
+    elif command.startswith("# PLACEHOLDER"):
+        # Placeholder for complex SQL — skip, the prior oracle GT handles these
+        return "PLACEHOLDER_SKIPPED"
 
     elif command.startswith("#"):
         # Comment/reasoning — no execution
@@ -319,19 +330,60 @@ def verify_task(traj_path, container, device, server_url):
             token = extract_token(observation)
             if token:
                 variables["TOKEN"] = token
+                variables["OWNER_TOKEN"] = token  # may be overwritten later
 
-        # Extract IDs from search results
-        if observation:
-            # Account IDs
-            for m in re.finditer(r'"id"\s*:\s*"(\d+)"', observation):
-                if "account_id" not in variables:
-                    variables["account_id"] = m.group(1)
-            # List IDs
-            for m in re.finditer(r'"id"\s*:\s*"([a-zA-Z0-9_-]+)"', observation):
-                if "list_id" not in variables:
-                    variables["list_id"] = m.group(1)
-                if "filter_id" not in variables:
-                    variables["filter_id"] = m.group(1)
+        if "SELECT id" in command and "accounts" in command and observation:
+            # Extract Mastodon account IDs
+            for line in observation.split("\n"):
+                line = line.strip()
+                if line and line.isdigit():
+                    variables["account_id"] = line
+                    break
+
+        # Extract IDs from JSON search results
+        if observation and observation.startswith("{") or observation.startswith("["):
+            try:
+                data = json.loads(observation)
+                # Mastodon search results
+                if isinstance(data, dict):
+                    if "accounts" in data:
+                        for acct in data["accounts"]:
+                            variables["account_id"] = str(acct.get("id", ""))
+                            uname = acct.get("username", "").lower()
+                            variables[f"{uname}_id"] = str(acct.get("id", ""))
+                    if "statuses" in data:
+                        for st in data["statuses"]:
+                            variables["status_id"] = str(st.get("id", ""))
+                    if "id" in data:
+                        # Could be list, filter, status, etc.
+                        vid = str(data["id"])
+                        variables["last_id"] = vid
+                        if "list" in command.lower():
+                            variables["list_id"] = vid
+                        if "filter" in command.lower():
+                            variables["filter_id"] = vid
+                elif isinstance(data, list):
+                    # Bookmark/favorite/following list
+                    for item in data:
+                        if isinstance(item, dict) and "id" in item:
+                            pass  # Individual IDs handled per-step
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Extract from psql results (pipe-delimited)
+        if observation and "|" in observation and "psql" not in command:
+            pass  # Already handled above
+        if "SELECT id FROM channels" in command and observation:
+            variables["channel_id"] = observation.strip().split("\n")[0].strip()
+        if "SELECT id FROM teams" in command and observation:
+            variables["team_id"] = observation.strip().split("\n")[0].strip()
+        if "SELECT id FROM users" in command and observation:
+            for line in observation.split("\n"):
+                parts = [p.strip() for p in line.split("|")]
+                if len(parts) >= 2:
+                    variables[f"{parts[1].strip()}_id"] = parts[0].strip()
+                elif parts[0].strip():
+                    variables["user_id"] = parts[0].strip()
 
     # Eval
     time.sleep(2)
