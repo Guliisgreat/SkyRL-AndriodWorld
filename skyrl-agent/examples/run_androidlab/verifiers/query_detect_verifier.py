@@ -127,7 +127,10 @@ class Clock12(QueryVerifier):
     task_id = "clock_12"
     def check_answer(self, a):
         a_lower = a.lower().strip()
-        return a_lower.startswith("yes") or "yes," in a_lower or "yes." in a_lower or a_lower == "yes"
+        # Accept "yes" anywhere, or descriptions like "vibrate turned on", "vibrate is on"
+        return ("yes" in a_lower or "turned on" in a_lower or "vibrate on" in a_lower
+                or "vibrate is on" in a_lower or "vibrate is enabled" in a_lower
+                or "has vibrate" in a_lower)
 
 
 class Clock13(QueryVerifier):

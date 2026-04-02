@@ -277,12 +277,11 @@ def _adb(container_url, command):
 
 def dump_and_compress_xml(container_url):
     """Dump XML from emulator and compress it."""
-    resp = _adb(
-        container_url,
-        "adb shell uiautomator dump /sdcard/window_dump.xml "
-        "&& adb shell cat /sdcard/window_dump.xml"
-    )
-    raw = resp.get("command_output", "")
+    # Two separate calls to avoid shell quoting issues with &&
+    _adb(container_url, "adb shell uiautomator dump /sdcard/window_dump.xml")
+    time.sleep(0.5)
+    resp = _adb(container_url, "adb shell cat /sdcard/window_dump.xml")
+    raw = resp.get("command_output", "") if isinstance(resp, dict) else ""
     # Extract XML from output (may have "UI hierarchy dumped" prefix)
     xml_start = raw.find("<?xml")
     if xml_start >= 0:
@@ -418,9 +417,44 @@ def run_gui_agent(task_def, container_url, model="gpt-4o", max_rounds=25,
     total_output_tokens = 0
     traces = []  # Save for post-hoc evaluation
 
+    # Per-step XML saves for post-hoc XML verification (matching original eval.py)
+    _xml_save_dir = ""
+    try:
+        _out_path = os.environ.get("ANDROIDLAB_OUTPUT_PATH", "")
+        if _out_path:
+            _xml_save_dir = os.path.join(os.path.dirname(_out_path), "xml_dumps", task_id)
+            os.makedirs(_xml_save_dir, exist_ok=True)
+    except OSError:
+        pass
+
+    # Collect ADB query results at each step (for query_detect tasks)
+    _adb_query_map = {
+        "setting_0": "adb shell settings get global airplane_mode_on",
+        "setting_3": "adb shell settings get global bluetooth_on",
+        "setting_9": "adb shell settings list system | grep volume_ring_speaker",
+        "setting_10": "adb shell settings list system | grep volume_alarm_speaker",
+        "setting_14": "adb shell 'getprop persist.sys.timezone'",
+        "setting_17": "adb shell getprop ro.build.version.release",
+        "setting_20": "adb shell pm list packages | grep 'com.booking'",
+        "setting_22": "adb shell settings get global airplane_mode_on",
+    }
+
     for round_num in range(max_rounds):
         # Dump and compress XML
         compressed_xml, raw_xml = dump_and_compress_xml(container_url)
+
+        # Save raw XML to file for post-hoc XML verification
+        if _xml_save_dir and raw_xml and "<?xml" in raw_xml:
+            with open(os.path.join(_xml_save_dir, f"{round_num}.xml"), "w") as _xf:
+                _xf.write(raw_xml)
+
+        # Collect ADB query at this step (for tasks that check command output)
+        _step_command = {}
+        if task_id in _adb_query_map:
+            _qcmd = _adb_query_map[task_id]
+            _qr = _adb(container_url, _qcmd)
+            _qval = (_qr.get("command_output", "") if isinstance(_qr, dict) else "").strip()
+            _step_command[_qcmd] = _qval
 
         # Build user message
         if round_num == 0:
@@ -452,13 +486,45 @@ def run_gui_agent(task_def, container_url, model="gpt-4o", max_rounds=25,
         code_line = parse_code(rsp_text)
         action = parse_action(code_line)
 
-        # Save trace
+        # Build parsed_action in EXACT original Android-Lab trace format.
+        # Original finish: {"operation":"finish", "action":"finish", "kwargs":{"message":"..."}}
+        # Original do:     {"operation":"do", "action":"Tap", "kwargs":{"element":[...]}}
+        _orig_parsed = {}
+        if action.get("type") == "finish":
+            _orig_parsed = {
+                "operation": "finish",
+                "action": "finish",
+                "kwargs": {"message": action.get("message", "")},
+            }
+        elif action.get("type") in ("do", "lowlevel"):
+            _kw = {}
+            if action.get("element"):
+                _kw["element"] = action["element"]
+            if action.get("text"):
+                _kw["text"] = action["text"]
+            if action.get("direction"):
+                _kw["direction"] = action["direction"]
+                _kw["dist"] = action.get("dist", "medium")
+            _orig_parsed = {
+                "operation": "do",
+                "action": action.get("action", ""),
+                "kwargs": _kw,
+            }
+        else:
+            _orig_parsed = {"operation": "unknown", "action": action.get("type", "")}
+
+        # Save trace matching EXACT original trace.jsonl format
         traces.append({
             "round": round_num,
             "xml_compressed": compressed_xml[:2000],
             "response": rsp_text[:1000],
             "code": code_line,
             "action": action,
+            # Fields matching original trace format for XML verifier
+            "parsed_action": _orig_parsed,
+            "command": _step_command if _step_command else None,
+            "target": instruction,  # Fix #2: needed by check_answer()
+            "xml_file": os.path.join(_xml_save_dir, f"{round_num}.xml") if _xml_save_dir else None,
         })
 
         print(f"  Round {round_num}: {code_line[:80]}")
@@ -496,6 +562,139 @@ def run_gui_agent(task_def, container_url, model="gpt-4o", max_rounds=25,
           f"cost=${cost:.4f}")
     sys.stdout.flush()
 
+    # ── Inline evaluation: BOTH ADB + XML verifiers for cross-validation ──
+
+    # 1. ADB rule-based verifier (agent-agnostic, checks device state)
+    adb_eval = {"complete": False}
+    try:
+        from verifiers.verifier_map import get_verifier as _get_verifier
+        from verifiers.query_detect_verifier import FUNCTION_MAP as _QD_MAP
+        if metric_type == "operation":
+            _vcls = _get_verifier(task_id)
+            if _vcls:
+                adb_eval = _vcls(container_url).is_successful()
+        elif metric_type == "query_detect":
+            _qcls = _QD_MAP.get(task_id)
+            if _qcls:
+                adb_eval = _qcls(container_url).is_successful(
+                    agent_answer=finish_message)
+    except Exception as _e:
+        adb_eval = {"complete": False, "error": str(_e)[:200]}
+
+    # 2. Original XML verifier — EXACTLY matches eval.py:_evaluate_single_task():
+    #    - Iterate ALL per-step XML dumps (saved during agent loop above)
+    #    - For each step: compress XML via get_compressed_xml, call judge(tree, line)
+    #    - If judge_page=False: skip (continue to next step)
+    #    - If judge_page=True or not present: keep as final_result (overwrite)
+    #    - Repeat detection: same action 5 times → stop
+    xml_eval = {"complete": False}
+    _final_xml_raw = ""
+    _cxml = None
+    try:
+        _orig_cwd = os.getcwd()
+        sys.path.insert(0, "/shared/ligu/projects/SkyRL-AndriodWorld/Android-Lab")
+        os.chdir("/shared/ligu/projects/SkyRL-AndriodWorld/Android-Lab")
+        from utils_mobile.utils import get_compressed_xml as _get_cxml
+        from evaluation.task import dump_xml as _dump_xml
+        import importlib as _impmod
+
+        # Module and class name mapping (from actual Android-Lab codebase files)
+        _app_mod = {
+            "setting": ("evaluation.tasks.setting.setting", "SingleTask_Setting_{}"),
+            "contacts": ("evaluation.tasks.contacts.contacts", "SingleTask_Contacts_{}"),
+            "clock": ("evaluation.tasks.clock.clock", "SingleTask_Clock_{}"),
+            "bluecoins": ("evaluation.tasks.bluecoins.bluecoins", "SingleTask_bluecoins_{}"),
+            "cantook": ("evaluation.tasks.cantook.cantook", "SingleTask_cantook_{}"),
+            "pimusic": ("evaluation.tasks.pimusic.pimusic", "SingleTask_pimusic_{}"),
+            "map": ("evaluation.tasks.map_me.map", "SingleTask_Mapme_{}"),
+            "calendar": ("evaluation.tasks.calendar.calendar", "SingleTask_calendar_{}"),
+            "zoom": ("evaluation.tasks.zoom.zoom", "SingleTask_Zoom_{}"),
+        }
+        _app_key = task_id.split("_")[0]
+        _task_num = task_id.split("_")[1]
+        _entry = _app_mod.get(_app_key)
+        _judge = None
+        if _entry:
+            _mod_name, _cls_tmpl = _entry
+            _cls_name = _cls_tmpl.format(_task_num)
+            try:
+                _mod = _impmod.import_module(_mod_name)
+                _judge_cls = getattr(_mod, _cls_name, None)
+                if _judge_cls:
+                    # Fix #6: args needs judge_model for detect_answer() in query_detect tasks
+                    class _JudgeArgs:
+                        judge_model = "gpt-4o-2024-05-13"
+                        api_key = ""  # uses OPENAI_API_KEY env var
+                    _judge = _judge_cls(_JudgeArgs())
+            except ImportError as _ie:
+                xml_eval = {"complete": False, "error": f"import: {_ie}"}
+
+        if _judge:
+            # Iterate all per-step XMLs — exactly like eval.py lines 133-172
+            _num_repeat = 0
+            _last_action = None
+
+            for _trace in traces:
+                # Repeat detection (same as original eval.py lines 136-143)
+                _current_action = json.dumps(_trace.get("parsed_action", {}))
+                if _current_action == _last_action:
+                    _num_repeat += 1
+                    if _num_repeat > 5:
+                        break
+                else:
+                    _num_repeat = 0
+                    _last_action = _current_action
+
+                # Get XML file path (saved during agent loop)
+                _xml_file = _trace.get("xml_file")
+                if not _xml_file or not os.path.exists(_xml_file):
+                    continue
+
+                # Compress XML — use original dump_xml() which does
+                # get_compressed_xml(path) → json.loads()
+                _xml_compressed = _dump_xml(_xml_file)
+                if _xml_compressed is None:
+                    continue
+
+                # Build line dict matching original trace format
+                _line = {
+                    "parsed_action": _trace.get("parsed_action", {"action": ""}),
+                }
+                # Add command dict if this task has ADB queries
+                if _trace.get("command"):
+                    _line["command"] = _trace["command"]
+
+                try:
+                    _result = _judge.judge(_xml_compressed, _line)
+
+                    # Same logic as eval.py lines 167-170:
+                    # if judge_page is False → skip
+                    # otherwise → keep as final result
+                    if "judge_page" in _result and not _result.get("judge_page"):
+                        continue
+                    else:
+                        xml_eval = _result
+                except Exception:
+                    pass
+
+            # Save the last XML for post-hoc
+            if traces and traces[-1].get("xml_file") and os.path.exists(traces[-1]["xml_file"]):
+                with open(traces[-1]["xml_file"]) as _f:
+                    _final_xml_raw = _f.read()
+
+    except Exception as _e:
+        xml_eval = {"complete": False, "error": str(_e)[:200]}
+    finally:
+        try:
+            os.chdir(_orig_cwd)
+        except Exception:
+            pass
+
+    adb_reward = 1.0 if adb_eval.get("complete") else 0.0
+    xml_reward = 1.0 if xml_eval.get("complete") else 0.0
+
+    # Per-step XMLs already saved in _xml_save_dir during agent loop
+
     return {
         "task_id": task_id,
         "app": app,
@@ -503,7 +702,10 @@ def run_gui_agent(task_def, container_url, model="gpt-4o", max_rounds=25,
         "metric_type": metric_type,
         "seed": 0,
         "task": task_def["task"],
-        "reward": 0.0,  # post-hoc evaluation needed
+        "reward": adb_reward,
+        "xml_reward": xml_reward,
+        "adb_eval": adb_eval,
+        "xml_eval": xml_eval,
         "step_count": step_count,
         "finished": is_finished,
         "finish_description": finish_message,
@@ -513,6 +715,7 @@ def run_gui_agent(task_def, container_url, model="gpt-4o", max_rounds=25,
         "cost_usd": cost,
         "num_turns": step_count,
         "traces": traces,
+        "xml_dump_dir": _xml_save_dir,
     }
 
 
@@ -655,6 +858,7 @@ def main():
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, "results.jsonl")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.environ["ANDROIDLAB_OUTPUT_PATH"] = output_path
 
     from functools import partial
     task_runner = partial(
@@ -685,11 +889,39 @@ def main():
         )
 
     print_summary(results)
+
+    # Cross-validation summary
+    adb_successes = sum(1 for r in results if r.get("reward", 0) > 0)
+    xml_successes = sum(1 for r in results if r.get("xml_reward", 0) > 0)
+    both_pass = sum(1 for r in results if r.get("reward", 0) > 0 and r.get("xml_reward", 0) > 0)
+    adb_only = sum(1 for r in results if r.get("reward", 0) > 0 and r.get("xml_reward", 0) == 0)
+    xml_only = sum(1 for r in results if r.get("reward", 0) == 0 and r.get("xml_reward", 0) > 0)
+    both_fail = sum(1 for r in results if r.get("reward", 0) == 0 and r.get("xml_reward", 0) == 0)
+
+    print(f"\n{'='*60}")
+    print(f"CROSS-VALIDATION: ADB vs XML Verifiers")
+    print(f"{'='*60}")
+    print(f"  ADB Verifier:  {adb_successes}/{len(results)} ({100*adb_successes/max(len(results),1):.1f}%)")
+    print(f"  XML Verifier:  {xml_successes}/{len(results)} ({100*xml_successes/max(len(results),1):.1f}%)")
+    print(f"  Both PASS:     {both_pass}")
+    print(f"  ADB only:      {adb_only}  (ADB too loose or XML too strict)")
+    print(f"  XML only:      {xml_only}  (ADB too strict or XML too loose)")
+    print(f"  Both FAIL:     {both_fail}")
+    print(f"  Agreement:     {both_pass + both_fail}/{len(results)} ({100*(both_pass+both_fail)/max(len(results),1):.1f}%)")
+
+    if adb_only > 0 or xml_only > 0:
+        print(f"\n  Disagreements:")
+        for r in sorted(results, key=lambda x: x.get("task_id", "")):
+            a = r.get("reward", 0) > 0
+            x = r.get("xml_reward", 0) > 0
+            if a != x:
+                print(f"    {r['task_id']:20s} ADB={'PASS' if a else 'FAIL'} XML={'PASS' if x else 'FAIL'}")
+
     save_results(results, output_path, extra_meta={
         "model": args.model,
         "max_rounds": args.max_rounds,
         "agent": "GUIAgent_XMLOnly",
-        "purpose": "reproduce_paper",
+        "purpose": "reproduce_paper_with_adb_eval",
     })
     return 0
 
