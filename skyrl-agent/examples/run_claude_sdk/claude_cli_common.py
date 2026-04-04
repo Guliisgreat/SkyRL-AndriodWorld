@@ -123,15 +123,6 @@ def force_eval(container_url):
     Returns the reward (0.0 or 1.0).
     """
     try:
-        # First send answer action (needed for information-retrieval tasks)
-        _http_post_quiet(f"{container_url}/step", {
-            "action": {"action_type": "answer", "text": ""},
-            "thought": "forced evaluation",
-        })
-    except Exception:
-        pass
-
-    try:
         resp = http_post(f"{container_url}/step", {
             "action": {
                 "action_type": "status",
