@@ -196,13 +196,20 @@ def run_qwen3vl_task_sync(
                 last_error = "task_timeout"
                 break
 
-            # 4a. Agent predict
-            try:
-                raw_response, action = agent.predict({"screenshot": screenshot})
-            except Exception as e:
-                print(f"  Predict FAILED at step {step_idx}: {e}")
-                traceback.print_exc()
-                last_error = f"predict: {e}"
+            # 4a. Agent predict (retry up to 3 times on transient API errors)
+            raw_response, action = None, None
+            for _attempt in range(3):
+                try:
+                    raw_response, action = agent.predict({"screenshot": screenshot})
+                    break
+                except Exception as e:
+                    print(f"  Predict attempt {_attempt+1}/3 FAILED at step {step_idx}: {e}")
+                    if _attempt == 2:
+                        traceback.print_exc()
+                        last_error = f"predict: {e}"
+                    else:
+                        time.sleep(3 * (_attempt + 1))
+            if action is None:
                 break
 
             # 4b. Map action
@@ -220,16 +227,23 @@ def run_qwen3vl_task_sync(
                 "thought": thought[:200],
             })
 
-            # 4c. Send to container
-            try:
-                step_resp = http_post(
-                    f"{container_url}/step",
-                    {"action": action_dict, "thought": thought},
-                    timeout=120,
-                )
-            except Exception as e:
-                print(f"  Step HTTP FAILED at step {step_idx}: {e}")
-                last_error = f"step_http: {e}"
+            # 4c. Send to container (retry up to 3 times on transient errors)
+            step_resp = None
+            for _attempt in range(3):
+                try:
+                    step_resp = http_post(
+                        f"{container_url}/step",
+                        {"action": action_dict, "thought": thought},
+                        timeout=120,
+                    )
+                    break
+                except Exception as e:
+                    print(f"  Step HTTP attempt {_attempt+1}/3 FAILED at step {step_idx}: {e}")
+                    if _attempt == 2:
+                        last_error = f"step_http: {e}"
+                    else:
+                        time.sleep(2 * (_attempt + 1))
+            if step_resp is None:
                 break
 
             step_count += 1
