@@ -40,6 +40,7 @@ MW_ENV_SCRIPT = os.path.abspath(MW_ENV_SCRIPT)
 PROMPT_MODULES = {
     "mw_adb_baseline": "skyrl_agent.agents.mobileworld.claude_sdk.prompts.mw_adb_baseline",
     "mw_adb_api": "skyrl_agent.agents.mobileworld.claude_sdk.prompts.mw_adb_api",
+    "mw_adb_oracle": "skyrl_agent.agents.mobileworld.claude_sdk.prompts.mw_adb_oracle",
 }
 DEFAULT_PROMPT = "mw_adb_baseline"
 
