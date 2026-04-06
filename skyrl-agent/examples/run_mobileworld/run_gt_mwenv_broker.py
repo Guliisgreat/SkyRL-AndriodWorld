@@ -847,24 +847,61 @@ def _run_task_mwenv_override(task_name, runner):
                            "APPROVED: Conf Room B, Conf Room C, Projector, Video Camera\\n"
                            "CONFLICT: Conf Room A")
         runner.record("Email conflict report to facilities", "write sentEmail.json", "")
-        # Use emulator date for next Monday
-        emu_now = runner.get_emulator_date()
-        today = emu_now.date()
+        # Use server date (matches verifier's datetime.now())
+        today = datetime.now().date()
         days_to_mon = (7 - today.weekday()) % 7
         if days_to_mon == 0:
             days_to_mon = 7
         base = today + timedelta(days=days_to_mon)
+        # Write all calendar INSERTs to a SQL file, then execute (avoids quoting)
+        CAL_DB = "/data/data/org.fossify.calendar/databases/events.db"
+        sql_lines = []
         for title, day_off in [("BOOKED: Conf Room B - Sam", 2), ("BOOKED: Conf Room C - Sofia", 1),
                                 ("BOOKED: Projector - Sam", 3), ("BOOKED: Video Camera - Mike", 4)]:
             d = base + timedelta(days=day_off)
             ts_cal = int(datetime.combine(d, datetime.min.time().replace(hour=14),
                                            tzinfo=timezone.utc).timestamp())
-            runner.insert_calendar_event(title, ts_cal, ts_cal + 3600)
-            runner.record(f"Create booking event: {title} on {d}", "INSERT events", "")
+            sql_lines.append(
+                f"INSERT INTO events (start_ts,end_ts,title,location,description,"
+                f"reminder_1_minutes,reminder_2_minutes,reminder_3_minutes,"
+                f"reminder_1_type,reminder_2_type,reminder_3_type,"
+                f"repeat_interval,repeat_rule,repeat_limit,repetition_exceptions,"
+                f"attendees,import_id,time_zone,flags,event_type,parent_id,last_updated,"
+                f"source,availability,access_level,color,type,status) VALUES ("
+                f"{ts_cal},{ts_cal+3600},'{title}','','',"
+                f"-1,-1,-1,0,0,0,0,0,0,'','','','UTC',0,0,0,"
+                f"{int(time.time())},'',0,0,0,0,0);")
+            runner.record(f"Prepare event: {title} on {d}", "SQL", "")
+        runner.write_file("/sdcard/_events.sql", "\n".join(sql_lines))
+        script = f"#!/system/bin/sh\nsu root sqlite3 {CAL_DB} < /sdcard/_events.sql\n"
+        runner.write_file("/sdcard/_run_events.sh", script)
+        runner.adb("adb shell sh /sdcard/_run_events.sh")
+        runner.record("Execute calendar INSERTs via script", "sh", "")
+        runner.adb("adb shell rm /sdcard/_events.sql /sdcard/_run_events.sh", no_tree=True)
+        # DM Alex — create DM channel if needed
         if alex_id:
+            dm_name_1 = f"{harry_id}__{alex_id}"
+            dm_name_2 = f"{alex_id}__{harry_id}"
             dm_ch = runner.mattermost_psql(
-                f"SELECT id FROM channels WHERE type='D' AND "
-                f"(name LIKE '%{harry_id}%{alex_id}%' OR name LIKE '%{alex_id}%{harry_id}%') LIMIT 1").strip()
+                f"SELECT id FROM channels WHERE name='{dm_name_1}' OR name='{dm_name_2}' LIMIT 1").strip()
+            if not dm_ch:
+                # Create DM channel
+                ts = str(int(time.time() * 1000))
+                dm_ch = hashlib.md5(f"dm{harry_id}{alex_id}".encode()).hexdigest()[:26]
+                runner.mattermost_psql(
+                    f"INSERT INTO channels (id,createat,updateat,deleteat,teamid,type,"
+                    f"displayname,name,header,purpose,lastpostat,totalmsgcount,"
+                    f"extraupdateat,creatorid) VALUES "
+                    f"('{dm_ch}',{ts},{ts},0,'','D',"
+                    f"'','{dm_name_1}','','',{ts},0,0,'{harry_id}')")
+                # Add both users as members
+                for uid in [harry_id, alex_id]:
+                    runner.mattermost_psql(
+                        f"INSERT INTO channelmembers (channelid,userid,roles,lastviewedat,"
+                        f"msgcount,mentioncount,lastupdateat,schemeuser,schemeadmin,schemeguest) "
+                        f"VALUES ('{dm_ch}','{uid}','channel_user',0,0,0,{ts},true,false,false) "
+                        f"ON CONFLICT DO NOTHING")
+                runner.record("Created DM channel between harry and alex", "INSERT channels", "")
             if dm_ch:
                 runner.mm_post_message(dm_ch, harry_id,
                                        "Conf Room A booking conflict: Your request overlaps with Team Standup.")
