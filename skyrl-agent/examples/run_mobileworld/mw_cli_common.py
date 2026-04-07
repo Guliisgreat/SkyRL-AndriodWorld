@@ -1,9 +1,11 @@
 """
-Shared infrastructure for Claude Code CLI experiment runners.
+Shared infrastructure for Claude Code CLI MobileWorld experiment runners.
 
-Extracted from run_claude_cli.py so that run_mode1.py and run_mode2.py
-can reuse HTTP helpers, broker logic, prompt loading, ATIF export, and
-parallel/sequential orchestration without duplication.
+Adapted from claude_cli_common.py (AndroidWorld). Key differences:
+- Tasks identified by task_name (str) instead of task_id + seed
+- Task lifecycle: /task/init -> agent runs -> /task/eval -> /task/tear_down
+- ADB executed directly (not via /step_adb), so no reward from ADB calls
+- Evaluation is a separate HTTP call (/task/eval) after agent finishes
 """
 
 import argparse
@@ -24,34 +26,27 @@ import uuid
 # Paths
 # ---------------------------------------------------------------------------
 
-ANDROID_ENV_SCRIPT = os.path.join(
+MW_ENV_SCRIPT = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     os.pardir, os.pardir,
-    "skyrl_agent", "agents", "android", "claude_sdk", "android_env.py",
+    "skyrl_agent", "agents", "mobileworld", "claude_sdk", "mw_env.py",
 )
-ANDROID_ENV_SCRIPT = os.path.abspath(ANDROID_ENV_SCRIPT)
+MW_ENV_SCRIPT = os.path.abspath(MW_ENV_SCRIPT)
 
 # ---------------------------------------------------------------------------
 # Prompt modules
 # ---------------------------------------------------------------------------
 
 PROMPT_MODULES = {
-    "adb_baseline": "skyrl_agent.agents.android.claude_sdk.prompts.adb_baseline",
-    "adb_baseline_v2": "skyrl_agent.agents.android.claude_sdk.prompts.adb_baseline_v2",
-    "codegen": "skyrl_agent.agents.android.claude_sdk.prompts.codegen",
-    "shell_script": "skyrl_agent.agents.android.claude_sdk.prompts.shell_script",
-    "hybrid": "skyrl_agent.agents.android.claude_sdk.prompts.hybrid",
-    "minimal_terminal": "skyrl_agent.agents.android.claude_sdk.prompts.minimal_terminal",
-    "minimal_shell_escaping": "skyrl_agent.agents.android.claude_sdk.prompts.minimal_shell_escaping",
-    "minimal_shell_escaping_no_gui": "skyrl_agent.agents.android.claude_sdk.prompts.minimal_shell_escaping_no_gui",
-    "optimized_terminal_v1": "skyrl_agent.agents.android.claude_sdk.prompts.optimized_terminal_v1",
-    "optimized_terminal_v2": "skyrl_agent.agents.android.claude_sdk.prompts.optimized_terminal_v2",
+    "mw_adb_baseline": "skyrl_agent.agents.mobileworld.claude_sdk.prompts.mw_adb_baseline",
+    "mw_adb_api": "skyrl_agent.agents.mobileworld.claude_sdk.prompts.mw_adb_api",
+    "mw_adb_oracle": "skyrl_agent.agents.mobileworld.claude_sdk.prompts.mw_adb_oracle",
 }
-DEFAULT_PROMPT = "adb_baseline"
+DEFAULT_PROMPT = "mw_adb_baseline"
 
 
 def load_prompt_module(prompt_name: str):
-    """Load a prompt module by name (avoids torch/transformers imports)."""
+    """Load a prompt module by name."""
     import importlib.util
     if prompt_name not in PROMPT_MODULES:
         raise ValueError(
@@ -74,9 +69,9 @@ def load_prompt_module(prompt_name: str):
 
 
 def load_system_prompt(prompt_name: str) -> str:
-    """Load a system prompt by name and format it with ANDROID_ENV_SCRIPT."""
+    """Load a system prompt by name and format it with MW_ENV_SCRIPT."""
     mod = load_prompt_module(prompt_name)
-    return mod.build_system_prompt(ANDROID_ENV_SCRIPT)
+    return mod.build_system_prompt(MW_ENV_SCRIPT)
 
 
 def get_allowed_tools(prompt_name: str) -> str:
@@ -86,7 +81,7 @@ def get_allowed_tools(prompt_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# HTTP / container helpers
+# HTTP helpers
 # ---------------------------------------------------------------------------
 
 def http_post(url, payload, timeout=300):
@@ -99,41 +94,17 @@ def http_post(url, payload, timeout=300):
         return json.loads(resp.read().decode())
 
 
-def reset_container(base_url, task_id, seed):
-    return http_post(f"{base_url}/reset", {
-        "seed": seed,
-        "options": {"task_id": task_id, "go_home_on_reset": True},
-    })
-
-
-def check_health(base_url):
-    try:
-        with urllib.request.urlopen(f"{base_url}/health", timeout=5) as resp:
-            data = json.loads(resp.read().decode())
-            return data.get("ready", False) or data.get("status") == "ok"
-    except Exception:
-        return False
-
-
-def force_eval(container_url):
-    """Force task evaluation by sending a 'status' action to the container.
-
-    Use this when the agent didn't call finish (e.g., timeout) but we still
-    want to check if its partial work achieved the task goal.
-    Returns the reward (0.0 or 1.0).
-    """
-    try:
-        resp = http_post(f"{container_url}/step", {
-            "action": {
-                "action_type": "status",
-                "goal_status": "complete",
-                "text": "forced evaluation",
-            },
-            "thought": "forced evaluation",
-        })
-        return resp.get("reward", 0.0)
-    except Exception:
-        return 0.0
+def http_get(url, params=None, timeout=120):
+    if params:
+        qs = "&".join(f"{k}={urllib.request.quote(str(v))}" for k, v in params.items())
+        url = f"{url}?{qs}"
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read().decode()
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            return body
 
 
 def _http_post_quiet(url, payload):
@@ -181,68 +152,157 @@ def broker_release(broker_url, env_id, healthy=True, retries=3):
 
 
 # ---------------------------------------------------------------------------
+# MobileWorld task lifecycle
+# ---------------------------------------------------------------------------
+
+def init_task(base_url, task_name, device_id="emulator-5554"):
+    """Initialize a MobileWorld task."""
+    return http_post(f"{base_url}/task/init", {
+        "task_name": task_name,
+        "req_device": device_id,
+    })
+
+
+def eval_task(base_url, task_name, device_id="emulator-5554"):
+    """Evaluate task success. Returns (score, reason).
+
+    Note: MobileWorld's /task/eval is a GET endpoint but uses a Pydantic body
+    (TaskOperationRequest), so we must send JSON in the body of a GET request.
+    """
+    url = f"{base_url}/task/eval"
+    payload = json.dumps({"task_name": task_name, "req_device": device_id}).encode()
+    req = urllib.request.Request(
+        url, data=payload,
+        headers={"Content-Type": "application/json"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = json.loads(resp.read().decode())
+    if isinstance(data, dict):
+        return data.get("score", 0.0), data.get("reason", "")
+    return float(data), ""
+
+
+def teardown_task(base_url, task_name, device_id="emulator-5554"):
+    """Tear down a task."""
+    return http_post(f"{base_url}/task/tear_down", {
+        "task_name": task_name,
+        "req_device": device_id,
+    })
+
+
+def reset_container(base_url, device_id="emulator-5554", timeout=60):
+    """Full state reset — snapshot + backend stop + config clear.
+
+    Calls the /reset endpoint which resets all three layers:
+    server Python state, Docker-in-Docker backends, and Android emulator.
+    """
+    try:
+        return http_post(f"{base_url}/reset", {
+            "task_name": "_reset",
+            "req_device": device_id,
+        }, timeout=timeout)
+    except Exception as e:
+        print(f"  WARNING: reset failed: {e}")
+        return None
+
+
+def get_task_goal(base_url, task_name):
+    """Get human-readable task goal."""
+    return http_get(f"{base_url}/task/goal", {"task_name": task_name})
+
+
+def check_health(base_url):
+    try:
+        with urllib.request.urlopen(f"{base_url}/health", timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get("ok", False) or data.get("status") == "ok"
+    except Exception:
+        return False
+
+
+def force_eval(container_url, task_name, device_id="emulator-5554"):
+    """Force task evaluation after agent finishes without calling finish.
+
+    Returns (score, reason).
+    """
+    try:
+        score, reason = eval_task(container_url, task_name, device_id)
+        return score, reason
+    except Exception:
+        return 0.0, "eval_failed"
+
+
+# ---------------------------------------------------------------------------
 # Core: run a single task attempt
 # ---------------------------------------------------------------------------
 
 def run_one_task(task_def, container_url, model, max_turns, system_prompt,
                  effort=None, allowed_tools="Bash(command:*)",
                  disable_tree=True, prompt_suffix="",
-                 skip_reset=False, task_timeout=900, auto_finish=True):
-    """Run one Claude attempt on a task. Returns a result dict.
-
-    Parameters
-    ----------
-    skip_reset : bool
-        If True, skip the container reset (caller already did it).
-    prompt_suffix : str
-        Extra text appended after the task description (e.g., feedback).
-    task_timeout : int
-        Max seconds for the Claude subprocess.
-    """
-    task_id = task_def["task_id"]
-    seed = task_def["seed"]
-    task_text = task_def["task"]
+                 task_timeout=900, adb_serial="localhost:5556",
+                 device_id="emulator-5554"):
+    """Run one Claude attempt on a MobileWorld task. Returns a result dict."""
+    task_name = task_def["task_name"]
+    trial = task_def.get("trial", 1)
 
     print(f"\n{'='*70}")
-    print(f"TASK {task_id} (seed={seed}): {task_text[:80]}")
+    print(f"TASK {task_name} (trial={trial})")
     print(f"{'='*70}")
     sys.stdout.flush()
 
     # Create state file
     state_fd, state_file = tempfile.mkstemp(
-        suffix=".json", prefix=f"claude_task{task_id}_",
+        suffix=".json", prefix=f"mw_{task_name[:30]}_",
     )
     os.close(state_fd)
     with open(state_file, "w") as f:
         json.dump({
-            "step_count": 0, "terminated": False, "reward": 0.0,
+            "step_count": 0, "terminated": False,
             "finish_status": "", "finish_description": "",
             "step_records": [], "_last_a11y_cache": "",
         }, f)
 
-    # Reset container
-    if not skip_reset:
-        try:
-            reset_container(container_url, task_id, seed)
-            print(f"  Reset OK.")
-        except Exception as e:
-            print(f"  Reset FAILED: {e}")
-            os.unlink(state_file)
-            return {"task_id": task_id, "seed": seed, "task": task_text,
-                    "reward": 0.0, "error": f"reset: {e}"}
-        time.sleep(10)
+    # Teardown any previous task, then init
+    try:
+        teardown_task(container_url, task_name, device_id)
+    except Exception:
+        pass
+
+    try:
+        init_task(container_url, task_name, device_id)
+        print(f"  Task init OK.")
+    except Exception as e:
+        print(f"  Task init FAILED: {e}")
+        os.unlink(state_file)
+        return {"task_name": task_name, "trial": trial,
+                "task": "", "reward": 0.0, "error": f"init: {e}"}
+
+    time.sleep(5)  # Let emulator stabilize after snapshot restore
+
+    # Get task goal
+    try:
+        goal = get_task_goal(container_url, task_name)
+        if isinstance(goal, dict):
+            goal = str(goal)
+        print(f"  Goal: {str(goal)[:100]}")
+    except Exception as e:
+        print(f"  Failed to get goal: {e}")
+        goal = task_def.get("task", task_name)
 
     # Build prompt
-    prompt = f"{system_prompt}\n\n## Task\n\n{task_text}\n\nComplete this task on the Android device."
+    prompt = f"{system_prompt}\n\n## Task\n\n{goal}\n\nComplete this task on the Android device."
     if prompt_suffix:
         prompt += f"\n\n{prompt_suffix}"
 
-    # Set env vars for android_env.py
+    # Set env vars for mw_env.py
     env = os.environ.copy()
-    env["ANDROID_SERVER_URL"] = container_url
-    env["ANDROID_STATE_FILE"] = state_file
+    env["MW_SERVER_URL"] = container_url
+    env["MW_ADB_SERIAL"] = adb_serial
+    env["MW_DEVICE_ID"] = device_id
+    env["MW_STATE_FILE"] = state_file
     if disable_tree:
-        env["ANDROID_DISABLE_TREE"] = "1"
+        env["MW_DISABLE_TREE"] = "1"
     env.pop("CLAUDECODE", None)
 
     # Run claude CLI
@@ -289,7 +349,6 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     except subprocess.TimeoutExpired:
         elapsed = time.time() - start_time
         print(f"  TIMEOUT after {elapsed:.0f}s")
-        result = None
 
     # Extract token usage
     usage = claude_json.get("usage", {})
@@ -302,7 +361,7 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     cost_usd = claude_json.get("total_cost_usd", 0.0)
     num_turns = claude_json.get("num_turns", 0)
 
-    # Read state
+    # Read state file
     state = {}
     try:
         with open(state_file) as f:
@@ -315,39 +374,46 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
         except OSError:
             pass
 
-    reward = state.get("reward", 0.0)
     step_count = state.get("step_count", 0)
     finished = state.get("terminated", False)
+    finish_description = state.get("finish_description", "")
 
-    if not finished and auto_finish:
-        print(f"  Agent didn't call finish — auto-finishing...")
-        auto_reward = force_eval(container_url)
-        reward = auto_reward
-        finished = True
-        print(f"  Auto-finish reward: {auto_reward}")
+    # Evaluate task via /task/eval
+    score, eval_reason = 0.0, ""
+    try:
+        score, eval_reason = eval_task(container_url, task_name, device_id)
+        print(f"  Eval score: {score} ({eval_reason})")
+    except Exception as e:
+        print(f"  Eval FAILED: {e}")
 
-    status = "OK" if reward > 0 else "FAIL"
-    print(f"  >>> REWARD: {reward} ({status}), steps={step_count}, finished={finished}")
+    # Teardown
+    try:
+        teardown_task(container_url, task_name, device_id)
+    except Exception:
+        pass
+
+    status = "OK" if score > 0 else "FAIL"
+    print(f"  >>> REWARD: {score} ({status}), steps={step_count}, finished={finished}")
     print(f"      tokens: in={input_tokens}, out={output_tokens}, cost=${cost_usd:.4f}")
     sys.stdout.flush()
 
     return {
-        "task_id": task_id,
-        "seed": seed,
-        "task": task_text,
-        "reward": reward,
+        "task_name": task_name,
+        "task_id": task_def.get("task_id", 0),
+        "trial": trial,
+        "task": str(goal),
+        "reward": score,
+        "eval_reason": eval_reason,
         "step_count": step_count,
         "finished": finished,
+        "finish_description": finish_description,
         "commands": state.get("step_records", []),
-        "finish_description": state.get("finish_description", ""),
         "elapsed_seconds": elapsed,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cost_usd": cost_usd,
         "num_turns": num_turns,
-        "claude_output": claude_json.get("result", "")[-3000:] if claude_json else (
-            result.stdout[-3000:] if result and result.stdout else ""
-        ),
+        "claude_output": claude_json.get("result", "")[-3000:] if claude_json else "",
     }
 
 
@@ -356,10 +422,7 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
 # ---------------------------------------------------------------------------
 
 def run_sequential(tasks, container_url, output_path, task_runner):
-    """Run tasks sequentially on a single container.
-
-    task_runner(task_def, container_url) -> result dict
-    """
+    """Run tasks sequentially on a single container."""
     results = []
     with open(output_path, "w") as out:
         for i, task_def in enumerate(tasks):
@@ -367,9 +430,9 @@ def run_sequential(tasks, container_url, output_path, task_runner):
                 print(f"  Container unhealthy, waiting 30s...")
                 time.sleep(30)
                 if not check_health(container_url):
-                    print(f"  Still unhealthy, skipping task {task_def['task_id']}")
+                    print(f"  Still unhealthy, skipping task {task_def['task_name']}")
                     results.append({
-                        "task_id": task_def["task_id"], "reward": 0.0,
+                        "task_name": task_def["task_name"], "reward": 0.0,
                         "error": "container_unhealthy",
                     })
                     continue
@@ -386,10 +449,87 @@ def run_sequential(tasks, container_url, output_path, task_runner):
     return results
 
 
-def run_parallel(tasks, broker_url, pool_size, output_path, task_runner):
+def run_parallel(tasks, containers, output_path, task_runner):
+    """Run tasks in parallel across multiple containers.
+
+    containers: list of (server_url, adb_serial) tuples.
+    task_runner: callable(task_def, container_url, adb_serial) -> result dict.
+    """
+    task_queue = queue.Queue()
+    for t in tasks:
+        task_queue.put(t)
+
+    # Build a pool of available containers
+    container_pool = queue.Queue()
+    for server_url, adb_serial in containers:
+        container_pool.put((server_url, adb_serial))
+
+    results = []
+    results_lock = threading.Lock()
+    completed = [0]
+
+    out_file = open(output_path, "w")
+    out_lock = threading.Lock()
+
+    def worker(worker_id):
+        while True:
+            try:
+                task_def = task_queue.get_nowait()
+            except queue.Empty:
+                return
+
+            # Acquire a container
+            server_url, adb_serial = container_pool.get()
+            task_name = task_def["task_name"]
+
+            try:
+                print(f"  [worker {worker_id}] Running {task_name} on "
+                      f"{server_url} (adb={adb_serial})")
+                result = task_runner(task_def, server_url,
+                                     adb_serial=adb_serial, device_id=adb_serial)
+            except Exception as e:
+                print(f"  [worker {worker_id}] ERROR on {task_name}: {e}")
+                result = {
+                    "task_name": task_name, "trial": task_def.get("trial", 1),
+                    "task": task_def.get("task", ""), "reward": 0.0,
+                    "error": str(e),
+                }
+            finally:
+                # Return container to pool
+                container_pool.put((server_url, adb_serial))
+
+            with results_lock:
+                results.append(result)
+                completed[0] += 1
+                successes = sum(1 for r in results if r.get("reward", 0) > 0)
+                print(f"\n  Progress: {completed[0]}/{len(tasks)}, "
+                      f"Success: {successes}/{len(results)} "
+                      f"({100*successes/max(len(results),1):.0f}%)")
+
+            with out_lock:
+                out_file.write(json.dumps(result) + "\n")
+                out_file.flush()
+
+            task_queue.task_done()
+
+    num_workers = min(len(containers), len(tasks))
+    print(f"Starting {num_workers} parallel workers across {len(containers)} containers...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(worker, i) for i in range(num_workers)]
+        concurrent.futures.wait(futures)
+        for f in futures:
+            if f.exception():
+                print(f"  Worker exception: {f.exception()}")
+
+    out_file.close()
+    return results
+
+
+def run_broker(tasks, broker_url, pool_size, output_path, task_runner):
     """Run tasks in parallel using the broker for container allocation.
 
-    task_runner(task_def, container_url) -> result dict
+    The broker manages container health, failover, and pool sizing.
+    task_runner: callable(task_def, container_url, adb_serial=...) -> result dict.
     """
     task_queue = queue.Queue()
     for t in tasks:
@@ -409,7 +549,7 @@ def run_parallel(tasks, broker_url, pool_size, output_path, task_runner):
             except queue.Empty:
                 return
 
-            task_id = task_def["task_id"]
+            task_name = task_def["task_name"]
             container_info = None
             env_id = None
 
@@ -417,17 +557,26 @@ def run_parallel(tasks, broker_url, pool_size, output_path, task_runner):
                 container_info = broker_acquire(broker_url)
                 env_id = container_info["env_id"]
                 server_port = container_info["server_port"]
-                container_url = f"http://localhost:{server_port}"
-                print(f"  [worker {worker_id}] Acquired container env_id={env_id} "
-                      f"port={server_port} for task {task_id}")
+                container_url = container_info.get(
+                    "server_url", f"http://localhost:{server_port}"
+                )
+                device_id = container_info.get("device_id", "emulator-5554")
+                emulator_port = container_info.get("emulator_port", 5554)
+                adb_serial = device_id
 
-                result = task_runner(task_def, container_url)
+                print(f"  [worker {worker_id}] Acquired env_id={env_id} "
+                      f"port={server_port} emu={emulator_port} for {task_name}")
+
+                result = task_runner(
+                    task_def, container_url,
+                    adb_serial=adb_serial, device_id=device_id,
+                )
                 healthy = True
 
             except Exception as e:
-                print(f"  [worker {worker_id}] ERROR on task {task_id}: {e}")
+                print(f"  [worker {worker_id}] ERROR on {task_name}: {e}")
                 result = {
-                    "task_id": task_id, "seed": task_def.get("seed", 0),
+                    "task_name": task_name, "trial": task_def.get("trial", 1),
                     "task": task_def.get("task", ""), "reward": 0.0,
                     "error": str(e),
                 }
@@ -436,7 +585,7 @@ def run_parallel(tasks, broker_url, pool_size, output_path, task_runner):
             finally:
                 if env_id is not None:
                     broker_release(broker_url, env_id, healthy=healthy)
-                    print(f"  [worker {worker_id}] Returned container env_id={env_id}")
+                    print(f"  [worker {worker_id}] Returned env_id={env_id}")
 
             with results_lock:
                 results.append(result)
@@ -453,7 +602,7 @@ def run_parallel(tasks, broker_url, pool_size, output_path, task_runner):
             task_queue.task_done()
 
     num_workers = min(pool_size, len(tasks))
-    print(f"Starting {num_workers} parallel workers...")
+    print(f"Starting {num_workers} broker workers (pool_size={pool_size})...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
         futures = [executor.submit(worker, i) for i in range(num_workers)]
         concurrent.futures.wait(futures)
@@ -471,8 +620,9 @@ def run_parallel(tasks, broker_url, pool_size, output_path, task_runner):
 
 def result_to_atif(result, model, system_prompt):
     """Convert a task result dict to an ATIF-v1.6 trajectory dict."""
-    task_id = result.get("task_id", 0)
-    session_id = f"androidworld-task{task_id}-{uuid.uuid4().hex[:8]}"
+    task_name = result.get("task_name", "unknown")
+    trial = result.get("trial", 1)
+    session_id = f"mobileworld-{task_name}-t{trial}-{uuid.uuid4().hex[:8]}"
 
     steps = []
     step_id = 1
@@ -492,21 +642,18 @@ def result_to_atif(result, model, system_prompt):
     step_id += 1
 
     for rec in result.get("commands", []):
-        action_type = rec.get("action_type", "")
+        action_type = rec.get("action_type", "unknown")
         params = rec.get("action_params", {})
         cmd_output = rec.get("command_output", "")
 
         if action_type == "adb":
-            command = params.get("command", "")
             tool_call_id = f"call_{step_id}"
-            no_tree = params.get("no_tree", False)
-            tree_flag = " --no-tree" if no_tree else ""
-            bash_cmd = f"python android_env.py adb{tree_flag} \"{command}\""
+            bash_cmd = f'python mw_env.py adb "{params.get("command", "")}"'
 
             steps.append({
                 "step_id": step_id,
                 "source": "agent",
-                "message": rec.get("thought", "") or f"Execute: {command}",
+                "message": rec.get("thought", "") or bash_cmd[:200],
                 "model_name": model,
                 "tool_calls": [{
                     "tool_call_id": tool_call_id,
@@ -522,17 +669,19 @@ def result_to_atif(result, model, system_prompt):
             })
             step_id += 1
 
-        elif action_type == "tree":
+        elif action_type in ("sql", "write-file", "read-file", "find-files"):
             tool_call_id = f"call_{step_id}"
+            bash_cmd = f'python mw_env.py {action_type} ...'
+
             steps.append({
                 "step_id": step_id,
                 "source": "agent",
-                "message": rec.get("thought", "Get accessibility tree"),
+                "message": rec.get("thought", "") or bash_cmd[:200],
                 "model_name": model,
                 "tool_calls": [{
                     "tool_call_id": tool_call_id,
                     "function_name": "Bash",
-                    "arguments": {"command": "python android_env.py tree"},
+                    "arguments": {"command": bash_cmd},
                 }],
                 "observation": {
                     "results": [{
@@ -547,7 +696,7 @@ def result_to_atif(result, model, system_prompt):
             tool_call_id = f"call_{step_id}"
             status = params.get("status", "complete")
             desc = params.get("description", "")
-            bash_cmd = f'python android_env.py finish --status {status} --description "{desc}"'
+            bash_cmd = f'python mw_env.py finish --status {status} --description "{desc}"'
 
             steps.append({
                 "step_id": step_id,
@@ -580,7 +729,7 @@ def result_to_atif(result, model, system_prompt):
         "schema_version": "ATIF-v1.6",
         "session_id": session_id,
         "agent": {
-            "name": "ClaudeCodeCLI",
+            "name": "ClaudeCodeCLI_MW",
             "version": "1.0",
             "model_name": model,
             "tool_definitions": [{
@@ -605,9 +754,10 @@ def result_to_atif(result, model, system_prompt):
             "total_cost_usd": result.get("cost_usd", 0.0),
             "total_steps": result.get("step_count", 0),
             "extra": {
-                "task_id": task_id,
-                "seed": result.get("seed", 0),
+                "task_name": task_name,
+                "trial": trial,
                 "reward": result.get("reward", 0.0),
+                "eval_reason": result.get("eval_reason", ""),
                 "finished": result.get("finished", False),
                 "elapsed_seconds": result.get("elapsed_seconds", 0),
                 "finish_description": result.get("finish_description", ""),
@@ -615,7 +765,7 @@ def result_to_atif(result, model, system_prompt):
             },
         },
         "extra": {
-            "benchmark": "AndroidWorld",
+            "benchmark": "MobileWorld",
             "task_text": result.get("task", ""),
         },
     }
@@ -629,9 +779,11 @@ def save_atif_trajectories(results, output_dir, model, system_prompt):
     os.makedirs(atif_dir, exist_ok=True)
 
     for result in results:
-        task_id = result.get("task_id", 0)
+        task_name = result.get("task_name", "unknown")
+        trial = result.get("trial", 1)
+        safe_name = task_name.replace("/", "_")[:50]
+        path = os.path.join(atif_dir, f"{safe_name}_t{trial}.json")
         traj = result_to_atif(result, model, system_prompt)
-        path = os.path.join(atif_dir, f"task_{task_id:03d}.json")
         with open(path, "w") as f:
             json.dump(traj, f, indent=2, default=str)
 
@@ -642,14 +794,14 @@ def save_atif_trajectories(results, output_dir, model, system_prompt):
 # Common CLI arguments and finalization
 # ---------------------------------------------------------------------------
 
-def build_common_parser(description="Run Claude Code CLI on AndroidWorld tasks"):
+def build_common_parser(description="Run Claude Code CLI on MobileWorld tasks"):
     """Build argparse parser with common arguments."""
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--data", required=True,
                         help="JSONL file with task definitions")
     parser.add_argument("--tasks", type=str, default=None,
-                        help="Comma-separated task IDs (default: all)")
-    parser.add_argument("--model", default="claude-opus-4-6",
+                        help="Comma-separated task names (default: all)")
+    parser.add_argument("--model", default="claude-sonnet-4-6",
                         help="Claude model to use")
     parser.add_argument("--max-turns", type=int, default=30,
                         help="Max turns for Claude")
@@ -659,11 +811,21 @@ def build_common_parser(description="Run Claude Code CLI on AndroidWorld tasks")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--container-url",
                        help="Single container URL (sequential mode)")
-    group.add_argument("--broker-url",
-                       help="Broker URL for parallel mode")
+    group.add_argument("--containers", type=str,
+                       help="Container specs for parallel mode. "
+                            "Format: 'server_url=adb_serial,...' "
+                            "Example: 'http://localhost:6800=localhost:5556,"
+                            "http://localhost:6801=localhost:5557'")
+    group.add_argument("--broker-url", type=str,
+                       help="Broker URL for pool-managed parallel mode. "
+                            "Example: 'http://localhost:9200'")
 
-    parser.add_argument("--pool-size", type=int, default=8,
-                        help="Number of parallel workers (broker mode only)")
+    parser.add_argument("--pool-size", type=int, default=4,
+                        help="Number of parallel workers (parallel mode only)")
+    parser.add_argument("--adb-serial", default="localhost:5556",
+                        help="ADB serial for single-container mode (default: localhost:5556)")
+    parser.add_argument("--device-id", default="emulator-5554",
+                        help="Device ID inside the container (default: emulator-5554)")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT,
                         choices=list(PROMPT_MODULES.keys()),
                         help=f"System prompt variant (default: {DEFAULT_PROMPT})")
@@ -673,13 +835,33 @@ def build_common_parser(description="Run Claude Code CLI on AndroidWorld tasks")
     return parser
 
 
-def load_tasks(data_path, task_ids=None):
-    """Load task definitions from JSONL, optionally filtering by IDs."""
+def parse_containers(containers_str):
+    """Parse container specs string into list of (server_url, adb_serial) tuples.
+
+    Format: 'http://host:6800=localhost:5556,http://host:6801=localhost:5557'
+    """
+    containers = []
+    for spec in containers_str.split(","):
+        spec = spec.strip()
+        if "=" in spec:
+            server_url, adb_serial = spec.split("=", 1)
+            containers.append((server_url.strip(), adb_serial.strip()))
+        else:
+            raise ValueError(
+                f"Invalid container spec '{spec}'. "
+                f"Expected format: 'server_url=adb_serial'. "
+                f"Example: 'http://localhost:6800=localhost:5556'"
+            )
+    return containers
+
+
+def load_tasks(data_path, task_names=None):
+    """Load task definitions from JSONL, optionally filtering by names."""
     with open(data_path) as f:
         tasks = [json.loads(l) for l in f if l.strip()]
-    if task_ids:
-        ids = set(int(x) for x in task_ids.split(","))
-        tasks = [t for t in tasks if t["task_id"] in ids]
+    if task_names:
+        names = set(task_names.split(","))
+        tasks = [t for t in tasks if t["task_name"] in names]
     return tasks
 
 
@@ -690,7 +872,7 @@ def resolve_output_path(args):
     else:
         model_short = args.model.replace("-", "").replace(".", "").replace("/", "")
         ts = time.strftime("%y%m%d_%H%M")
-        exp_name = f"ClaudeCodeCLI_{model_short}_{ts}"
+        exp_name = f"ClaudeCodeCLI_MW_{model_short}_{ts}"
         output_dir = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             os.pardir, os.pardir, "results", exp_name,
@@ -706,30 +888,47 @@ def finalize_results(results, output_path, model, system_prompt, args,
                      extra_summary=None):
     """Print summary, save summary.json, ATIF trajectories, and prompt metadata."""
     successes = sum(1 for r in results if r.get("reward", 0) > 0)
+    total = len(results)
+
     print(f"\n{'='*70}")
-    print(f"FINAL: {successes}/{len(results)} ({100*successes/max(len(results),1):.0f}%)")
+    print(f"FINAL: {successes}/{total} ({100*successes/max(total,1):.0f}%)")
     print(f"{'='*70}")
-    for r in sorted(results, key=lambda x: x.get("task_id", 0)):
+    for r in sorted(results, key=lambda x: (x.get("task_name", ""), x.get("trial", 0))):
         s = "OK" if r.get("reward", 0) > 0 else "FAIL"
-        print(f"  task_id={r['task_id']:3d} [{s:4s}] {r.get('task', '')[:55]}")
+        trial = r.get("trial", 1)
+        name = r.get("task_name", "?")
+        print(f"  {name} (t{trial}) [{s:4s}] {str(r.get('task', ''))[:50]}")
+
+    # Per-task aggregation (across trials)
+    from collections import defaultdict
+    per_task = defaultdict(list)
+    for r in results:
+        per_task[r.get("task_name", "?")].append(r.get("reward", 0.0))
+
+    tasks_with_any_success = sum(1 for rewards in per_task.values() if any(r > 0 for r in rewards))
+    unique_tasks = len(per_task)
 
     total_input = sum(r.get("input_tokens", 0) for r in results)
     total_output = sum(r.get("output_tokens", 0) for r in results)
     total_cost = sum(r.get("cost_usd", 0) for r in results)
 
-    mode = "parallel" if args.broker_url else "sequential"
+    mode = "broker" if getattr(args, 'broker_url', None) else ("parallel" if args.containers else "sequential")
     summary = {
-        "total": len(results),
-        "success": successes,
-        "success_rate": successes / max(len(results), 1),
+        "total_entries": total,
+        "success_entries": successes,
+        "success_rate_by_entry": round(successes / max(total, 1), 4),
+        "unique_tasks": unique_tasks,
+        "tasks_with_any_success": tasks_with_any_success,
+        "success_rate_by_task": round(tasks_with_any_success / max(unique_tasks, 1), 4),
         "model": model,
         "max_turns": args.max_turns,
         "mode": mode,
         "total_input_tokens": total_input,
         "total_output_tokens": total_output,
-        "avg_input_tokens": total_input // max(len(results), 1),
-        "avg_output_tokens": total_output // max(len(results), 1),
+        "avg_input_tokens": total_input // max(total, 1),
+        "avg_output_tokens": total_output // max(total, 1),
         "total_cost_usd": round(total_cost, 4),
+        "per_task_rewards": {k: v for k, v in sorted(per_task.items())},
     }
     if extra_summary:
         summary.update(extra_summary)
@@ -747,6 +946,8 @@ def finalize_results(results, output_path, model, system_prompt, args,
 
     print(f"\nResults saved to {output_path}")
     print(f"Summary saved to {summary_path}")
+    print(f"\nPer-task success rate: {tasks_with_any_success}/{unique_tasks} "
+          f"({100*tasks_with_any_success/max(unique_tasks,1):.0f}%)")
 
 
 def preflight_checks(args, system_prompt, allowed_tools, disable_tree):
@@ -757,8 +958,8 @@ def preflight_checks(args, system_prompt, allowed_tools, disable_tree):
     if not disable_tree:
         print(f"A11y tree: enabled")
 
-    if not os.path.exists(ANDROID_ENV_SCRIPT):
-        print(f"ERROR: android_env.py not found at {ANDROID_ENV_SCRIPT}")
+    if not os.path.exists(MW_ENV_SCRIPT):
+        print(f"ERROR: mw_env.py not found at {MW_ENV_SCRIPT}")
         return False
 
     try:
