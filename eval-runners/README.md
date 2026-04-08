@@ -20,7 +20,7 @@ Evaluation and inference runners for Android agent benchmarks. Supports multiple
 | Agent | AndroidWorld | MobileWorld |
 |-------|-------------|-------------|
 | **Qwen3-VL** | ✓ | — |
-| **UI-Venus** | — | — |
+| **UI-Venus-1.5-30B-A3B** | ✓ | — |
 | **Qwen3.5 (DashScope)** | — | — |
 | **GeneralE2E (Gemini, etc.)** | — | — |
 
@@ -67,6 +67,14 @@ python eval-runners/benchmarks/mobileworld/run_qwen3vl.py \
   --api-url https://openrouter.ai/api/v1 \
   --api-key $OPENROUTER_API_KEY \
   --broker-url http://localhost:9400 --pool-size 16 --max-steps 30
+
+# UI-Venus-1.5 GUI agent on AndroidWorld (local vLLM)
+PYTHONPATH=eval-runners/benchmarks/androidworld:eval-runners/agents/gui:. \
+python eval-runners/benchmarks/mobileworld/run_venus.py \
+  --data data/androidworld_original/val_data_seed7.jsonl \
+  --model /path/to/UI-Venus-1.5-30B-A3B \
+  --api-url http://localhost:8300/v1 \
+  --broker-url http://localhost:9400 --pool-size 12 --max-steps 30
 
 # --- MobileWorld ---
 
