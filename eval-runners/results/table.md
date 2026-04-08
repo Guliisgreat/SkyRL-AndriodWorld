@@ -11,25 +11,26 @@ Task split: **101 CLI-solvable** | **15 GUI-only** (per [ground truth reference]
 | UI-Venus-1.5 | UI-Venus-1.5-30B-A3B | GUI (tap/swipe) | Local vLLM | **59.5%** (69/116) | 62.4% (63/101) | **40.0%** (6/15) | — |
 | Qwen3VLAgentMCP | qwen3-vl-30b-a3b-instruct | GUI (tap/swipe) | OpenRouter | **56.0%** (65/116) | 58.4% (59/101) | **40.0%** (6/15) | — |
 | Terminus2 | minimax-m2.7 | ADB shell | OpenRouter | **52.6%** (61/116) | 58.4% (59/101) | 13.3% (2/15) | $5.82 |
+| MAI-UI | MAI-UI-8B | GUI (tap/swipe) | Local vLLM | **31.0%** (36/116) | 33.7% (34/101) | 13.3% (2/15) | — |
 
 ## CLI-Solvable Tasks (101) by Difficulty
 
-| Difficulty | Claude Opus 4.6 | UI-Venus-1.5-30B | Qwen3-VL-30B | Terminus2 m2.7 |
-|------------|----------------:|-----------------:|-------------:|---------------:|
-| android_easy (38) | 22/38 (58%) | 28/38 (74%) | 29/38 (76%) | 23/38 (61%) |
-| android_medium (26) | 18/26 (69%) | 14/26 (54%) | 10/26 (38%) | 16/26 (62%) |
-| android_hard (12) | 7/12 (58%) | 4/12 (33%) | 5/12 (42%) | 3/12 (25%) |
-| info_easy (14) | **14/14 (100%)** | 10/14 (71%) | 9/14 (64%) | 10/14 (71%) |
-| info_medium (8) | **8/8 (100%)** | 7/8 (88%) | 5/8 (62%) | 4/8 (50%) |
-| info_hard (3) | **3/3 (100%)** | 0/3 (0%) | 1/3 (33%) | 3/3 (100%) |
+| Difficulty | Claude Opus 4.6 | UI-Venus-1.5-30B | Qwen3-VL-30B | Terminus2 m2.7 | MAI-UI-8B |
+|------------|----------------:|-----------------:|-------------:|---------------:|----------:|
+| android_easy (38) | 22/38 (58%) | 28/38 (74%) | 29/38 (76%) | 23/38 (61%) | 16/38 (42%) |
+| android_medium (26) | 18/26 (69%) | 14/26 (54%) | 10/26 (38%) | 16/26 (62%) | 6/26 (23%) |
+| android_hard (12) | 7/12 (58%) | 4/12 (33%) | 5/12 (42%) | 3/12 (25%) | 1/12 (8%) |
+| info_easy (14) | **14/14 (100%)** | 10/14 (71%) | 9/14 (64%) | 10/14 (71%) | 5/14 (36%) |
+| info_medium (8) | **8/8 (100%)** | 7/8 (88%) | 5/8 (62%) | 4/8 (50%) | 4/8 (50%) |
+| info_hard (3) | **3/3 (100%)** | 0/3 (0%) | 1/3 (33%) | 3/3 (100%) | 2/3 (67%) |
 
 ## GUI-Only Tasks (15) by Difficulty
 
-| Difficulty | Claude Opus 4.6 | UI-Venus-1.5-30B | Qwen3-VL-30B | Terminus2 m2.7 |
-|------------|----------------:|-----------------:|-------------:|---------------:|
-| android_easy (9) | 1/9 (11%) | 5/9 (56%) | 5/9 (56%) | 1/9 (11%) |
-| android_medium (2) | 0/2 (0%) | 1/2 (50%) | 1/2 (50%) | 0/2 (0%) |
-| android_hard (4) | 1/4 (25%) | 0/4 (0%) | 0/4 (0%) | 1/4 (25%) |
+| Difficulty | Claude Opus 4.6 | UI-Venus-1.5-30B | Qwen3-VL-30B | Terminus2 m2.7 | MAI-UI-8B |
+|------------|----------------:|-----------------:|-------------:|---------------:|----------:|
+| android_easy (9) | 1/9 (11%) | 5/9 (56%) | 5/9 (56%) | 1/9 (11%) | 2/9 (22%) |
+| android_medium (2) | 0/2 (0%) | 1/2 (50%) | 1/2 (50%) | 0/2 (0%) | 0/2 (0%) |
+| android_hard (4) | 1/4 (25%) | 0/4 (0%) | 0/4 (0%) | 1/4 (25%) | 0/4 (0%) |
 
 ## Key Observations
 
@@ -41,18 +42,18 @@ Task split: **101 CLI-solvable** | **15 GUI-only** (per [ground truth reference]
 
 ## Run Details
 
-| | Claude Opus 4.6 | UI-Venus-1.5-30B | Qwen3-VL-30B | Terminus2 m2.7 |
-|--|-----------------|------------------|--------------|----------------|
-| Date | 2026-04-08 | 2026-04-08 | 2026-04-07 | 2026-04-08 |
-| Runner | `run_claude_cli.py` | `run_venus.py` | `run_qwen3vl.py` | `run_terminus2.py` |
-| Prompt/Agent | `clean_optimized` | `VenusNaviAgent` | `Qwen3VLAgentMCP` | `optimized-v2` |
-| Max turns/steps | 30 | 30 | 30 | 30 |
-| Avg steps/task | 12.7 | 14.2 | 11.7 | 14.0 |
-| Temperature | — | 0.0 | 0.0 | 0.7 |
-| Avg time/task | 91s | 102s | 135s | 168s |
-| Avg input tokens/task | 325,196 | 47,252 | 42,938 | 288,128 |
-| Avg output tokens/task | 2,799 | 1,618 | 1,381 | 4,107 |
-| Results dir | `ClaudeCodeCLI_claudeopus46_260408_0122/` | `UIVenus15_30BA3B_260408/` | `ClaudeCodeCLI_qwenqwen3vl30ba3binstruct_260407_2117/` | `ClaudeCodeCLI_openrouterminimaxminimaxm27_260408_0207/` |
+| | Claude Opus 4.6 | UI-Venus-1.5-30B | Qwen3-VL-30B | Terminus2 m2.7 | MAI-UI-8B |
+|--|-----------------|------------------|--------------|----------------|-----------|
+| Date | 2026-04-08 | 2026-04-08 | 2026-04-07 | 2026-04-08 | 2026-04-08 |
+| Runner | `run_claude_cli.py` | `run_venus.py` | `run_qwen3vl.py` | `run_terminus2.py` | `run_mai.py` |
+| Prompt/Agent | `clean_optimized` | `VenusNaviAgent` | `Qwen3VLAgentMCP` | `optimized-v2` | `MAIUINaivigationAgent` |
+| Max turns/steps | 30 | 30 | 30 | 30 | 30 |
+| Avg steps/task | 12.7 | 14.2 | 11.7 | 14.0 | 21.1 |
+| Temperature | — | 0.0 | 0.0 | 0.7 | 0.0 |
+| Avg time/task | 91s | 102s | 135s | 168s | 267s |
+| Avg input tokens/task | 325,196 | 47,252 | 42,938 | 288,128 | 191,868 |
+| Avg output tokens/task | 2,799 | 1,618 | 1,381 | 4,107 | 2,079 |
+| Results dir | `ClaudeCodeCLI_claudeopus46_260408_0122/` | `UIVenus15_30BA3B_260408/` | `ClaudeCodeCLI_qwenqwen3vl30ba3binstruct_260407_2117/` | `ClaudeCodeCLI_openrouterminimaxminimaxm27_260408_0207/` | `MAIUI8B_260408/` |
 
 GUI-only task IDs: 0, 1, 8, 20, 28, 29, 30, 37, 40, 47, 55, 75, 76, 78, 80
 
