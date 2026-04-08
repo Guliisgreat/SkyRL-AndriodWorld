@@ -66,6 +66,7 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 
 | Agent | Model | Action Space | API | SR |
 |-------|-------|-------------|-----|---:|
+| GeneralE2E | Kimi K2.5 | GUI (tap/swipe) | OpenRouter | **37.6%** (44/117) |
 | UI-Venus-1.5 | UI-Venus-1.5-30B-A3B | GUI (tap/swipe) | Local vLLM | **11.1%** (13/117) |
 
 ## Successful Tasks (UI-Venus-1.5-30B-A3B)
@@ -88,15 +89,15 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 
 ## Run Details
 
-| | UI-Venus-1.5-30B |
-|--|------------------|
-| Date | 2026-04-08 |
-| Runner | `run_gui_agent_broker.py` |
-| Agent type | `ui_venus_agent` |
-| Max steps | 50 |
-| Avg steps/task | 18.7 |
-| Temperature | 0.0 |
-| Avg time/task | 111s |
-| Avg input tokens/task | 24,554 |
-| Avg output tokens/task | 655 |
-| Results dir | `GUIAgent_ui_venus_agent_UIVenus1530BA3B_260408_0157/` |
+| | Kimi K2.5 | UI-Venus-1.5-30B |
+|--|-----------|------------------|
+| Date | 2026-04-08 | 2026-04-08 |
+| Runner | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` |
+| Agent type | `general_e2e` | `ui_venus_agent` |
+| Max steps | 50 | 50 |
+| Avg steps/task | 23.5 | 18.7 |
+| Temperature | 0.0 | 0.0 |
+| Avg time/task | 265s | 111s |
+| Avg input tokens/task | 290,828 | 24,554 |
+| Avg output tokens/task | 2,909 | 655 |
+| Results dir | `GUIAgent_general_e2e_moonshotaikimik25_260408_0252/` | `GUIAgent_ui_venus_agent_UIVenus1530BA3B_260408_0157/` |
