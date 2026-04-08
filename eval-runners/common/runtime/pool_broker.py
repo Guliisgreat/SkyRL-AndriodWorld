@@ -29,12 +29,20 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from loguru import logger
 
-from skyrl_agent.runtime.android.container_manager import (
-    ContainerFactory,
-    ContainerConfig,
-    ContainerInstance,
-    PortAllocator,
-)
+try:
+    from skyrl_agent.runtime.android.container_manager import (
+        ContainerFactory,
+        ContainerConfig,
+        ContainerInstance,
+        PortAllocator,
+    )
+except ModuleNotFoundError:
+    from container_manager import (
+        ContainerFactory,
+        ContainerConfig,
+        ContainerInstance,
+        PortAllocator,
+    )
 
 
 # ─── Models ───────────────────────────────────────────────────────────────────
