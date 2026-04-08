@@ -27,7 +27,7 @@ import uuid
 ANDROID_ENV_SCRIPT = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     os.pardir, os.pardir,
-    "skyrl_agent", "agents", "android", "claude_sdk", "android_env.py",
+    "agents", "cli", "claude_sdk", "android_env.py",
 )
 ANDROID_ENV_SCRIPT = os.path.abspath(ANDROID_ENV_SCRIPT)
 
@@ -46,6 +46,7 @@ PROMPT_MODULES = {
     "minimal_shell_escaping_no_gui": "skyrl_agent.agents.android.claude_sdk.prompts.minimal_shell_escaping_no_gui",
     "optimized_terminal_v1": "skyrl_agent.agents.android.claude_sdk.prompts.optimized_terminal_v1",
     "optimized_terminal_v2": "skyrl_agent.agents.android.claude_sdk.prompts.optimized_terminal_v2",
+    "clean_optimized": "agents.cli.claude_sdk.prompts.clean_optimized",
 }
 DEFAULT_PROMPT = "adb_baseline"
 

@@ -4,17 +4,25 @@ Evaluation and inference runners for Android agent benchmarks. Supports multiple
 
 ## Agent × Benchmark Matrix
 
+✓ = evaluated, results in [`results/table.md`](results/table.md).
+
+### CLI Agents (ADB shell, no screenshots)
+
 | Agent | AndroidWorld | MobileWorld |
 |-------|-------------|-------------|
-| **Claude Code CLI** | `benchmarks/androidworld/run_claude_cli.py` | `benchmarks/mobileworld/run_claude_cli.py` |
-| **OpenAI (T3A/M3A/TreeADB)** | `benchmarks/androidworld/run_openai.py` | — |
-| **Terminus2** | `benchmarks/androidworld/run_terminus2.py` | — |
-| **Mini-SWE** | `benchmarks/androidworld/run_mini_swe.py` | — |
-| **UI-Venus** | — | `benchmarks/mobileworld/run_venus.py` |
-| **Qwen3-VL** | — | `benchmarks/mobileworld/run_qwen3vl.py` |
-| **Qwen3.5 (DashScope)** | — | `benchmarks/mobileworld/run_qwen35_dashscope.py` |
-| **GeneralE2E (Gemini, etc.)** | — | `benchmarks/mobileworld/run_gui_agent_broker.py` |
-| **Ground Truth Oracle** | `benchmarks/androidworld/ground_truth/` | `benchmarks/mobileworld/ground_truth/` |
+| **Claude Code CLI** | ✓ | — |
+| **Terminus2** | — | — |
+| **Mini-SWE** | — | — |
+| **Ground Truth Oracle** | — | — |
+
+### GUI Agents (screenshots + tap/swipe/type)
+
+| Agent | AndroidWorld | MobileWorld |
+|-------|-------------|-------------|
+| **Qwen3-VL** | ✓ | — |
+| **UI-Venus** | — | — |
+| **Qwen3.5 (DashScope)** | — | — |
+| **GeneralE2E (Gemini, etc.)** | — | — |
 
 ## Quick Start
 
@@ -22,23 +30,14 @@ Evaluation and inference runners for Android agent benchmarks. Supports multiple
 
 ```bash
 # AndroidWorld (16 containers)
-cd skyrl-agent
-python -m skyrl_agent.runtime.android.pool_broker \
-  --pool-size 16 --docker-image androidworld:2026 --port 9300
+PYTHONPATH=eval-runners/common/runtime:. \
+python eval-runners/common/runtime/pool_broker.py \
+  --pool-size 16 --docker-image androidworld:2026 --port 9400 \
+  --base-env-id 700 --parallel 4
 
-# MobileWorld (16 containers)
-for i in $(seq 0 15); do
-  docker run -d --name mw-broker-$i --privileged --device=/dev/kvm \
-    -p $((6804+i)):6800 mobile_world:reset \
-    tail -f /var/log/emulator.log /var/log/server.log
-done
-sleep 150  # wait for emulators
-for i in $(seq 0 15); do
-  curl -s -X POST http://localhost:$((6804+i))/reset \
-    -H "Content-Type: application/json" \
-    -d '{"task_name":"_reset","req_device":"emulator-5554"}'
-done
-PYTHONPATH=. python -m eval-runners.common.runtime.mw_pool_broker \
+# MobileWorld (pre-existing containers, scan port range)
+PYTHONPATH=eval-runners/common/runtime:. \
+python eval-runners/common/runtime/mw_pool_broker.py \
   --scan-range 6804-6819 --port 9400
 ```
 
@@ -51,21 +50,44 @@ source .env  # OPENAI_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY, DASHSCOPE_
 ### 3. Run evaluation
 
 ```bash
-# Claude CLI on AndroidWorld
+# --- AndroidWorld ---
+
+# Claude Code CLI (ADB agent) on AndroidWorld
+PYTHONPATH=eval-runners/benchmarks/androidworld:. \
 python eval-runners/benchmarks/androidworld/run_claude_cli.py \
-  --data skyrl-agent/data/androidworld_original/val_data_seed7.jsonl \
-  --broker-url http://localhost:9300 --pool-size 16 \
-  --model claude-sonnet-4-6 --max-turns 30
+  --data data/androidworld_original/val_data_seed7.jsonl \
+  --broker-url http://localhost:9400 --pool-size 16 \
+  --model claude-opus-4-6 --prompt clean_optimized --max-turns 30
+
+# Qwen3-VL GUI agent on AndroidWorld (via OpenRouter)
+PYTHONPATH=eval-runners/benchmarks/androidworld:eval-runners/agents/gui:. \
+python eval-runners/benchmarks/mobileworld/run_qwen3vl.py \
+  --data data/androidworld_original/val_data_seed7.jsonl \
+  --model qwen/qwen3-vl-30b-a3b-instruct \
+  --api-url https://openrouter.ai/api/v1 \
+  --api-key $OPENROUTER_API_KEY \
+  --broker-url http://localhost:9400 --pool-size 16 --max-steps 30
+
+# --- MobileWorld ---
 
 # Claude CLI on MobileWorld
 python eval-runners/benchmarks/mobileworld/run_claude_cli.py \
-  --data skyrl-agent/data/mobileworld/gui_only_tasks.jsonl \
+  --data eval-runners/data/mobileworld/gui_only_tasks.jsonl \
   --broker-url http://localhost:9400 --pool-size 8 \
   --model claude-sonnet-4-6 --max-turns 30 --prompt mw_adb_oracle
 
+# Qwen3-VL GUI agent on MobileWorld (via OpenRouter)
+python eval-runners/benchmarks/mobileworld/run_gui_agent_broker.py \
+  --data eval-runners/data/mobileworld/gui_only_tasks.jsonl \
+  --agent-type qwen3vl \
+  --model qwen/qwen3-vl-30b-a3b-instruct \
+  --api-url https://openrouter.ai/api/v1 \
+  --api-key $OPENROUTER_API_KEY \
+  --broker-url http://localhost:9400 --pool-size 16 --max-steps 50
+
 # Gemini on MobileWorld (via OpenRouter)
 python eval-runners/benchmarks/mobileworld/run_gui_agent_broker.py \
-  --data skyrl-agent/data/mobileworld/gui_only_tasks.jsonl \
+  --data eval-runners/data/mobileworld/gui_only_tasks.jsonl \
   --agent-type general_e2e \
   --model google/gemini-3.1-pro-preview \
   --api-url https://openrouter.ai/api/v1 \
@@ -77,7 +99,7 @@ CUDA_VISIBLE_DEVICES=3 python -m vllm.entrypoints.openai.api_server \
   --model /path/to/UI-Venus-1.5-30B-A3B --port 8300 \
   --trust-remote-code --max-model-len 8192 &
 python eval-runners/benchmarks/mobileworld/run_venus.py \
-  --data skyrl-agent/data/mobileworld/gui_only_tasks.jsonl \
+  --data eval-runners/data/mobileworld/gui_only_tasks.jsonl \
   --broker-url http://localhost:9400 --pool-size 8 \
   --model /path/to/UI-Venus-1.5-30B-A3B \
   --api-url http://localhost:8300/v1 --max-steps 50
@@ -85,11 +107,6 @@ python eval-runners/benchmarks/mobileworld/run_venus.py \
 # Ground truth replay (MobileWorld)
 python eval-runners/benchmarks/mobileworld/ground_truth/run_gt_mwenv_broker.py \
   --broker-url http://localhost:9400 --pool-size 8
-
-# OpenAI agent (T3A) on AndroidWorld
-python eval-runners/benchmarks/androidworld/run_openai.py \
-  --config eval-runners/benchmarks/androidworld/configs/openai_android_t3a.yaml \
-  --broker-url http://localhost:9300 --pool-size 16
 ```
 
 ## Directory Structure
@@ -202,11 +219,13 @@ All brokers expose the same HTTP API:
 
 ## Results
 
-Results are saved to `skyrl-agent/results/` with auto-generated names:
+Results are saved to `eval-runners/results/` with auto-generated names:
 
 ```
-results/{AgentClass}_{ModelShort}_{yymmdd}_{HHMM}/
+eval-runners/results/{AgentClass}_{ModelShort}_{yymmdd}_{HHMM}/
 ├── results.jsonl        # Per-task results
 ├── summary.json         # Aggregate stats
 └── atif_trajectories/   # ATIF-v1.6 trajectory files
 ```
+
+See [`results/table.md`](results/table.md) for the latest benchmark numbers.

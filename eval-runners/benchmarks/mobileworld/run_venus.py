@@ -22,10 +22,12 @@ import os
 import sys
 from functools import partial
 
-_EXAMPLES_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_CLAUDE_SDK_DIR = os.path.join(_EXAMPLES_DIR, "run_claude_sdk")
-if _CLAUDE_SDK_DIR not in sys.path:
-    sys.path.insert(0, _CLAUDE_SDK_DIR)
+_BENCHMARKS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_AW_DIR = os.path.join(_BENCHMARKS_DIR, "androidworld")
+_GUI_DIR = os.path.join(os.path.dirname(_BENCHMARKS_DIR), "agents", "gui")
+for _d in (_AW_DIR, _GUI_DIR):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
 
 from claude_cli_common import (
     check_health,

@@ -20,13 +20,13 @@ import traceback
 import numpy as np
 from PIL import Image
 
-_EXAMPLES_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_CLAUDE_SDK_DIR = os.path.join(_EXAMPLES_DIR, "run_claude_sdk")
-if _CLAUDE_SDK_DIR not in sys.path:
-    sys.path.insert(0, _CLAUDE_SDK_DIR)
+_EVAL_RUNNERS_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_AW_DIR = os.path.join(_EVAL_RUNNERS_DIR, "benchmarks", "androidworld")
+if _AW_DIR not in sys.path:
+    sys.path.insert(0, _AW_DIR)
 
 _MW_SRC = os.path.join(
-    os.path.dirname(_EXAMPLES_DIR), os.pardir, "MobileWorld", "src"
+    _EVAL_RUNNERS_DIR, os.pardir, "MobileWorld", "src"
 )
 _MW_SRC = os.path.abspath(_MW_SRC)
 if _MW_SRC not in sys.path:
