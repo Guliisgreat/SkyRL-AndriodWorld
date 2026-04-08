@@ -49,8 +49,8 @@ Task split: **101 CLI-solvable** | **15 GUI-only** (per [ground truth reference]
 | Avg steps/task | 12.7 | 14.2 | 11.7 |
 | Temperature | — | 0.0 | 0.0 |
 | Avg time/task | 91s | 102s | 135s |
-| Input tokens | — | 5,481,319 | 4,980,891 |
-| Output tokens | — | 187,728 | 160,289 |
+| Avg input tokens/task | 325,196 | 47,252 | 42,938 |
+| Avg output tokens/task | 2,799 | 1,618 | 1,381 |
 | Results dir | `ClaudeCodeCLI_claudeopus46_260408_0122/` | `UIVenus15_30BA3B_260408/` | `ClaudeCodeCLI_qwenqwen3vl30ba3binstruct_260407_2117/` |
 
 GUI-only task IDs: 0, 1, 8, 20, 28, 29, 30, 37, 40, 47, 55, 75, 76, 78, 80
