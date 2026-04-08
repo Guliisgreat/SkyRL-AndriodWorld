@@ -11,7 +11,7 @@ Evaluation and inference runners for Android agent benchmarks. Supports multiple
 | Agent | AndroidWorld | MobileWorld |
 |-------|-------------|-------------|
 | **Claude Code CLI** | ✓ | — |
-| **Terminus2** | — | — |
+| **Terminus2** | ✓ | — |
 | **Mini-SWE** | — | — |
 | **Ground Truth Oracle** | — | — |
 

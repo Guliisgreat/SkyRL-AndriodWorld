@@ -25,11 +25,10 @@ import os
 import sys
 from functools import partial
 
-# Add run_claude_sdk to path for claude_cli_common
-_EXAMPLES_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_CLAUDE_SDK_DIR = os.path.join(_EXAMPLES_DIR, "run_claude_sdk")
-if _CLAUDE_SDK_DIR not in sys.path:
-    sys.path.insert(0, _CLAUDE_SDK_DIR)
+# Ensure this directory is on sys.path for claude_cli_common + terminus2_common
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _THIS_DIR not in sys.path:
+    sys.path.insert(0, _THIS_DIR)
 
 from claude_cli_common import (
     check_health,

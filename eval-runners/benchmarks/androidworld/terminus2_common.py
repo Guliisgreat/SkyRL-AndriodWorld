@@ -15,11 +15,11 @@ import sys
 import tempfile
 import time
 
-# Add parent dir (run_claude_sdk) to path so we can import claude_cli_common
+# Ensure this directory is on sys.path for claude_cli_common
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _THIS_DIR not in sys.path:
+    sys.path.insert(0, _THIS_DIR)
 _EXAMPLES_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_CLAUDE_SDK_DIR = os.path.join(_EXAMPLES_DIR, "run_claude_sdk")
-if _CLAUDE_SDK_DIR not in sys.path:
-    sys.path.insert(0, _CLAUDE_SDK_DIR)
 
 from claude_cli_common import force_eval, reset_container  # noqa: E402
 
@@ -30,10 +30,10 @@ from claude_cli_common import force_eval, reset_container  # noqa: E402
 import importlib.util as _ilu
 import types as _types
 
-_SKYRL_AGENT_ROOT = os.path.abspath(os.path.join(_EXAMPLES_DIR, os.pardir))
+_EVAL_RUNNERS_ROOT = os.path.abspath(os.path.join(_EXAMPLES_DIR, os.pardir))
 _T2_PKG = os.path.join(
-    _SKYRL_AGENT_ROOT,
-    "skyrl_agent", "agents", "android", "terminus2",
+    _EVAL_RUNNERS_ROOT,
+    "agents", "cli", "terminus2",
 )
 
 
@@ -51,15 +51,15 @@ def _import_t2_module(module_name: str, file_name: str):
     # Ensure parent stubs exist so relative imports resolve
     _ensure_stub_package(
         "skyrl_agent",
-        os.path.join(_SKYRL_AGENT_ROOT, "skyrl_agent"),
+        os.path.join(_EVAL_RUNNERS_ROOT, "agents"),
     )
     _ensure_stub_package(
         "skyrl_agent.agents",
-        os.path.join(_SKYRL_AGENT_ROOT, "skyrl_agent", "agents"),
+        os.path.join(_EVAL_RUNNERS_ROOT, "agents"),
     )
     _ensure_stub_package(
         "skyrl_agent.agents.android",
-        os.path.join(_SKYRL_AGENT_ROOT, "skyrl_agent", "agents", "android"),
+        os.path.join(_EVAL_RUNNERS_ROOT, "agents", "cli"),
     )
     _ensure_stub_package(
         "skyrl_agent.agents.android.terminus2",
@@ -88,8 +88,8 @@ AndroidTerminus2Agent = _agent_mod.AndroidTerminus2Agent
 
 # Path to android_env.py (same resolution as claude_cli_common)
 ANDROID_ENV_SCRIPT = os.path.join(
-    _SKYRL_AGENT_ROOT,
-    "skyrl_agent", "agents", "android", "claude_sdk", "android_env.py",
+    _EVAL_RUNNERS_ROOT,
+    "agents", "cli", "claude_sdk", "android_env.py",
 )
 ANDROID_ENV_SCRIPT = os.path.abspath(ANDROID_ENV_SCRIPT)
 
