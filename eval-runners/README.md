@@ -23,8 +23,8 @@ Evaluation and inference runners for Android agent benchmarks. Supports multiple
 | **UI-Venus-1.5-30B-A3B** | ✓ | ✓ |
 | **MAI-UI-8B** | ✓ | — |
 | **Qwen3.5 (DashScope)** | — | — |
+| **GeneralE2E (Gemini 2.5 Pro)** | ✓ | — |
 | **GeneralE2E (Kimi K2.5)** | — | ✓ |
-| **GeneralE2E (Gemini, etc.)** | — | — |
 
 ## Quick Start
 
