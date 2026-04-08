@@ -54,3 +54,48 @@ Task split: **101 CLI-solvable** | **15 GUI-only** (per [ground truth reference]
 | Results dir | `ClaudeCodeCLI_claudeopus46_260408_0122/` | `UIVenus15_30BA3B_260408/` | `ClaudeCodeCLI_qwenqwen3vl30ba3binstruct_260407_2117/` |
 
 GUI-only task IDs: 0, 1, 8, 20, 28, 29, 30, 37, 40, 47, 55, 75, 76, 78, 80
+
+---
+
+# MobileWorld Evaluation Results
+
+Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
+
+## Overall
+
+| Agent | Model | Action Space | API | SR |
+|-------|-------|-------------|-----|---:|
+| UI-Venus-1.5 | UI-Venus-1.5-30B-A3B | GUI (tap/swipe) | Local vLLM | **11.1%** (13/117) |
+
+## Successful Tasks (UI-Venus-1.5-30B-A3B)
+
+| Task | Steps | Time |
+|------|------:|-----:|
+| AcceptMeetingTask | 8 | 66s |
+| AdjustBrightnessMaximumTask | 7 | 61s |
+| AdjustBrightnessMinimumTask | 6 | 57s |
+| CancelMeetingTask | 7 | 61s |
+| ChangeWallpaperTask | 9 | 71s |
+| CheckEventTimeTask | 14 | 69s |
+| CheckInvoiceTask3 | 19 | 101s |
+| CheckPuchasedItem | 11 | 57s |
+| ChromeSearchBeijingWeatherTask | 10 | 55s |
+| CloseFlightModeTask | 4 | 28s |
+| MastodonFollowTask | 16 | 114s |
+| MastodonNewPostTask | 7 | 74s |
+| MastodonReplyTask | 30 | 178s |
+
+## Run Details
+
+| | UI-Venus-1.5-30B |
+|--|------------------|
+| Date | 2026-04-08 |
+| Runner | `run_gui_agent_broker.py` |
+| Agent type | `ui_venus_agent` |
+| Max steps | 50 |
+| Avg steps/task | 18.7 |
+| Temperature | 0.0 |
+| Avg time/task | 111s |
+| Avg input tokens/task | 24,554 |
+| Avg output tokens/task | 655 |
+| Results dir | `GUIAgent_ui_venus_agent_UIVenus1530BA3B_260408_0157/` |

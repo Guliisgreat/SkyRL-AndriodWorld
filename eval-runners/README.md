@@ -20,7 +20,7 @@ Evaluation and inference runners for Android agent benchmarks. Supports multiple
 | Agent | AndroidWorld | MobileWorld |
 |-------|-------------|-------------|
 | **Qwen3-VL** | ✓ | — |
-| **UI-Venus-1.5-30B-A3B** | ✓ | — |
+| **UI-Venus-1.5-30B-A3B** | ✓ | ✓ |
 | **Qwen3.5 (DashScope)** | — | — |
 | **GeneralE2E (Gemini, etc.)** | — | — |
 
