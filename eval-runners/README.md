@@ -21,7 +21,7 @@ Evaluation and inference runners for Android agent benchmarks. Supports multiple
 |-------|-------------|-------------|
 | **Qwen3-VL** | ✓ | — |
 | **UI-Venus-1.5-30B-A3B** | ✓ | ✓ |
-| **MAI-UI-8B** | ✓ | — |
+| **MAI-UI-8B** | ✓ | ✓ |
 | **Qwen3.5 (DashScope)** | — | — |
 | **GeneralE2E (Gemini 2.5 Pro)** | ✓ | — |
 | **GeneralE2E (Kimi K2.5)** | — | ✓ |
@@ -43,7 +43,26 @@ python eval-runners/common/runtime/mw_pool_broker.py \
   --scan-range 6804-6819 --port 9400
 ```
 
-### 2. Source API keys
+### 2. Local model serving (vLLM)
+
+For local GUI models (MAI-UI-8B, UI-Venus, etc.), use **vllm 0.11.0** for inference. This is critical — MAI-UI-8B drops from 69.8% to 31.0% SR on AndroidWorld when served with vllm 0.13 instead of 0.11.
+
+```bash
+# Create a dedicated conda env for vllm 0.11.0
+conda create -n vllm011 python=3.12 -y
+pip install "vllm==0.11.0" "transformers<5"
+
+# Launch MAI-UI-8B (TP=4 for throughput with parallel eval)
+CUDA_VISIBLE_DEVICES=0,1,2,3 python -m vllm.entrypoints.openai.api_server \
+  --model /path/to/MAI-UI-8B \
+  --host 0.0.0.0 --port 8401 \
+  --trust-remote-code --max-model-len 32768 \
+  --tensor-parallel-size 4 --gpu-memory-utilization 0.9
+```
+
+> **Note**: `max-model-len` must be at least 32768 for vision models — screenshots at 1080x2400 plus multi-turn history easily exceed 8192 tokens.
+
+### 3. Source API keys
 
 ```bash
 source .env  # OPENAI_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY, DASHSCOPE_API_KEY
@@ -78,6 +97,13 @@ python eval-runners/benchmarks/mobileworld/run_venus.py \
   --api-url http://localhost:8300/v1 \
   --broker-url http://localhost:9400 --pool-size 12 --max-steps 30
 
+# MAI-UI-8B GUI agent on AndroidWorld (local vLLM 0.11.0)
+python eval-runners/benchmarks/mobileworld/run_mai.py \
+  --data data/androidworld_original/val_data_seed7.jsonl \
+  --model /path/to/MAI-UI-8B \
+  --api-url http://localhost:8401/v1 \
+  --broker-url http://localhost:9300 --pool-size 16 --max-steps 50
+
 # --- MobileWorld ---
 
 # Claude CLI on MobileWorld
@@ -103,6 +129,14 @@ python eval-runners/benchmarks/mobileworld/run_gui_agent_broker.py \
   --api-url https://openrouter.ai/api/v1 \
   --api-key $OPENROUTER_API_KEY \
   --broker-url http://localhost:9400 --pool-size 8 --max-steps 50
+
+# MAI-UI-8B on MobileWorld (local vLLM 0.11.0)
+python eval-runners/benchmarks/mobileworld/run_gui_agent_broker.py \
+  --data eval-runners/data/mobileworld/gui_only_tasks.jsonl \
+  --agent-type mai_ui_agent \
+  --model /path/to/MAI-UI-8B \
+  --api-url http://localhost:8401/v1 \
+  --broker-url http://localhost:9400 --pool-size 16 --max-steps 50
 
 # UI-Venus on MobileWorld (local vLLM)
 CUDA_VISIBLE_DEVICES=3 python -m vllm.entrypoints.openai.api_server \
