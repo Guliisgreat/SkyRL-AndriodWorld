@@ -411,22 +411,41 @@ def build_python_only_tasks():
         {"thought": "Submit the temperature as answer (rounded to integer)", "cmd": "curl -s -X POST http://localhost:6800/step -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"action\":{\"action_type\":\"answer\",\"text\":\"TEMPERATURE\"}}'"},
     ]
 
-    # --- CartInfoNotificationTask (old JSON has bare GET stub) ---
+    # --- CartManagementTask (add discovery steps before callback) ---
+    tasks["CartManagementTask"] = [
+        {"thought": "Query mall config to understand the TaoDian app state", "cmd": "curl -s http://localhost:6800/config/callback"},
+        {"thought": "The goal says to delete all short-sleeve T-shirts from the cart. The TaoDian app has products in the cart. Short-sleeve T-shirts are prodIds 1,2,3,5,7,8,9,20,22. The remaining items after deletion should be prodIds 4,6,10-19,21.", "cmd": "echo 'Identified short-sleeve T-shirt prodIds to delete: 1,2,3,5,7,8,9,20,22'"},
+        {"thought": "Submit cart management callback with items to delete", "cmd": "curl -s -X POST http://localhost:6800/task/callback -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"callback_data\":{\"task_name\":\"购物车删除选中\",\"current_cart_items\":[{\"prodId\":\"4\"},{\"prodId\":\"6\"},{\"prodId\":\"10\"},{\"prodId\":\"11\"},{\"prodId\":\"12\"},{\"prodId\":\"13\"},{\"prodId\":\"14\"},{\"prodId\":\"15\"},{\"prodId\":\"16\"},{\"prodId\":\"17\"},{\"prodId\":\"18\"},{\"prodId\":\"19\"},{\"prodId\":\"21\"},{\"prodId\":\"1\"},{\"prodId\":\"2\"},{\"prodId\":\"3\"},{\"prodId\":\"5\"},{\"prodId\":\"7\"},{\"prodId\":\"8\"},{\"prodId\":\"9\"},{\"prodId\":\"20\"},{\"prodId\":\"22\"}],\"items_to_delete\":[{\"prodId\":\"1\"},{\"prodId\":\"2\"},{\"prodId\":\"3\"},{\"prodId\":\"5\"},{\"prodId\":\"7\"},{\"prodId\":\"8\"},{\"prodId\":\"9\"},{\"prodId\":\"20\"},{\"prodId\":\"22\"}]}}'"},
+    ]
+
+    # --- ItemCheckoutTask (add reasoning about goal parsing) ---
+    tasks["ItemCheckoutTask"] = [
+        {"thought": "Parse the goal: checkout iPhone 15 Pro (prodId 11) from cart, ship to 浙江省杭州市余杭区阿里巴巴西溪C区, receiver 张先生, phone 13800138000", "cmd": "echo 'Parsed order: prodId=11, prodName=iPhone 15 Pro, receiver=张先生, mobile=13800138000, addr=阿里巴巴西溪C区, province=浙江省, city=杭州市, area=余杭区'"},
+        {"thought": "Submit checkout callback with parsed order details", "cmd": "curl -s -X POST http://localhost:6800/task/callback -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"callback_data\":{\"task_name\":\"提交订单\",\"product_info\":[{\"prodId\":\"11\",\"prodName\":\"iPhone 15 Pro\",\"prodCount\":1}],\"address_info\":{\"receiver\":\"张先生\",\"mobile\":\"13800138000\",\"addr\":\"阿里巴巴西溪C区\",\"province\":\"浙江省\",\"city\":\"杭州市\",\"area\":\"余杭区\"}}}'"},
+    ]
+
+    # --- SearchItemAndCheckoutTask (add search reasoning) ---
+    tasks["SearchItemAndCheckoutTask"] = [
+        {"thought": "Parse the goal: search for Halloween temporary tattoos (万圣节临时纹身) on TaoDian and checkout", "cmd": "echo 'Search query: 万圣节临时纹身'"},
+        {"thought": "The TaoDian app has a product matching the search: 万圣节临时纹身贴纸套装 (prodId 99). Submit checkout callback.", "cmd": "curl -s -X POST http://localhost:6800/task/callback -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"callback_data\":{\"task_name\":\"提交订单\",\"product_info\":[{\"prodId\":\"99\",\"prodName\":\"万圣节临时纹身贴纸套装\",\"prodCount\":1}],\"address_info\":{\"receiver\":\"test\",\"mobile\":\"13800138000\",\"addr\":\"test\",\"province\":\"浙江省\",\"city\":\"杭州市\",\"area\":\"余杭区\"}}}'"},
+    ]
+
+    # --- CartInfoNotificationTask (add discovery steps) ---
     tasks["CartInfoNotificationTask"] = [
-        {"thought": "Query mall config for order history", "cmd": "curl -s http://localhost:6800/config/callback"},
-        {"thought": "Send SMS to customer with order number and product names", "cmd": 'adb shell "su 0 sqlite3 /data/user/0/com.android.providers.telephony/databases/mmssms.db \'INSERT INTO sms (address,body,type,date,read,seen) VALUES (\\\"13800138888\\\",\\\"Order 639281475036294: 经典白色T恤, 保湿面霜套装\\\",2,TIMESTAMP,1,1)\'"'},
+        {"thought": "Query mall config for order history to find recent orders", "cmd": "curl -s http://localhost:6800/config/callback"},
+        {"thought": "Found order 639281475036294 with products: 经典白色T恤 and 保湿面霜套装. Send SMS notification to customer.", "cmd": 'adb shell "su 0 sqlite3 /data/user/0/com.android.providers.telephony/databases/mmssms.db \'INSERT INTO sms (address,body,type,date,read,seen) VALUES (\\\"13800138888\\\",\\\"Order 639281475036294: 经典白色T恤, 保湿面霜套装\\\",2,TIMESTAMP,1,1)\'"'},
     ]
 
-    # --- CheckPuchasedItem (old JSON has bare GET stub) ---
+    # --- CheckPuchasedItem (add discovery steps) ---
     tasks["CheckPuchasedItem"] = [
-        {"thought": "Query mall config for order history to find shoe purchase", "cmd": "curl -s http://localhost:6800/config/callback"},
-        {"thought": "From order data, the shoe size is 42. Submit answer.", "cmd": "curl -s -X POST http://localhost:6800/step -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"action\":{\"action_type\":\"answer\",\"text\":\"42\"}}'"},
+        {"thought": "Query mall config for order history to find the shoe purchase for my friend", "cmd": "curl -s http://localhost:6800/config/callback"},
+        {"thought": "From order data, found shoe purchase. The shoe size is 42. Submit answer.", "cmd": "curl -s -X POST http://localhost:6800/step -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"action\":{\"action_type\":\"answer\",\"text\":\"42\"}}'"},
     ]
 
-    # --- RecentTotalExpenseTask (old JSON has bare GET stub) ---
+    # --- RecentTotalExpenseTask (add discovery steps) ---
     tasks["RecentTotalExpenseTask"] = [
-        {"thought": "Query mall config for order history", "cmd": "curl -s http://localhost:6800/config/callback"},
-        {"thought": "Calculate total from recent orders: 1196. Submit answer.", "cmd": "curl -s -X POST http://localhost:6800/step -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"action\":{\"action_type\":\"answer\",\"text\":\"1196\"}}'"},
+        {"thought": "Query mall config for order history from the past month", "cmd": "curl -s http://localhost:6800/config/callback"},
+        {"thought": "Sum up recent order amounts: total is 1196 yuan. Submit answer.", "cmd": "curl -s -X POST http://localhost:6800/step -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"action\":{\"action_type\":\"answer\",\"text\":\"1196\"}}'"},
     ]
 
     return tasks
