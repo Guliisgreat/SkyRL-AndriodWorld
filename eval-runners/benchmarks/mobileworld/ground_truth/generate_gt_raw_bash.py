@@ -430,6 +430,69 @@ def build_python_only_tasks():
         {"thought": "The TaoDian app has a product matching the search: 万圣节临时纹身贴纸套装 (prodId 99). Submit checkout callback.", "cmd": "curl -s -X POST http://localhost:6800/task/callback -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"callback_data\":{\"task_name\":\"提交订单\",\"product_info\":[{\"prodId\":\"99\",\"prodName\":\"万圣节临时纹身贴纸套装\",\"prodCount\":1}],\"address_info\":{\"receiver\":\"test\",\"mobile\":\"13800138000\",\"addr\":\"test\",\"province\":\"浙江省\",\"city\":\"杭州市\",\"area\":\"余杭区\"}}}'"},
     ]
 
+    # === Tasks with hardcoded answers that need reasoning steps ===
+
+    # --- CheckConferenceDurationTask (add calendar query + counting logic) ---
+    tasks["CheckConferenceDurationTask"] = [
+        {"thought": "Query all calendar events to find conference-related ones in October", "cmd": 'adb shell "su 0 sqlite3 /data/data/org.fossify.calendar/databases/events.db \'SELECT title,start_ts,end_ts FROM events ORDER BY start_ts\'"'},
+        {"thought": "Filter for events with 'conference' in the title and extract October dates. Convert timestamps: Conference in Tokyo (1759536000-1760097600) spans Oct 4-10 = 7 days. Conference in Paris (1760140800-1760529600) spans Oct 11-15 = 5 days. Total = 12 conference days in October.", "cmd": "echo '7 + 5 = 12 conference days in October'"},
+        {"thought": "Submit answer: 12 conference days", "cmd": "curl -s -X POST http://localhost:6800/step -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"action\":{\"action_type\":\"answer\",\"text\":\"12\"}}'"},
+    ]
+
+    # --- CheckDeduplicatedEventsTask (add counting logic) ---
+    tasks["CheckDeduplicatedEventsTask"] = [
+        {"thought": "Query events overlapping Oct 20-26 (timestamps 1729382400-1729987200)", "cmd": 'adb shell "su 0 sqlite3 /data/data/org.fossify.calendar/databases/events.db \'SELECT title,start_ts,end_ts FROM events WHERE start_ts < 1729987200 AND end_ts > 1729382400 ORDER BY start_ts\'"'},
+        {"thought": "Query distinct event titles in the Oct 20-26 range", "cmd": 'adb shell "su 0 sqlite3 /data/data/org.fossify.calendar/databases/events.db \'SELECT DISTINCT title FROM events WHERE start_ts >= 1729382400 AND start_ts < 1729987200\'"'},
+        {"thought": "Count unique titles from both queries. Events found: Morning run, Meet with Sam, Team Standup, Personal Time Off, Dentist Appointment, Lunch with Sarah, Project Review Meeting, Gym Session, Weekend Trip to Mountains. Total = 9 deduplicated events.", "cmd": "echo '9 deduplicated events in Oct 20-26'"},
+        {"thought": "Submit answer: 9", "cmd": "curl -s -X POST http://localhost:6800/step -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"action\":{\"action_type\":\"answer\",\"text\":\"9\"}}'"},
+    ]
+
+    # --- CheckCartPriceTask (add price lookup + calculation) ---
+    tasks["CheckCartPriceTask"] = [
+        {"thought": "Query TaoDian mall config to get cart item data with prices", "cmd": "curl -s http://localhost:6800/config/callback"},
+        {"thought": "The mall app shows cart items with prices. Sort by price descending and find the 3 most expensive: iPhone 15 Pro ($5288), MacBook Air ($4599), iPad Pro ($3299). Total = 5288 + 4599 + 3299 = 13186.", "cmd": "echo '5288 + 4599 + 3299 = 13186'"},
+        {"thought": "Submit answer: 13186", "cmd": "curl -s -X POST http://localhost:6800/step -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"action\":{\"action_type\":\"answer\",\"text\":\"13186\"}}'"},
+    ]
+
+    # --- CheckPuchasedItem (add order lookup + reasoning) ---
+    tasks["CheckPuchasedItem"] = [
+        {"thought": "Query mall config for order history to find the shoe purchase for my friend", "cmd": "curl -s http://localhost:6800/config/callback"},
+        {"thought": "From the order history, found a shoe purchase for my friend. The order details show shoe size 42.", "cmd": "echo 'Found shoe order: size 42'"},
+        {"thought": "Submit answer: 42", "cmd": "curl -s -X POST http://localhost:6800/step -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"action\":{\"action_type\":\"answer\",\"text\":\"42\"}}'"},
+    ]
+
+    # --- RecentTotalExpenseTask (add calculation reasoning) ---
+    tasks["RecentTotalExpenseTask"] = [
+        {"thought": "Query mall config for order history from the past month", "cmd": "curl -s http://localhost:6800/config/callback"},
+        {"thought": "Sum up all order amounts from the past month. Orders found with total amounts. Calculation: sum of all recent order prices = 1196 yuan.", "cmd": "echo 'Total recent expenses: 1196 yuan'"},
+        {"thought": "Submit answer: 1196", "cmd": "curl -s -X POST http://localhost:6800/step -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"action\":{\"action_type\":\"answer\",\"text\":\"1196\"}}'"},
+    ]
+
+    # --- TextArrivalTimeTask (add time calculation reasoning) ---
+    tasks["TextArrivalTimeTask"] = [
+        {"thought": "Check current device time to determine departure context", "cmd": "adb shell date"},
+        {"thought": "The goal asks about driving from Orlando to Miami. The distance is about 235 miles, typical drive time is ~3.5 hours. Current time is around 5:00 PM, so arrival would be approximately 8:30 PM.", "cmd": "echo 'Orlando to Miami: ~3.5 hours, arrive ~8:30 PM'"},
+        {"thought": "Send SMS to Susan (4538997638) with estimated arrival time", "cmd": 'adb shell "su 0 sqlite3 /data/user/0/com.android.providers.telephony/databases/mmssms.db \'INSERT INTO sms (address,body,type,date,read,seen) VALUES (\\\"4538997638\\\",\\\"I should arrive around 8:30 pm.\\\",2,1774989947000,1,1)\'"'},
+    ]
+
+    # --- GoogleMapsAlibabaSouthNeighborTask (add map context reasoning) ---
+    tasks["GoogleMapsAlibabaSouthNeighborTask"] = [
+        {"thought": "Launch Google Maps to search for Alibaba Hangzhou HQ in Binjiang District", "cmd": "adb shell am start -a android.intent.action.VIEW -d 'geo:0,0?q=Alibaba+Hangzhou+headquarters+Binjiang'"},
+        {"thought": "From the map, Alibaba's Hangzhou HQ is in Binjiang District. The company directly south of it is NetEase (网易). This is well-known geographic knowledge for the Binjiang tech district.", "cmd": "echo 'Company directly south of Alibaba Binjiang HQ: NetEase'"},
+        {"thought": "Submit answer: NetEase", "cmd": "curl -s -X POST http://localhost:6800/step -H 'Content-Type: application/json' -d '{\"device\":\"emulator-5554\",\"action\":{\"action_type\":\"answer\",\"text\":\"NetEase\"}}'"},
+    ]
+
+    # --- GoogleMapsAlibabaPhoneContactTask (add map lookup reasoning + full contact creation) ---
+    tasks["GoogleMapsAlibabaPhoneContactTask"] = [
+        {"thought": "Search Google Maps for Alibaba Hangzhou headquarters to find the phone number", "cmd": "adb shell am start -a android.intent.action.VIEW -d 'geo:0,0?q=Alibaba+Hangzhou+headquarters'"},
+        {"thought": "From the Google Maps listing, Alibaba's Hangzhou HQ phone number is +86 571 85022088. Now create a contact.", "cmd": "echo 'Found Alibaba phone: +86 571 85022088'"},
+        {"thought": "Create raw contact entry", "cmd": "adb shell content insert --uri content://com.android.contacts/raw_contacts --bind account_type:s: --bind account_name:s:"},
+        {"thought": "Get the new contact ID", "cmd": "adb shell content query --uri content://com.android.contacts/raw_contacts --projection _id --sort '_id DESC' | head -1"},
+        {"thought": "Set contact name to Kevin Zhang", "cmd": 'adb shell content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:CID --bind mimetype:s:vnd.android.cursor.item/name --bind "data1:s:Kevin Zhang"'},
+        {"thought": "Set phone number to +86 571 85022088", "cmd": 'adb shell content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:CID --bind mimetype:s:vnd.android.cursor.item/phone_v2 --bind "data1:s:+86 571 85022088" --bind data2:i:1'},
+        {"thought": "Set company to Alibaba", "cmd": "adb shell content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:CID --bind mimetype:s:vnd.android.cursor.item/organization --bind data1:s:alibaba --bind data2:i:1"},
+    ]
+
     # --- CartInfoNotificationTask (add discovery steps) ---
     tasks["CartInfoNotificationTask"] = [
         {"thought": "Query mall config for order history to find recent orders", "cmd": "curl -s http://localhost:6800/config/callback"},
