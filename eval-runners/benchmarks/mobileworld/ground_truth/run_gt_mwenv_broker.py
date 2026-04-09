@@ -1103,12 +1103,18 @@ def _run_task_mwenv_override(task_name, runner):
             result = runner.run_script(script)
             runner.record(f"Create contact: {name} ({phone})", "run_script", result[:200] if result else "")
             time.sleep(1)
-        # Use SET_ALARM intent instead of alarm_templates DB insert
-        runner.set_alarm_intent(8, 0, "Morning Shift")
-        runner.record("Set alarm 08:00 via intent", "am start SET_ALARM", "")
-        time.sleep(1)
-        runner.set_alarm_intent(20, 0, "Evening Shift")
-        runner.record("Set alarm 20:00 via intent", "am start SET_ALARM", "")
+        # Insert alarms directly into deskclock DB (verifier reads alarm_templates table)
+        ALARM_DB = "/data/user_de/0/com.google.android.deskclock/databases/alarms.db"
+        for hour, minute, label in [(8, 0, "Morning Shift"), (20, 0, "Evening Shift")]:
+            sql = (f"INSERT INTO alarm_templates (hour,minutes,enabled,daysofweek,vibrate,"
+                   f"ringtone,label,delete_after_use) VALUES "
+                   f"({hour},{minute},1,0,0,'','{label}',0);")
+            runner.write_file("/sdcard/_alarm.sql", sql)
+            script = f"#!/system/bin/sh\nsu root sqlite3 {ALARM_DB} < /sdcard/_alarm.sql\n"
+            runner.write_file("/sdcard/_run_alarm.sh", script)
+            runner.adb("adb shell sh /sdcard/_run_alarm.sh")
+            runner.adb("adb shell rm /sdcard/_alarm.sql /sdcard/_run_alarm.sh")
+            runner.record(f"Insert alarm {hour:02d}:{minute:02d} '{label}'", "INSERT alarm_templates", "")
         return True
 
     elif task_name == "ThanksgivingPrepTask":
