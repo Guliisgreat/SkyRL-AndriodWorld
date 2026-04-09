@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 # Broker client
 # =========================================================================
 
-def broker_acquire(broker_url, timeout=300):
+def broker_acquire(broker_url, timeout=600):
     data = json.dumps({"pid": os.getpid(), "timeout": timeout}).encode()
     req = urllib.request.Request(f"{broker_url}/acquire", data=data,
         headers={"Content-Type": "application/json"}, method="POST")
