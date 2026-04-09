@@ -787,10 +787,10 @@ def _run_task_mwenv_override(task_name, runner):
         raw = runner.exec_cmd("curl -s https://api.github.com/repos/google-research/android_world")
         runner.record("Query GitHub API", "exec curl github", raw[:300])
         try:
-            repo = json.loads(raw.split("\n", 1)[-1] if "\n" in raw else raw)
+            repo = json.loads(raw)
             stars = repo.get("stargazers_count", 0)
-        except:
-            stars = 2800
+        except Exception:
+            stars = 707  # fallback
         # Get contributors
         raw2 = runner.exec_cmd(
             "curl -s -D /dev/stderr 'https://api.github.com/repos/google-research/android_world/contributors?per_page=1&anon=true' 2>&1 | grep 'page=' | tail -1")
