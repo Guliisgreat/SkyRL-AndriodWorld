@@ -11,50 +11,54 @@ Task split: **101 CLI-solvable** | **15 GUI-only** (per [ground truth reference]
 | UI-Venus-1.5 | UI-Venus-1.5-30B-A3B | GUI (tap/swipe) | Local vLLM | **59.5%** (69/116) | 62.4% (63/101) | **40.0%** (6/15) | — |
 | Qwen3VLAgentMCP | qwen3-vl-30b-a3b-instruct | GUI (tap/swipe) | OpenRouter | **56.0%** (65/116) | 58.4% (59/101) | **40.0%** (6/15) | — |
 | Terminus2 | minimax-m2.7 | ADB shell | OpenRouter | **52.6%** (61/116) | 58.4% (59/101) | 13.3% (2/15) | $5.82 |
-| MAI-UI | MAI-UI-8B | GUI (tap/swipe) | Local vLLM | **31.0%** (36/116) | 33.7% (34/101) | 13.3% (2/15) | — |
+| MAI-UI (vllm 0.11) | MAI-UI-8B | GUI (tap/swipe) | Local vLLM | **69.8%** (81/116) | 72.3% (73/101) | **53.3%** (8/15) | — |
+| MAI-UI (vllm 0.13) | MAI-UI-8B | GUI (tap/swipe) | Local vLLM | **31.0%** (36/116) | 33.7% (34/101) | 13.3% (2/15) | — |
 | GeneralE2E | gemini-2.5-pro | GUI (tap/swipe) | OpenRouter | **13.8%** (16/116) | 13.9% (14/101) | 13.3% (2/15) | — |
 
 ## CLI-Solvable Tasks (101) by Difficulty
 
-| Difficulty | Claude Opus 4.6 | UI-Venus-1.5-30B | Qwen3-VL-30B | Terminus2 m2.7 | MAI-UI-8B | Gemini 2.5 Pro |
-|------------|----------------:|-----------------:|-------------:|---------------:|----------:|---------------:|
-| android_easy (38) | 22/38 (58%) | 28/38 (74%) | 29/38 (76%) | 23/38 (61%) | 16/38 (42%) | 8/38 (21%) |
-| android_medium (26) | 18/26 (69%) | 14/26 (54%) | 10/26 (38%) | 16/26 (62%) | 6/26 (23%) | 2/26 (8%) |
-| android_hard (12) | 7/12 (58%) | 4/12 (33%) | 5/12 (42%) | 3/12 (25%) | 1/12 (8%) | 0/12 (0%) |
-| info_easy (14) | **14/14 (100%)** | 10/14 (71%) | 9/14 (64%) | 10/14 (71%) | 5/14 (36%) | 3/14 (21%) |
-| info_medium (8) | **8/8 (100%)** | 7/8 (88%) | 5/8 (62%) | 4/8 (50%) | 4/8 (50%) | 1/8 (12%) |
-| info_hard (3) | **3/3 (100%)** | 0/3 (0%) | 1/3 (33%) | 3/3 (100%) | 2/3 (67%) | 0/3 (0%) |
+| Difficulty | Claude Opus 4.6 | UI-Venus-1.5-30B | Qwen3-VL-30B | Terminus2 m2.7 | MAI-UI-8B (0.11) | MAI-UI-8B (0.13) | Gemini 2.5 Pro |
+|------------|----------------:|-----------------:|-------------:|---------------:|-----------------:|-----------------:|---------------:|
+| android_easy (38) | 22/38 (58%) | 28/38 (74%) | 29/38 (76%) | 23/38 (61%) | **33/38 (87%)** | 16/38 (42%) | 8/38 (21%) |
+| android_medium (26) | 18/26 (69%) | 14/26 (54%) | 10/26 (38%) | 16/26 (62%) | 17/26 (65%) | 6/26 (23%) | 2/26 (8%) |
+| android_hard (12) | 7/12 (58%) | 4/12 (33%) | 5/12 (42%) | 3/12 (25%) | 5/12 (42%) | 1/12 (8%) | 0/12 (0%) |
+| info_easy (14) | **14/14 (100%)** | 10/14 (71%) | 9/14 (64%) | 10/14 (71%) | 12/14 (86%) | 5/14 (36%) | 3/14 (21%) |
+| info_medium (8) | **8/8 (100%)** | 7/8 (88%) | 5/8 (62%) | 4/8 (50%) | 5/8 (62%) | 4/8 (50%) | 1/8 (12%) |
+| info_hard (3) | **3/3 (100%)** | 0/3 (0%) | 1/3 (33%) | 3/3 (100%) | 1/3 (33%) | 2/3 (67%) | 0/3 (0%) |
 
 ## GUI-Only Tasks (15) by Difficulty
 
-| Difficulty | Claude Opus 4.6 | UI-Venus-1.5-30B | Qwen3-VL-30B | Terminus2 m2.7 | MAI-UI-8B | Gemini 2.5 Pro |
-|------------|----------------:|-----------------:|-------------:|---------------:|----------:|---------------:|
-| android_easy (9) | 1/9 (11%) | 5/9 (56%) | 5/9 (56%) | 1/9 (11%) | 2/9 (22%) | 2/9 (22%) |
-| android_medium (2) | 0/2 (0%) | 1/2 (50%) | 1/2 (50%) | 0/2 (0%) | 0/2 (0%) | 0/2 (0%) |
-| android_hard (4) | 1/4 (25%) | 0/4 (0%) | 0/4 (0%) | 1/4 (25%) | 0/4 (0%) | 0/4 (0%) |
+| Difficulty | Claude Opus 4.6 | UI-Venus-1.5-30B | Qwen3-VL-30B | Terminus2 m2.7 | MAI-UI-8B (0.11) | MAI-UI-8B (0.13) | Gemini 2.5 Pro |
+|------------|----------------:|-----------------:|-------------:|---------------:|-----------------:|-----------------:|---------------:|
+| android_easy (9) | 1/9 (11%) | 5/9 (56%) | 5/9 (56%) | 1/9 (11%) | **8/9 (89%)** | 2/9 (22%) | 2/9 (22%) |
+| android_medium (2) | 0/2 (0%) | 1/2 (50%) | 1/2 (50%) | 0/2 (0%) | 0/2 (0%) | 0/2 (0%) | 0/2 (0%) |
+| android_hard (4) | 1/4 (25%) | 0/4 (0%) | 0/4 (0%) | 1/4 (25%) | 0/4 (0%) | 0/4 (0%) | 0/4 (0%) |
 
 ## Key Observations
 
+- **MAI-UI-8B (vllm 0.11) leads overall at 69.8%** — massive improvement over 31.0% with vllm 0.13. The vllm version critically affects model behavior; **vllm 0.11.0 is required** for correct MAI-UI-8B inference.
+- **MAI-UI-8B dominates GUI-only easy tasks** — 89% (8/9) on android_easy GUI, beating all other agents including 30B+ models.
 - **Claude Opus 4.6 dominates information-retrieval tasks** — 100% (25/25) across all IR difficulties via direct database/file queries.
-- **UI-Venus-1.5-30B ranks second overall (59.5%)** — strong on easy tasks (74% CLI easy) and competitive on GUI-only tasks (40.0%), matching Qwen3-VL.
+- **UI-Venus-1.5-30B ranks third overall (59.5%)** — strong on easy tasks (74% CLI easy) and competitive on GUI-only tasks (40.0%), matching Qwen3-VL.
 - **Qwen3-VL and UI-Venus tie on GUI-only tasks** — both at 40.0% (6/15), with identical per-difficulty breakdowns.
-- **Claude CLI excels at medium/hard action tasks** — 69% vs 54% (Venus) vs 38% (Qwen) on android_medium CLI tasks, leveraging ADB + content providers + sqlite3.
-- **GUI-only tasks are Claude CLI's weakness** — 13.3% vs 40.0%, as expected for a text-only agent on tasks requiring visual interaction.
+- **vllm version matters** — MAI-UI-8B drops from 69.8% to 31.0% when served with vllm 0.13 vs 0.11. Always use vllm 0.11.0 with max-model-len 32768 for local model evaluation.
 
 ## Run Details
 
-| | Claude Opus 4.6 | UI-Venus-1.5-30B | Qwen3-VL-30B | Terminus2 m2.7 | MAI-UI-8B | Gemini 2.5 Pro |
-|--|-----------------|------------------|--------------|----------------|-----------|----------------|
-| Date | 2026-04-08 | 2026-04-08 | 2026-04-07 | 2026-04-08 | 2026-04-08 | 2026-04-08 |
-| Runner | `run_claude_cli.py` | `run_venus.py` | `run_qwen3vl.py` | `run_terminus2.py` | `run_mai.py` | `run_general_e2e.py` |
-| Prompt/Agent | `clean_optimized` | `VenusNaviAgent` | `Qwen3VLAgentMCP` | `optimized-v2` | `MAIUINaivigationAgent` | `GeneralE2EAgentMCP` |
-| Max turns/steps | 30 | 30 | 30 | 30 | 30 | 30 |
-| Avg steps/task | 12.7 | 14.2 | 11.7 | 14.0 | 21.1 | 25.8 |
-| Temperature | — | 0.0 | 0.0 | 0.7 | 0.0 | 0.0 |
-| Avg time/task | 91s | 102s | 135s | 168s | 267s | 282s |
-| Avg input tokens/task | 325,196 | 47,252 | 42,938 | 288,128 | 191,868 | 75,405 |
-| Avg output tokens/task | 2,799 | 1,618 | 1,381 | 4,107 | 2,079 | 2,667 |
-| Results dir | `ClaudeCodeCLI_claudeopus46_260408_0122/` | `UIVenus15_30BA3B_260408/` | `ClaudeCodeCLI_qwenqwen3vl30ba3binstruct_260407_2117/` | `ClaudeCodeCLI_openrouterminimaxminimaxm27_260408_0207/` | `MAIUI8B_260408/` | `ClaudeCodeCLI_googlegemini25pro_260408_*` |
+| | Claude Opus 4.6 | UI-Venus-1.5-30B | Qwen3-VL-30B | Terminus2 m2.7 | MAI-UI-8B (0.11) | MAI-UI-8B (0.13) | Gemini 2.5 Pro |
+|--|-----------------|------------------|--------------|----------------|------------------|------------------|----------------|
+| Date | 2026-04-08 | 2026-04-08 | 2026-04-07 | 2026-04-08 | 2026-04-09 | 2026-04-08 | 2026-04-08 |
+| Runner | `run_claude_cli.py` | `run_venus.py` | `run_qwen3vl.py` | `run_terminus2.py` | `run_mai.py` | `run_mai.py` | `run_general_e2e.py` |
+| Prompt/Agent | `clean_optimized` | `VenusNaviAgent` | `Qwen3VLAgentMCP` | `optimized-v2` | `MAIUINaivigationAgent` | `MAIUINaivigationAgent` | `GeneralE2EAgentMCP` |
+| vLLM version | — | — | — | — | **0.11.0** | 0.13.0 | — |
+| Max turns/steps | 30 | 30 | 30 | 30 | 50 | 30 | 30 |
+| Avg steps/task | 12.7 | 14.2 | 11.7 | 14.0 | 17.4 | 21.1 | 25.8 |
+| Temperature | — | 0.0 | 0.0 | 0.7 | 0.0 | 0.0 | 0.0 |
+| Avg time/task | 91s | 102s | 135s | 168s | 214s | 267s | 282s |
+| Avg input tokens/task | 325,196 | 47,252 | 42,938 | 288,128 | 161,825 | 191,868 | 75,405 |
+| Avg output tokens/task | 2,799 | 1,618 | 1,381 | 4,107 | 1,773 | 2,079 | 2,667 |
+| max-model-len | — | 8,192 | 8,192 | — | 32,768 | 32,768 | — |
+| Results dir | `ClaudeCodeCLI_claudeopus46_260408_0122/` | `UIVenus15_30BA3B_260408/` | `ClaudeCodeCLI_qwenqwen3vl30ba3binstruct_260407_2117/` | `ClaudeCodeCLI_openrouterminimaxminimaxm27_260408_0207/` | `ClaudeCodeCLI_..._260409_1200/` | `MAIUI8B_260408/` | `ClaudeCodeCLI_googlegemini25pro_260408_*` |
 
 GUI-only task IDs: 0, 1, 8, 20, 28, 29, 30, 37, 40, 47, 55, 75, 76, 78, 80
 
@@ -69,8 +73,9 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 | Agent | Model | Action Space | API | SR | Paper SR |
 |-------|-------|-------------|-----|---:|--------:|
 | GeneralE2E | Kimi K2.5 | GUI (tap/swipe) | OpenRouter | **37.6%** (44/117) | 49.6% |
+| MAI-UI (vllm 0.11) | MAI-UI-8B | GUI (tap/swipe) | Local vLLM | **21.4%** (25/117) | 27.5% |
 | UI-Venus-1.5 | UI-Venus-1.5-30B-A3B | GUI (tap/swipe) | Local vLLM | **11.1%** (13/117) | 17.1% |
-| MAI-UI | MAI-UI-8B | GUI (tap/swipe) | Local vLLM | **6.0%** (7/117) | 27.5% |
+| MAI-UI (vllm 0.13) | MAI-UI-8B | GUI (tap/swipe) | Local vLLM | **6.0%** (7/117) | 27.5% |
 
 ### Paper Reference (MobileWorld Leaderboard, GUI-Only, max_steps=50)
 
@@ -121,15 +126,17 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 
 ## Run Details
 
-| | Kimi K2.5 | UI-Venus-1.5-30B |
-|--|-----------|------------------|
-| Date | 2026-04-08 | 2026-04-08 |
-| Runner | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` |
-| Agent type | `general_e2e` | `ui_venus_agent` |
-| Max steps | 50 | 50 |
-| Avg steps/task | 23.5 | 18.7 |
-| Temperature | 0.0 | 0.0 |
-| Avg time/task | 265s | 111s |
-| Avg input tokens/task | 290,828 | 24,554 |
-| Avg output tokens/task | 2,909 | 655 |
-| Results dir | `GUIAgent_general_e2e_moonshotaikimik25_260408_0252/` | `GUIAgent_ui_venus_agent_UIVenus1530BA3B_260408_0157/` |
+| | Kimi K2.5 | MAI-UI-8B (0.11) | UI-Venus-1.5-30B | MAI-UI-8B (0.13) |
+|--|-----------|------------------|------------------|------------------|
+| Date | 2026-04-08 | 2026-04-09 | 2026-04-08 | 2026-04-08 |
+| Runner | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` |
+| Agent type | `general_e2e` | `mai_ui_agent` | `ui_venus_agent` | `mai_ui_agent` |
+| vLLM version | — | **0.11.0** | — | 0.13.0 |
+| Max steps | 50 | 50 | 50 | 50 |
+| Avg steps/task | 23.5 | 32.2 | 18.7 | — |
+| Temperature | 0.0 | 0.0 | 0.0 | 0.0 |
+| Avg time/task | 265s | 278s | 111s | — |
+| Avg input tokens/task | 290,828 | 297,280 | 24,554 | — |
+| Avg output tokens/task | 2,909 | 1,919 | 655 | — |
+| max-model-len | — | 32,768 | 8,192 | 8,192 |
+| Results dir | `GUIAgent_general_e2e_moonshotaikimik25_260408_0252/` | `GUIAgent_mai_ui_agent_..._260409_0204/` | `GUIAgent_ui_venus_agent_UIVenus1530BA3B_260408_0157/` | `GUIAgent_mai_ui_agent_..._260408_1155/` |
