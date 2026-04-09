@@ -2034,18 +2034,25 @@ def _run_task_mwenv_override(task_name, runner):
         if not file_id:
             runner.record("FAILED to upload file", "parse", "")
             return False
-        # Post birthday message with file attachment via SQL
+        # Post birthday message with file attachment via SQL file (preserves JSON quotes)
         ts = str(int(time.time() * 1000))
         post_id = hashlib.md5(f"bday{ts}".encode()).hexdigest()[:26]
-        sql = (
+        sql_content = (
             f"INSERT INTO posts (id,createat,updateat,deleteat,userid,channelid,"
             f"rootid,originalid,message,type,props,hashtags,filenames,fileids,"
             f"hasreactions,editat,ispinned) VALUES "
             f"('{post_id}',{ts},{ts},0,'{harry_id}','{dm_ch}',"
             f"'','','Happy birthday!','','{{}}','','','[\"{file_id}\"]',"
-            f"false,0,false)")
-        runner.mattermost_psql(sql)
-        runner.record("Post birthday message with image", "INSERT posts", "")
+            f"false,0,false);\n"
+        )
+        # Write SQL to file and pipe to psql (avoids shell quote mangling)
+        encoded = base64.b64encode(sql_content.encode()).decode()
+        runner.exec_cmd(f"echo '{encoded}' | base64 -d > /tmp/_mm_post.sql")
+        runner.exec_cmd(
+            "cat /tmp/_mm_post.sql | docker exec -i mattermost-docker-postgres-1 "
+            "psql -U mmuser -d mattermost")
+        runner.exec_cmd("rm -f /tmp/_mm_post.sql")
+        runner.record("Post birthday message with image", "INSERT posts (via file)", "")
         # Fix channel creatorid to alex (verifier checks channel_info[13]==ALEX_ID)
         runner.mattermost_psql(f"UPDATE channels SET creatorid='{alex_id}' WHERE id='{dm_ch}'")
         runner.record("Fix DM channel creator to alex", "UPDATE channels", "")
