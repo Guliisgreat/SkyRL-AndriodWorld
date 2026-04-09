@@ -33,6 +33,12 @@ MW_ENV_SCRIPT = os.path.join(
 )
 MW_ENV_SCRIPT = os.path.abspath(MW_ENV_SCRIPT)
 
+MW_TOOLS_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "mw_tools.py",
+)
+MW_TOOLS_SCRIPT = os.path.abspath(MW_TOOLS_SCRIPT)
+
 # ---------------------------------------------------------------------------
 # Prompt modules
 # ---------------------------------------------------------------------------
@@ -40,7 +46,8 @@ MW_ENV_SCRIPT = os.path.abspath(MW_ENV_SCRIPT)
 PROMPT_MODULES = {
     "mw_adb_baseline": "skyrl_agent.agents.mobileworld.claude_sdk.prompts.mw_adb_baseline",
     "mw_adb_api": "skyrl_agent.agents.mobileworld.claude_sdk.prompts.mw_adb_api",
-    "mw_adb_oracle": "skyrl_agent.agents.mobileworld.claude_sdk.prompts.mw_adb_oracle",
+    "mw_adb_oracle": "agents.cli.claude_sdk.prompts.mw_adb_oracle",
+    "mw_terminal_expert": "agents.cli.claude_sdk.prompts.mw_terminal_expert",
 }
 DEFAULT_PROMPT = "mw_adb_baseline"
 
@@ -69,9 +76,18 @@ def load_prompt_module(prompt_name: str):
 
 
 def load_system_prompt(prompt_name: str) -> str:
-    """Load a system prompt by name and format it with MW_ENV_SCRIPT."""
+    """Load a system prompt by name and format it with the appropriate script.
+
+    If the prompt module defines ENV_SCRIPT = "mw_tools", use MW_TOOLS_SCRIPT;
+    otherwise use MW_ENV_SCRIPT.
+    """
     mod = load_prompt_module(prompt_name)
-    return mod.build_system_prompt(MW_ENV_SCRIPT)
+    env_script_attr = getattr(mod, "ENV_SCRIPT", None)
+    if env_script_attr == "mw_tools":
+        script = MW_TOOLS_SCRIPT
+    else:
+        script = MW_ENV_SCRIPT
+    return mod.build_system_prompt(script)
 
 
 def get_allowed_tools(prompt_name: str) -> str:
@@ -827,8 +843,8 @@ def build_common_parser(description="Run Claude Code CLI on MobileWorld tasks"):
     parser.add_argument("--device-id", default="emulator-5554",
                         help="Device ID inside the container (default: emulator-5554)")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT,
-                        choices=list(PROMPT_MODULES.keys()),
-                        help=f"System prompt variant (default: {DEFAULT_PROMPT})")
+                        help=f"System prompt variant (default: {DEFAULT_PROMPT}). "
+                             f"Available: {', '.join(PROMPT_MODULES.keys())}")
     parser.add_argument("--effort", default=None,
                         choices=["low", "medium", "high", "max"],
                         help="Claude reasoning effort level")
@@ -958,8 +974,12 @@ def preflight_checks(args, system_prompt, allowed_tools, disable_tree):
     if not disable_tree:
         print(f"A11y tree: enabled")
 
-    if not os.path.exists(MW_ENV_SCRIPT):
-        print(f"ERROR: mw_env.py not found at {MW_ENV_SCRIPT}")
+    # Check that the env script exists (mw_tools.py or mw_env.py)
+    mod = load_prompt_module(args.prompt)
+    env_script_attr = getattr(mod, "ENV_SCRIPT", None)
+    required_script = MW_TOOLS_SCRIPT if env_script_attr == "mw_tools" else MW_ENV_SCRIPT
+    if not os.path.exists(required_script):
+        print(f"ERROR: env script not found at {required_script}")
         return False
 
     try:
