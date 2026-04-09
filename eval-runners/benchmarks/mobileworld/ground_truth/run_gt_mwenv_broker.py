@@ -554,6 +554,8 @@ DOCKER_EXEC_TASKS = {
     "MastodonGetServerInfoTask", "MastodonManageMultiListTask",
     "MastodonUpdateContactsTask", "MastodonMallPurchaseCommodityTask",
     "MastodonMallShareOrderTask",
+    # Dynamic answer (weather API changes daily)
+    "ChromeSearchBeijingWeatherTask",
     # Missing overrides (500 errors or incomplete JSON)
     "GraduationMassEmailTask", "LocalFileManagementTask",
     "GoogleMapsAlibabaPhoneContactTask",
@@ -1342,6 +1344,31 @@ def _run_task_mwenv_override(task_name, runner):
         # Verify
         raw = runner.sql(ALARM_DB, "SELECT hour,minutes,daysofweek,vibrate,ringtone FROM alarm_templates WHERE hour=8 AND minutes=25")
         runner.record("Verify alarm settings", "SELECT alarm_templates", raw[:200])
+        return True
+
+    # === Dynamic answer: query same API the verifier uses ===
+
+    elif task_name == "ChromeSearchBeijingWeatherTask":
+        # Verifier calls Open-Meteo for today's Beijing max temp, accepts ±3°C.
+        # Query the same API from inside the container and submit the rounded answer.
+        raw = runner.exec_cmd(
+            "curl -s 'https://api.open-meteo.com/v1/forecast"
+            "?latitude=39.9042&longitude=116.4074"
+            "&daily=temperature_2m_max&timezone=Asia/Shanghai'")
+        runner.record("Query Open-Meteo for Beijing max temp", "curl", raw[:300])
+        temp = None
+        try:
+            import json as _json
+            data = _json.loads(raw)
+            temps = data.get("daily", {}).get("temperature_2m_max", [])
+            if temps:
+                temp = int(round(temps[0]))
+        except Exception:
+            pass
+        if temp is None:
+            temp = 20  # fallback
+        runner.send_answer(str(temp))
+        runner.record(f"Submit answer: {temp}", "send_answer", "")
         return True
 
     # === GT data fix: hardcoded answer tasks ===
