@@ -1255,72 +1255,52 @@ def _run_task_mwenv_override(task_name, runner):
         return True
 
     elif task_name == "LocalFileManagementTask2":
-        # List all files in Download
-        raw = runner.adb("adb shell ls -la /sdcard/Download/")
-        runner.record("List all Download files with dates", "ls -la", raw[:500])
-        # Get current date to determine 1-year threshold
+        # Find old files (>1 year) using stat timestamps on device
         now_raw = runner.adb("adb shell date +%s", no_tree=True)
-        runner.record("Get current time", "date +%s", now_raw[:50])
-        # Identify old files (>1 year) by checking dates in ls output
-        # Files from 2023 and 2024 are definitely older than 1 year (current ~April 2026)
-        old_files = []
-        for line in raw.split("\n"):
-            line = line.strip()
-            if not line or line.startswith("$") or line.startswith("total"): continue
-            # Match dates like 2024-01-25 or 2023-11-16
-            if ("2023-" in line or "2024-" in line) and ".zip" in line:
-                fname = line.rsplit(None, 1)[-1] if line else ""
-                if fname and fname.endswith(".zip"):
-                    old_files.append(fname)
-        runner.record(f"Found {len(old_files)} files older than 1 year", "filter", str(old_files))
-        # Write a Python script to device, execute it to create zip (no zip binary)
+        now_ts = 0
+        for line in now_raw.split("\n"):
+            if line.strip().isdigit():
+                now_ts = int(line.strip())
+                break
+        cutoff = now_ts - (365 * 86400)
+        # Shell script to find old files by modification time
+        find_script = (
+            f"#!/system/bin/sh\n"
+            f"for f in /sdcard/Download/*; do\n"
+            f"  [ -f \"$f\" ] || continue\n"
+            f"  ts=$(stat -c '%Y' \"$f\" 2>/dev/null)\n"
+            f"  if [ -n \"$ts\" ] && [ \"$ts\" -lt {cutoff} ]; then\n"
+            f"    basename \"$f\"\n"
+            f"  fi\n"
+            f"done\n"
+        )
+        result = runner.run_script(find_script)
+        old_files = [f.strip() for f in (result or "").split("\n") if f.strip()]
+        runner.record(f"Found {len(old_files)} files older than 1 year", "find_old", str(old_files)[:300])
         if old_files:
-            files_str = ",".join(f"'{f}'" for f in old_files)
-            script = (
-                "import zipfile, os\n"
-                "os.chdir('/sdcard/Download')\n"
-                f"files = [{files_str}]\n"
-                "z = zipfile.ZipFile('old_files.zip', 'w', zipfile.ZIP_DEFLATED)\n"
-                "for f in files:\n"
-                "    if os.path.exists(f):\n"
-                "        z.write(f)\n"
-                "z.close()\n"
-                "for f in files:\n"
-                "    if os.path.exists(f):\n"
-                "        os.remove(f)\n"
-                "print('done')\n"
-            )
-            runner.write_file("/sdcard/_zip_cleanup.py", script)
-            runner.record("Write zip+cleanup Python script", "write-file", "")
-            # Android has python3 via termux or we use the container's python via adb
-            # Actually the emulator doesn't have python. Use container python to run via adb.
-            # Instead, write a shell script that uses toybox for simple archive
-            # Actually simplest: pull to container, zip, push back — but avoid adb pull binary
-            # Use exec to run the zip from container side
+            # Pull files to container, zip with Python, push back
+            for fname in old_files:
+                runner.exec_cmd(f"adb -s emulator-5554 pull /sdcard/Download/{fname} /tmp/{fname} 2>/dev/null")
+            runner.record(f"Pulled {len(old_files)} files to container", "adb pull", "")
+            # Create zip with Python
+            zip_writes = "; ".join(f"z.write('/tmp/{f}','{f}')" for f in old_files)
             runner.exec_cmd(
-                f"adb -s emulator-5554 pull /sdcard/Download/01_archive_20240924.zip /tmp/ 2>/dev/null; "
-                + " ".join(f"adb -s emulator-5554 pull /sdcard/Download/{f} /tmp/ 2>/dev/null;" for f in old_files)
-            )
-            runner.record(f"Pull {len(old_files)} files to container", "exec adb pull", "")
-            runner.exec_cmd(
-                "cd /tmp && python3 -c \""
-                "import zipfile; z=zipfile.ZipFile('old_files.zip','w',zipfile.ZIP_DEFLATED); "
-                "import os; [z.write(f,f) for f in os.listdir('.') if f.endswith('.zip') and f!='old_files.zip']; "
-                "z.close(); print('zipped')\""
-            )
-            runner.record("Create zip via Python in container", "exec python3 zipfile", "")
+                f'python3 -c "import zipfile; z=zipfile.ZipFile(\'/tmp/old_files.zip\',\'w\'); '
+                f'{zip_writes}; z.close(); print(\'zipped\')"')
+            runner.record("Create old_files.zip", "python3 zipfile", "")
             runner.exec_cmd("adb -s emulator-5554 push /tmp/old_files.zip /sdcard/Download/old_files.zip")
-            runner.record("Push old_files.zip to device", "exec adb push", "")
-            # Delete originals
+            runner.record("Push old_files.zip to device", "adb push", "")
+            # Delete originals on device
             for f in old_files:
                 runner.adb(f"adb shell rm /sdcard/Download/{f}", no_tree=True)
-            runner.record(f"Deleted {len(old_files)} old files", "rm", "")
-            runner.exec_cmd("rm -f /tmp/*.zip")
+            runner.record(f"Deleted {len(old_files)} originals", "rm", "")
+            # Cleanup container
+            runner.exec_cmd("rm -f /tmp/*.zip /tmp/*.pdf /tmp/*.txt 2>/dev/null")
         runner.adb("adb shell ls /sdcard/Download/old_files.zip")
         runner.record("Verify zip exists", "ls", "")
-        body = "Archived old files: " + ", ".join(old_files)
-        runner.write_email("test@gmail.com", "Archived Files", body)
-        runner.record("Send email listing deleted files", "write sentEmail.json", "")
+        runner.write_email("test@gmail.com", "Old Files Deleted",
+                           "Deleted and compressed: " + ", ".join(old_files))
+        runner.record("Send email", "write sentEmail.json", "")
         return True
 
     elif task_name == "SetAlarmTask":
