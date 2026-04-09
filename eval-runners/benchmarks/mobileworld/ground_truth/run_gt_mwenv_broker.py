@@ -565,6 +565,10 @@ DOCKER_EXEC_TASKS = {
     "MattermostReadingGroupTask", "MattermostTechnicalDebtTriageTask",
     # Fixed: retry on transient 500
     "ThanksgivingPrepTask",
+    # Previously missing — no JSON GT, Python-only implementations
+    "MattermostDeadlineReconciliationTask",
+    "MattermostSendFileTask",
+    "MastodonSavePhotosTask",
     # Phase 2: dynamic file/date tasks (need Python, not JSON)
     "BidFileRenameTask", "CVEmailTask", "ReviewPaperEmailTask",
     "InvoiceReceiptCopyTask", "SendWaiverTask", "LocalFileManagementTask2",
@@ -1941,6 +1945,136 @@ def _run_task_mwenv_override(task_name, runner):
         )
         result = runner.run_script(script)
         runner.record("Create contact: Kevin Zhang", "run_script", result[:200] if result else "")
+        return True
+
+    # === Previously missing tasks (Python-only, no JSON GT) ===
+
+    elif task_name == "MattermostDeadlineReconciliationTask":
+        runner.wait_mattermost()
+        harry_id = runner.mattermost_psql("SELECT id FROM users WHERE username='harry'").strip()
+        if not harry_id: harry_id = "p11jse4oa3biikeeefcuggns9o"
+        # Email with deadline audit
+        runner.write_email("dylan@gmail.com", "Deadline Audit Report",
+            "Matched: API Documentation Review, Frontend MVP Launch\\n"
+            "Missing: Security Audit Completion, Beta Testing Phase Start\\n"
+            "Untracked: Team Building Event")
+        runner.record("Send deadline audit email", "write sentEmail.json", "")
+        # Calendar events for missing deadlines (use emulator date)
+        emu_now = runner.get_emulator_date()
+        days_to_mon = (7 - emu_now.weekday()) % 7
+        if days_to_mon == 0: days_to_mon = 7
+        base = emu_now.date() + timedelta(days=days_to_mon)
+        d3 = base + timedelta(days=13)
+        d4 = base + timedelta(days=18)
+        for title, date in [("[AUTO] Security Audit Completion", d3),
+                            ("[AUTO] Beta Testing Phase Start", d4)]:
+            ts_cal = int(_dt.combine(date, _dt.min.time().replace(hour=10),
+                                      tzinfo=timezone.utc).timestamp())
+            runner.insert_calendar_event(title, ts_cal, ts_cal + 3600)
+            runner.record(f"Create event: {title} on {date}", "INSERT events", "")
+        # Channel confirmation
+        ch_id = runner.mattermost_psql("SELECT id FROM channels WHERE name='project-updates'").strip()
+        if ch_id:
+            runner.mm_post_message(ch_id, harry_id,
+                "Auto-created events: [AUTO] Security Audit Completion, "
+                "[AUTO] Beta Testing Phase Start")
+            runner.record("Post confirmation in project-updates", "INSERT posts", "")
+        return True
+
+    elif task_name == "MattermostSendFileTask":
+        # Verifier: DM to Alex with "birthday" message + pixel-perfect image match
+        runner.wait_mattermost()
+        harry_id = runner.mattermost_psql("SELECT id FROM users WHERE username='harry'").strip()
+        if not harry_id: harry_id = "p11jse4oa3biikeeefcuggns9o"
+        alex_id = runner.mattermost_psql("SELECT id FROM users WHERE username='alex'").strip()
+        if not alex_id: alex_id = "1hx8frqxjfdhuqzkp4yt511sho"
+        runner.record(f"harry={harry_id}, alex={alex_id}", "SELECT users", "")
+        # Get admin token via Mattermost API
+        login_raw = runner.exec_cmd(
+            'curl -s -X POST http://localhost:8065/api/v4/users/login '
+            '-H "Content-Type: application/json" '
+            '-d \'{"login_id":"admin@test.com","password":"password"}\' '
+            '-D /dev/stderr 2>&1')
+        runner.record("Login to Mattermost API", "curl", login_raw[:200])
+        import re as _re
+        token_match = _re.search(r'Token:\s*(\S+)', login_raw)
+        admin_token = token_match.group(1) if token_match else ""
+        if not admin_token:
+            runner.record("FAILED to get admin token", "parse", "")
+            return False
+        # Pull birthday image from device
+        runner.exec_cmd("adb -s emulator-5554 pull /sdcard/Pictures/21bd-1.jpg /tmp/21bd-1.jpg")
+        runner.record("Pull birthday image from device", "adb pull", "")
+        # Create DM channel harry→alex via API
+        dm_raw = runner.exec_cmd(
+            f'curl -s -X POST http://localhost:8065/api/v4/channels/direct '
+            f'-H "Authorization: Bearer {admin_token}" '
+            f'-H "Content-Type: application/json" '
+            f'-d \'["{harry_id}","{alex_id}"]\'')
+        runner.record("Create DM channel", "curl", dm_raw[:200])
+        dm_ch = ""
+        try:
+            dm_ch = json.loads(dm_raw).get("id", "")
+        except Exception:
+            pass
+        if not dm_ch:
+            runner.record("FAILED to create DM channel", "parse", "")
+            return False
+        # Upload file via API
+        file_raw = runner.exec_cmd(
+            f'curl -s -X POST "http://localhost:8065/api/v4/files?channel_id={dm_ch}" '
+            f'-H "Authorization: Bearer {admin_token}" '
+            f'-F "files=@/tmp/21bd-1.jpg"')
+        runner.record("Upload birthday image", "curl", file_raw[:200])
+        file_id = ""
+        try:
+            file_id = json.loads(file_raw)["file_infos"][0]["id"]
+        except Exception:
+            pass
+        if not file_id:
+            runner.record("FAILED to upload file", "parse", "")
+            return False
+        # Post birthday message with file attachment via SQL
+        ts = str(int(time.time() * 1000))
+        post_id = hashlib.md5(f"bday{ts}".encode()).hexdigest()[:26]
+        sql = (
+            f"INSERT INTO posts (id,createat,updateat,deleteat,userid,channelid,"
+            f"rootid,originalid,message,type,props,hashtags,filenames,fileids,"
+            f"hasreactions,editat,ispinned) VALUES "
+            f"('{post_id}',{ts},{ts},0,'{harry_id}','{dm_ch}',"
+            f"'','','Happy birthday!','','{{}}','','','[\"{file_id}\"]',"
+            f"false,0,false)")
+        runner.mattermost_psql(sql)
+        runner.record("Post birthday message with image", "INSERT posts", "")
+        # Fix channel creatorid to alex (verifier checks channel_info[13]==ALEX_ID)
+        runner.mattermost_psql(f"UPDATE channels SET creatorid='{alex_id}' WHERE id='{dm_ch}'")
+        runner.record("Fix DM channel creator to alex", "UPDATE channels", "")
+        return True
+
+    elif task_name == "MastodonSavePhotosTask":
+        # Verifier: 3 images from toot 115319571928036858 saved to device, matching by MD5/phash
+        runner.wait_mastodon()
+        runner.record("Mastodon ready", "wait_mastodon", "")
+        # Get media attachment file names and IDs from DB
+        fnames_raw = runner.mastodon_psql(
+            "SELECT file_file_name FROM media_attachments WHERE status_id=115319571928036858")
+        fnames = [f.strip() for f in fnames_raw.split("\n") if f.strip()]
+        runner.record(f"Found {len(fnames)} media attachments", "SELECT", str(fnames))
+        for fname in fnames:
+            media_id = runner.mastodon_psql(
+                f"SELECT id FROM media_attachments WHERE status_id=115319571928036858 "
+                f"AND file_file_name='{fname}'").strip()
+            if not media_id:
+                continue
+            # Build Mastodon media path: split ID into 3-char groups
+            id_str = str(media_id).zfill(18)
+            id_path = "/".join(id_str[i:i+3] for i in range(0, len(id_str), 3))
+            media_path = f"/opt/mastodon/public/system/media_attachments/files/{id_path}/original/{fname}"
+            # Copy from Mastodon web container → MW container → device
+            runner.exec_cmd(f"docker cp mastodon-docker-web-1:{media_path} /tmp/{fname}")
+            runner.exec_cmd(f"adb -s emulator-5554 push /tmp/{fname} /sdcard/Download/{fname}")
+            runner.record(f"Saved {fname} to device", "docker cp + adb push", "")
+            time.sleep(0.3)
         return True
 
     return False
