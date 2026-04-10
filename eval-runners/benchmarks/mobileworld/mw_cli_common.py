@@ -48,6 +48,7 @@ PROMPT_MODULES = {
     "mw_adb_api": "skyrl_agent.agents.mobileworld.claude_sdk.prompts.mw_adb_api",
     "mw_adb_oracle": "agents.cli.claude_sdk.prompts.mw_adb_oracle",
     "mw_terminal_expert": "agents.cli.claude_sdk.prompts.mw_terminal_expert",
+    "mw_terminal_expert_v2": "agents.cli.claude_sdk.prompts.mw_terminal_expert_v2",
 }
 DEFAULT_PROMPT = "mw_adb_baseline"
 
@@ -129,6 +130,54 @@ def _http_post_quiet(url, payload):
         return http_post(url, payload, timeout=30)
     except Exception:
         return {}
+
+
+def _extract_answer(result_text: str) -> str:
+    """Extract a potential answer from the agent's final output.
+
+    Looks for explicit finish signals, then falls back to the last
+    substantive line.
+    """
+    import re
+
+    if not result_text:
+        return ""
+
+    text = result_text.strip()
+
+    # Pattern 1: agent printed FINISH: ... but didn't call the tool
+    m = re.search(r'FINISH:.*?description[=:]\s*(.+)', text, re.IGNORECASE)
+    if m:
+        return m.group(1).strip().strip('"\'')
+
+    # Pattern 2: "the answer is ..." / "result is ..." / "answer: ..."
+    m = re.search(
+        r'(?:the\s+)?(?:answer|result|value)\s*(?:is|:)\s*["\']?(.+?)["\']?\s*$',
+        text, re.IGNORECASE | re.MULTILINE,
+    )
+    if m:
+        return m.group(1).strip()
+
+    # Pattern 3: "Done." or "Complete." followed by a description
+    m = re.search(r'(?:Done|Complete|Finished)[.!]\s*(.+)', text, re.DOTALL)
+    if m:
+        remainder = m.group(1).strip()
+        # Take first meaningful line
+        for line in remainder.split("\n"):
+            line = line.strip().strip("- *")
+            if line and len(line) > 3:
+                return line[:500]
+
+    # Fallback: last non-empty line that isn't a tool call or system noise
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    for line in reversed(lines):
+        # Skip lines that look like tool calls, markdown headers, etc.
+        if line.startswith(("$", "```", "python ", ">>>", "---", "===")):
+            continue
+        if len(line) > 3:
+            return line[:500]
+
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +442,27 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     step_count = state.get("step_count", 0)
     finished = state.get("terminated", False)
     finish_description = state.get("finish_description", "")
+
+    # Auto-finish: if agent never called finish, extract answer from output
+    # and submit it so the evaluator can score information-retrieval tasks.
+    if not finished and claude_json:
+        result_text = claude_json.get("result", "")
+        if result_text:
+            # Try to extract a meaningful answer from the agent's last output.
+            # Look for common patterns: "FINISH:", the last non-empty line,
+            # or text after "answer is" / "result is".
+            answer = _extract_answer(result_text)
+            if answer:
+                print(f"  Auto-finish: submitting extracted answer ({len(answer)} chars)")
+                try:
+                    _http_post_quiet(
+                        f"{container_url}/step",
+                        {"device": device_id,
+                         "action": {"action_type": "answer", "text": answer}},
+                    )
+                    finish_description = answer
+                except Exception:
+                    pass
 
     # Evaluate task via /task/eval
     score, eval_reason = 0.0, ""

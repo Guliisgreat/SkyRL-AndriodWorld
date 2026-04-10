@@ -73,6 +73,8 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 
 | Agent | Model | Action Space | API | SR | Paper SR |
 |-------|-------|-------------|-----|---:|--------:|
+| Claude Code CLI | claude-opus-4-6 | ADB shell + tools | Anthropic | **45.3%** (53/117) | — |
+| Claude Code CLI | claude-sonnet-4-6 | ADB shell + tools | Anthropic | **37.6%** (44/117) | — |
 | GeneralE2E | Kimi K2.5 | GUI (tap/swipe) | OpenRouter | **37.6%** (44/117) | 49.6% |
 | MAI-UI (vllm 0.11) | MAI-UI-8B | GUI (tap/swipe) | Local vLLM | **21.4%** (25/117) | 27.5% |
 | UI-Venus-1.5 | UI-Venus-1.5-30B-A3B | GUI (tap/swipe) | Local vLLM | **11.1%** (13/117) | 17.1% |
@@ -125,19 +127,37 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 | MastodonNewPostTask | 7 | 74s |
 | MastodonReplyTask | 30 | 178s |
 
+## Per-Category Breakdown (Claude Code CLI)
+
+| Category | Opus 4.6 | Sonnet 4.6 |
+|----------|--------:|----------:|
+| mastodon (38) | **25/38 (66%)** | 17/38 (45%) |
+| other (18) | 7/18 (39%) | 7/18 (39%) |
+| mattermost (15) | 3/15 (20%) | 2/15 (13%) |
+| files (13) | 4/13 (31%) | **8/13 (62%)** |
+| settings (7) | 5/7 (71%) | 5/7 (71%) |
+| mall (7) | 0/7 (0%) | 0/7 (0%) |
+| email (5) | 2/5 (40%) | 2/5 (40%) |
+| calendar/alarm (5) | **3/5 (60%)** | 2/5 (40%) |
+| sms/messages (5) | **2/5 (40%)** | 1/5 (20%) |
+| map (2) | **2/2 (100%)** | 0/2 (0%) |
+| chrome (2) | 0/2 (0%) | 0/2 (0%) |
+
 ## Run Details
 
-| | Kimi K2.5 | MAI-UI-8B (0.11) | UI-Venus-1.5-30B | MAI-UI-8B (0.13) |
-|--|-----------|------------------|------------------|------------------|
-| Date | 2026-04-08 | 2026-04-09 | 2026-04-08 | 2026-04-08 |
-| Runner | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` |
-| Agent type | `general_e2e` | `mai_ui_agent` | `ui_venus_agent` | `mai_ui_agent` |
-| vLLM version | — | **0.11.0** | — | 0.13.0 |
-| Max steps | 50 | 50 | 50 | 50 |
-| Avg steps/task | 23.5 | 32.2 | 18.7 | — |
-| Temperature | 0.0 | 0.0 | 0.0 | 0.0 |
-| Avg time/task | 265s | 278s | 111s | — |
-| Avg input tokens/task | 290,828 | 297,280 | 24,554 | — |
-| Avg output tokens/task | 2,909 | 1,919 | 655 | — |
-| max-model-len | — | 32,768 | 8,192 | 8,192 |
-| Results dir | `GUIAgent_general_e2e_moonshotaikimik25_260408_0252/` | `GUIAgent_mai_ui_agent_..._260409_0204/` | `GUIAgent_ui_venus_agent_UIVenus1530BA3B_260408_0157/` | `GUIAgent_mai_ui_agent_..._260408_1155/` |
+| | Claude Opus 4.6 | Claude Sonnet 4.6 | Kimi K2.5 | MAI-UI-8B (0.11) | UI-Venus-1.5-30B | MAI-UI-8B (0.13) |
+|--|-----------------|-------------------|-----------|------------------|------------------|------------------|
+| Date | 2026-04-09 | 2026-04-09 | 2026-04-08 | 2026-04-09 | 2026-04-08 | 2026-04-08 |
+| Runner | `run_claude_cli.py` | `run_claude_cli.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` |
+| Prompt/Agent | `mw_terminal_expert` | `mw_terminal_expert` | `general_e2e` | `mai_ui_agent` | `ui_venus_agent` | `mai_ui_agent` |
+| Action space | ADB shell + tools | ADB shell + tools | GUI (tap/swipe) | GUI (tap/swipe) | GUI (tap/swipe) | GUI (tap/swipe) |
+| vLLM version | — | — | — | **0.11.0** | — | 0.13.0 |
+| Max turns/steps | 50 | 50 | 50 | 50 | 50 | 50 |
+| Avg turns/task | 36.7 | 36.1 | 23.5 | 32.2 | 18.7 | — |
+| Temperature | — | — | 0.0 | 0.0 | 0.0 | 0.0 |
+| Avg time/task | 194s | 174s | 265s | 278s | 111s | — |
+| Avg input tokens/task | 961,919 | 1,021,701 | 290,828 | 297,280 | 24,554 | — |
+| Avg output tokens/task | 7,265 | 7,685 | 2,909 | 1,919 | 655 | — |
+| Total cost | $95.89 | $60.77 | — | — | — | — |
+| max-model-len | — | — | — | 32,768 | 8,192 | 8,192 |
+| Results dir | `ClaudeCodeCLI_MW_claudeopus46_260409_2253/` | `ClaudeCodeCLI_MW_claudesonnet46_260409_1602/` | `GUIAgent_general_e2e_moonshotaikimik25_260408_0252/` | `GUIAgent_mai_ui_agent_..._260409_0204/` | `GUIAgent_ui_venus_agent_UIVenus1530BA3B_260408_0157/` | `GUIAgent_mai_ui_agent_..._260408_1155/` |
