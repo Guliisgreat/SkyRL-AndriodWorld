@@ -9,6 +9,7 @@ Task split: **101 CLI-solvable** | **15 GUI-only** (per [ground truth reference]
 |-------|-------|-------------|-----|--------:|----------:|---------:|-----:|
 | MAI-UI (ref-faithful)† | MAI-UI-8B | GUI (dir swipe) | Local vLLM | **69.0%** (80/116) | 73.3% (74/101) | 40.0% (6/15) | — |
 | GUI-Owl-1.5 (ref-faithful)† | GUI-Owl-1.5-32B-Instruct | GUI (pixel swipe) | Local vLLM | **69.0%** (80/116) | 71.3% (72/101) | **53.3%** (8/15) | — |
+| UI-Venus-1.5-8B (ref, 50×)† | UI-Venus-1.5-8B | GUI (pixel swipe) | Local vLLM | **68.1%** (79/116) | 73.3% (74/101) | 33.3% (5/15) | — |
 | UI-Venus-1.5-30B (ref-faithful)† | UI-Venus-1.5-30B-A3B | GUI (pixel swipe) | Local vLLM | **67.2%** (78/116) | 69.3% (70/101) | **53.3%** (8/15) | — |
 | UI-Venus-1.5-8B (ref-faithful)† | UI-Venus-1.5-8B | GUI (pixel swipe) | Local vLLM | **67.2%** (78/116) | 72.3% (73/101) | 33.3% (5/15) | — |
 | Claude Code CLI | claude-opus-4-6 | ADB shell | Anthropic | **63.8%** (74/116) | **71.3%** (72/101) | 13.3% (2/15) | $35.89 |
@@ -73,8 +74,8 @@ Task split: **101 CLI-solvable** | **15 GUI-only** (per [ground truth reference]
 
 †Ref-faithful runs use `val_data_refseed30.jsonl` (per-task seeds matching reference), `androidworld:2026plusswipe` Docker image (pixel swipe + sleep fixes), and each model's native agent/prompt:
 - **GUI-Owl-1.5**: multi-turn + `convert_format()`, `<tool_call>` format, 10× step budget. See [reproduction report](../../docs/design/gui_owl_reproduction_report.md).
-- **UI-Venus-1.5**: 2-msg with text history, `<think>/<action>/<conclusion>` format, 10× step budget.
-- **MAI-UI**: multi-turn with 3-image history, `<thinking>/<tool_call>` format, AW app list, 50× step budget.
+- **UI-Venus-1.5**: 2-msg with text history, `<think>/<action>/<conclusion>` format, 10× step budget (50× for 8B extended run).
+- **MAI-UI**: multi-turn with 3-image history, `<thinking>/<tool_call>` format, AW app list, 50× step budget. Direction-based swipe benefits most from higher budget (+9 tasks vs 10×).
 - **Gemini 3.1 Pro / Qwen3-VL-32B**: GUI-Owl prompt (no native agent available), 10× step budget.
 
 GUI-only task IDs: 0, 1, 8, 20, 28, 29, 30, 37, 40, 47, 55, 75, 76, 78, 80
