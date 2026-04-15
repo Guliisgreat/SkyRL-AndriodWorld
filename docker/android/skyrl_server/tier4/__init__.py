@@ -18,7 +18,17 @@ These tasks are designed for CLI/ADB agents. GUI agents can complete them
 only with high cost and error-prone multi-step interactions.
 """
 
+from . import broccoli
+from . import calendar
+from . import contacts
+from . import cross_app
+from . import expense
+from . import joplin
+from . import opentracks
+from . import retro_music
+from . import tasks_app
 from . import files
+from . import markor
 from . import sms
 from . import system
 
@@ -28,6 +38,63 @@ __all__ = [
     "Tier4HiddenStateListAppVersions",
     "Tier4AggregationCountUnreadSMS",
     "Tier4CrossAppSmsNumbersNotInContacts",
+    # Phase 1: Files/Markor
+    "Tier4BulkRenameScreenshots",
+    "Tier4BulkMoveLargeFiles",
+    "Tier4FilterRecentLogFiles",
+    "Tier4BulkAppendFooterToMarkdown",
+    "Tier4AggregationLongestMarkorNote",
+    "Tier4TopKMarkorMostModifiedNotes",
+    # Phase 2: SMS/Contacts
+    "Tier4FilterDeleteOldNonContactKeywordSms",
+    "Tier4TopKSmsThreadsByCount",
+    "Tier4CrossAppContactsNoRecentSms",
+    "Tier4FilterContactsBirthdayNoPhone",
+    "Tier4AggregationLongestContactName",
+    "Tier4DedupContactsDuplicatePhones",
+    "Tier4DedupMergeContactsSamePhone",
+    # Phase 8: DB-based — Pro Expense
+    "Tier4BulkRecategorizeExpense",
+    "Tier4FilterExpenseHighTravelLastMonth",
+    "Tier4AggregationExpenseCategoryTop3",
+    "Tier4DedupExpenseSuspectedDuplicates",
+    "Tier4TopKExpenseHighestAmount",
+    "Tier4CrossAppExpenseToMarkorCalendar",
+    # Phase 8: DB-based — Tasks.org
+    "Tier4BulkChangePriorityTasks",
+    "Tier4CoverageOverdueTasksCompleted",
+    # Phase 8: DB-based — Joplin
+    "Tier4FilterJoplinContainsNotContains",
+    "Tier4DedupJoplinSameTitleNotes",
+    # Phase 8: DB-based — OpenTracks
+    "Tier4AggregationOpenTracksWeeklyStats",
+    "Tier4TopKOpenTracksFastestActivity",
+    "Tier4CrossAppOpenTracksToTasks",
+    # Phase 8: DB-based — Retro Music
+    "Tier4FilterRetroMusicMultiCondition",
+    "Tier4TopKRetroMusicLongestSongs",
+    # Phase 8: DB-based — Broccoli
+    "Tier4CrossAppBroccoliToMarkorIndex",
+    # Phase 6: Cross-app non-DB
+    "Tier4CrossAppFilesCreatedDuringEvents",
+    "Tier4CrossAppMarkorPhonesVsContacts",
+    # Phase 5: Files + SMS Coverage
+    "Tier4AggregationDownloadSizeTop3",
+    "Tier4TopKLargestDownloadFiles",
+    "Tier4CoverageAllSmsRead",
+    # Phase 4: System/Settings
+    "Tier4HiddenStateLocationPermissions",
+    "Tier4HiddenStateAudioRouting",
+    "Tier4CoverageAppsCameraPermission",
+    "Tier4CoverageWifiConnected",
+    # Phase 3: Calendar
+    "Tier4BulkDeleteCalendarTestEvents",
+    "Tier4CrossAppCalendarToMarkor",
+    "Tier4FilterCalendarLongNoReminder",
+    "Tier4AggregationCalendarTotalDuration",
+    "Tier4DedupCalendarDeleteDuplicateEvents",
+    "Tier4TopKCalendarEarliestEvent",
+    "Tier4CoverageCalendarEventsHaveReminders",
 ]
 
 Tier4BulkDeleteTmpInDownloads = files.Tier4BulkDeleteTmpInDownloads
@@ -35,3 +102,48 @@ Tier4CoverageNoTmpInDownloads = files.Tier4CoverageNoTmpInDownloads
 Tier4HiddenStateListAppVersions = system.Tier4HiddenStateListAppVersions
 Tier4AggregationCountUnreadSMS = sms.Tier4AggregationCountUnreadSMS
 Tier4CrossAppSmsNumbersNotInContacts = sms.Tier4CrossAppSmsNumbersNotInContacts
+Tier4BulkRenameScreenshots = files.Tier4BulkRenameScreenshots
+Tier4BulkMoveLargeFiles = files.Tier4BulkMoveLargeFiles
+Tier4FilterRecentLogFiles = files.Tier4FilterRecentLogFiles
+Tier4BulkAppendFooterToMarkdown = markor.Tier4BulkAppendFooterToMarkdown
+Tier4AggregationLongestMarkorNote = markor.Tier4AggregationLongestMarkorNote
+Tier4TopKMarkorMostModifiedNotes = markor.Tier4TopKMarkorMostModifiedNotes
+Tier4FilterDeleteOldNonContactKeywordSms = sms.Tier4FilterDeleteOldNonContactKeywordSms
+Tier4TopKSmsThreadsByCount = sms.Tier4TopKSmsThreadsByCount
+Tier4CrossAppContactsNoRecentSms = contacts.Tier4CrossAppContactsNoRecentSms
+Tier4FilterContactsBirthdayNoPhone = contacts.Tier4FilterContactsBirthdayNoPhone
+Tier4AggregationLongestContactName = contacts.Tier4AggregationLongestContactName
+Tier4DedupContactsDuplicatePhones = contacts.Tier4DedupContactsDuplicatePhones
+Tier4DedupMergeContactsSamePhone = contacts.Tier4DedupMergeContactsSamePhone
+Tier4BulkRecategorizeExpense = expense.Tier4BulkRecategorizeExpense
+Tier4FilterExpenseHighTravelLastMonth = expense.Tier4FilterExpenseHighTravelLastMonth
+Tier4AggregationExpenseCategoryTop3 = expense.Tier4AggregationExpenseCategoryTop3
+Tier4DedupExpenseSuspectedDuplicates = expense.Tier4DedupExpenseSuspectedDuplicates
+Tier4TopKExpenseHighestAmount = expense.Tier4TopKExpenseHighestAmount
+Tier4CrossAppExpenseToMarkorCalendar = expense.Tier4CrossAppExpenseToMarkorCalendar
+Tier4BulkChangePriorityTasks = tasks_app.Tier4BulkChangePriorityTasks
+Tier4CoverageOverdueTasksCompleted = tasks_app.Tier4CoverageOverdueTasksCompleted
+Tier4FilterJoplinContainsNotContains = joplin.Tier4FilterJoplinContainsNotContains
+Tier4DedupJoplinSameTitleNotes = joplin.Tier4DedupJoplinSameTitleNotes
+Tier4AggregationOpenTracksWeeklyStats = opentracks.Tier4AggregationOpenTracksWeeklyStats
+Tier4TopKOpenTracksFastestActivity = opentracks.Tier4TopKOpenTracksFastestActivity
+Tier4CrossAppOpenTracksToTasks = opentracks.Tier4CrossAppOpenTracksToTasks
+Tier4FilterRetroMusicMultiCondition = retro_music.Tier4FilterRetroMusicMultiCondition
+Tier4TopKRetroMusicLongestSongs = retro_music.Tier4TopKRetroMusicLongestSongs
+Tier4CrossAppBroccoliToMarkorIndex = broccoli.Tier4CrossAppBroccoliToMarkorIndex
+Tier4CrossAppFilesCreatedDuringEvents = cross_app.Tier4CrossAppFilesCreatedDuringEvents
+Tier4CrossAppMarkorPhonesVsContacts = cross_app.Tier4CrossAppMarkorPhonesVsContacts
+Tier4AggregationDownloadSizeTop3 = files.Tier4AggregationDownloadSizeTop3
+Tier4TopKLargestDownloadFiles = files.Tier4TopKLargestDownloadFiles
+Tier4CoverageAllSmsRead = sms.Tier4CoverageAllSmsRead
+Tier4HiddenStateLocationPermissions = system.Tier4HiddenStateLocationPermissions
+Tier4HiddenStateAudioRouting = system.Tier4HiddenStateAudioRouting
+Tier4CoverageAppsCameraPermission = system.Tier4CoverageAppsCameraPermission
+Tier4CoverageWifiConnected = system.Tier4CoverageWifiConnected
+Tier4BulkDeleteCalendarTestEvents = calendar.Tier4BulkDeleteCalendarTestEvents
+Tier4CrossAppCalendarToMarkor = calendar.Tier4CrossAppCalendarToMarkor
+Tier4FilterCalendarLongNoReminder = calendar.Tier4FilterCalendarLongNoReminder
+Tier4AggregationCalendarTotalDuration = calendar.Tier4AggregationCalendarTotalDuration
+Tier4DedupCalendarDeleteDuplicateEvents = calendar.Tier4DedupCalendarDeleteDuplicateEvents
+Tier4TopKCalendarEarliestEvent = calendar.Tier4TopKCalendarEarliestEvent
+Tier4CoverageCalendarEventsHaveReminders = calendar.Tier4CoverageCalendarEventsHaveReminders
