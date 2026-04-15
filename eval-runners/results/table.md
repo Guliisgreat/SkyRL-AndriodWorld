@@ -7,8 +7,13 @@ Task split: **101 CLI-solvable** | **15 GUI-only** (per [ground truth reference]
 
 | Agent | Model | Action Space | API | Overall | CLI (101) | GUI (15) | Cost |
 |-------|-------|-------------|-----|--------:|----------:|---------:|-----:|
+| MAI-UI (ref-faithful)† | MAI-UI-8B | GUI (dir swipe) | Local vLLM | **69.0%** (80/116) | 73.3% (74/101) | 40.0% (6/15) | — |
 | GUI-Owl-1.5 (ref-faithful)† | GUI-Owl-1.5-32B-Instruct | GUI (pixel swipe) | Local vLLM | **69.0%** (80/116) | 71.3% (72/101) | **53.3%** (8/15) | — |
+| UI-Venus-1.5-30B (ref-faithful)† | UI-Venus-1.5-30B-A3B | GUI (pixel swipe) | Local vLLM | **67.2%** (78/116) | 69.3% (70/101) | **53.3%** (8/15) | — |
+| UI-Venus-1.5-8B (ref-faithful)† | UI-Venus-1.5-8B | GUI (pixel swipe) | Local vLLM | **67.2%** (78/116) | 72.3% (73/101) | 33.3% (5/15) | — |
 | Claude Code CLI | claude-opus-4-6 | ADB shell | Anthropic | **63.8%** (74/116) | **71.3%** (72/101) | 13.3% (2/15) | $35.89 |
+| Gemini 3.1 Pro† | gemini-3.1-pro-preview | GUI (pixel swipe) | OpenRouter | **61.2%** (71/116) | — | — | — |
+| Qwen3-VL-32B† | qwen3-vl-32b-instruct | GUI (pixel swipe) | OpenRouter | **58.6%** (68/116) | 64.4% (65/101) | 20.0% (3/15) | — |
 | UI-Venus-1.5 (32k) | UI-Venus-1.5-30B-A3B | GUI (tap/swipe) | Local vLLM | **60.3%** (70/116) | 63.4% (64/101) | **40.0%** (6/15) | — |
 | UI-Venus-1.5 (8k) | UI-Venus-1.5-30B-A3B | GUI (tap/swipe) | Local vLLM | **59.5%** (69/116) | 62.4% (63/101) | **40.0%** (6/15) | — |
 | Qwen3VLAgentMCP | qwen3-vl-30b-a3b-instruct | GUI (tap/swipe) | OpenRouter | **56.0%** (65/116) | 58.4% (59/101) | **40.0%** (6/15) | — |
@@ -66,7 +71,11 @@ Task split: **101 CLI-solvable** | **15 GUI-only** (per [ground truth reference]
 | max-model-len | 32,768 | — | 32,768 | 8,192 | 8,192 | 32,768 | — | 32,768 | 32,768 | — |
 | Results dir | `ClaudeCodeCLI_GUIOwl1532BInstruct_260415_0108/` | `ClaudeCodeCLI_claudeopus46_260408_0122/` | `ClaudeCodeCLI_..._Venus_260409_1357/` | `UIVenus15_30BA3B_260408/` | `ClaudeCodeCLI_qwenqwen3vl30ba3binstruct_260407_2117/` | `ClaudeCodeCLI_..._GUIOwl_260409_2305/` | `ClaudeCodeCLI_openrouterminimaxminimaxm27_260408_0207/` | `ClaudeCodeCLI_..._260409_1200/` | `MAIUI8B_260408/` | `ClaudeCodeCLI_googlegemini25pro_260408_*` |
 
-†GUI-Owl-1.5 (ref-faithful) uses `val_data_refseed30.jsonl` (per-task seeds matching reference), multi-turn conversation with `convert_format()`, `androidworld:2026plusswipe` Docker image (pixel swipe + sleep fixes). See [reproduction report](../../docs/design/gui_owl_reproduction_report.md).
+†Ref-faithful runs use `val_data_refseed30.jsonl` (per-task seeds matching reference), `androidworld:2026plusswipe` Docker image (pixel swipe + sleep fixes), and each model's native agent/prompt:
+- **GUI-Owl-1.5**: multi-turn + `convert_format()`, `<tool_call>` format, 10× step budget. See [reproduction report](../../docs/design/gui_owl_reproduction_report.md).
+- **UI-Venus-1.5**: 2-msg with text history, `<think>/<action>/<conclusion>` format, 10× step budget.
+- **MAI-UI**: multi-turn with 3-image history, `<thinking>/<tool_call>` format, AW app list, 50× step budget.
+- **Gemini 3.1 Pro / Qwen3-VL-32B**: GUI-Owl prompt (no native agent available), 10× step budget.
 
 GUI-only task IDs: 0, 1, 8, 20, 28, 29, 30, 37, 40, 47, 55, 75, 76, 78, 80
 
