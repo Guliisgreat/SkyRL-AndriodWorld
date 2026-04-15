@@ -3,12 +3,16 @@
 Complete reference for all MobileWorld GUI-only benchmark tasks: task descriptions,
 ground truth CLI commands with step-by-step explanations, and verifier logic.
 
-**Total GUI-only tasks:** 117 | **CLI-solvable:** 111 | **No GT:** 6
-**Total GT steps:** 438 | **Avg steps/task:** 3.9
+**Total GUI-only tasks:** 117 | **CLI-solvable:** 117 | **Verified:** 117/117 (100%)
 
 **Action types used:** adb (`settings put`, `am start`, `content query`, `mv`, `cp`, `rm`), sql (`sqlite3`), read-file, write-file, find-files, http (`GET`/`POST`), exec (`docker exec`, `curl`), finish
 
 **No UI interaction:** Zero screenshots, accessibility trees, taps, or swipes in any GT trajectory.
+
+**Verifier note:** 5 of 117 tasks use image file comparison (MD5/phash) in their verifiers —
+MastodonChangeHeaderTask, MastodonMallShareOrderTask, MastodonSavePhotosTask,
+MastodonShareLocationTask, MattermostSendFileTask. All other verifiers use only
+CLI-checkable state (DB queries, file existence, SMS/email content, API responses).
 
 ---
 
@@ -2913,15 +2917,35 @@ exec "docker exec mastodon-docker-db-1 psql -U postgres -d mastodon -t -c "UPDAT
 
 ### MastodonSavePhotosTask
 
-**Status:** NO GT (needs image file handling) | **Steps:** 0
+**Status:** PASS | **Steps:** 6
 
 **Goal:** Find the post that Alice published on October 5th on Mastodon, and save all the images to the phone.
 
-*No CLI ground truth — requires GUI interaction.*
+**Ground Truth Steps:**
 
-**Verifier:** Check:
-        - The photos are saved correctly
-        - The photos are the expected photos
+**Step 1** (exec): Query media attachment file names from Mastodon DB
+```
+exec "docker exec mastodon-docker-db-1 psql -U postgres -d mastodon -t -c \"SELECT file_file_name FROM media_attachments WHERE status_id=115319571928036858\""
+```
+
+**Step 2** (exec): For each image, get media attachment ID
+```
+exec "docker exec mastodon-docker-db-1 psql -U postgres -d mastodon -t -c \"SELECT id FROM media_attachments WHERE status_id=115319571928036858 AND file_file_name='21bd-1.jpg'\""
+```
+
+**Step 3** (exec): Copy image from Mastodon web container to MW container (repeat per image)
+```
+exec "docker cp mastodon-docker-web-1:/opt/mastodon/public/system/media_attachments/files/<id_path>/original/21bd-1.jpg /tmp/21bd-1.jpg"
+```
+
+**Step 4** (adb): Push image to device (repeat per image)
+```
+adb "adb push /tmp/21bd-1.jpg /sdcard/Download/21bd-1.jpg"
+```
+
+**Step 5-6**: Repeat steps 3-4 for 21bd-2.jpeg and 21bd-3.jpg
+
+**Verifier:** Compares saved images against expected assets using MD5 hash (exact match) with phash fallback (threshold ≤ 5). Expects exactly 3 images: 21bd-1.jpg, 21bd-2.jpeg, 21bd-3.jpg.
 
 ### MastodonServerInfoReportTask
 
@@ -3236,11 +3260,38 @@ exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -
 
 ### MattermostDeadlineReconciliationTask
 
-**Status:** PASS (Python runner, no JSON GT) | **Steps:** ~15
+**Status:** PASS | **Steps:** 5
 
 **Goal:** I suspect there's a discrepancy between what was discussed and what got documented.
 
-*GT implemented in `run_gt_mwenv_broker.py` Python code (dynamic dates/channels). Passes verification but not in JSON format.*
+**Ground Truth Steps:**
+
+**Step 1** (write-file): Send deadline audit email to dylan@gmail.com
+```
+write-file /sdcard/Android/data/com.gmailclone/files/sentEmail.json '{"to": "dylan@gmail.com", "subject": "Deadline Audit Report", "body": "Matched: API Documentation Review, Frontend MVP Launch\nMissing: Security Audit Completion, Beta Testing Phase Start\nUntracked: Team Building Event", "attachments": []}'
+```
+
+**Step 2** (sql): Create [AUTO] Security Audit Completion calendar event (dynamic date: next Monday + 13 days)
+```
+sql /data/data/org.fossify.calendar/databases/events.db "INSERT INTO events ..."
+```
+
+**Step 3** (sql): Create [AUTO] Beta Testing Phase Start calendar event (dynamic date: next Monday + 18 days)
+```
+sql /data/data/org.fossify.calendar/databases/events.db "INSERT INTO events ..."
+```
+
+**Step 4** (exec): Look up project-updates channel ID
+```
+exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -c \"SELECT id FROM channels WHERE name='project-updates'\""
+```
+
+**Step 5** (exec): Post confirmation with both [AUTO] event titles
+```
+exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -c \"INSERT INTO posts ... 'Auto-created events: [AUTO] Security Audit Completion, [AUTO] Beta Testing Phase Start' ...\""
+```
+
+**Verifier:** Checks email to dylan@gmail.com with "Deadline Audit Report" subject containing all 5 deadline names. Checks [AUTO] calendar events within ±2 days of expected dates. Checks channel confirmation message from Harry.
 
 ### MattermostEmailTask
 
@@ -3278,11 +3329,38 @@ exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -
 
 ### MattermostIncidentEscalationTask
 
-**Status:** PASS (Python runner, no JSON GT) | **Steps:** ~15
+**Status:** PASS | **Steps:** 6
 
 **Goal:** Monitor the 'support-tickets' channel for CRITICAL incidents.
 
-*GT implemented in `run_gt_mwenv_broker.py` Python code (dynamic dates/channels). Passes verification but not in JSON format.*
+**Ground Truth Steps:**
+
+**Step 1** (exec): Look up support-tickets channel and read messages
+```
+exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -c \"SELECT id FROM channels WHERE name='support-tickets'\""
+```
+
+**Step 2** (exec): Create incident-ticket-500 channel
+```
+exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -c \"INSERT INTO channels ... 'incident-ticket-500' ...\""
+```
+
+**Step 3** (exec): Add Sam to incident channel
+```
+exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -c \"INSERT INTO channelmembers ...\""
+```
+
+**Step 4** (write-file): Email CTO about critical incident
+```
+write-file /sdcard/Android/data/com.gmailclone/files/sentEmail.json '{"to": "cto@company.com", "subject": "CRITICAL INCIDENT: TICKET-500", "body": "Critical incident: Database connection timeout errors affecting production.", "attachments": []}'
+```
+
+**Step 5** (sql): Create emergency meeting calendar event (dynamic: tomorrow 09:00 using emulator date)
+```
+sql /data/data/org.fossify.calendar/databases/events.db "INSERT INTO events ... 'Discussion on TICKET-500' ..."
+```
+
+**Verifier:** Checks incident channel creation, Sam added as member, email to CTO with "CRITICAL INCIDENT" subject, and calendar event for Discussion on TICKET-500.
 
 ### MattermostProjectHandoverTask
 
@@ -3402,27 +3480,110 @@ exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -
 
 ### MattermostResourceConflictResolutionTask
 
-**Status:** PASS (Python runner, no JSON GT) | **Steps:** ~15
+**Status:** PASS | **Steps:** 7
 
 **Goal:** Check the 'resource-booking' channel on Mattermost for resource requests.
 
-*GT implemented in `run_gt_mwenv_broker.py` Python code (dynamic dates/channels). Passes verification but not in JSON format.*
+**Ground Truth Steps:**
+
+**Step 1** (exec): Look up resource-booking channel and read messages
+```
+exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -c \"SELECT id FROM channels WHERE name='resource-booking'\""
+```
+
+**Step 2** (write-file): Email conflict report to facilities
+```
+write-file /sdcard/Android/data/com.gmailclone/files/sentEmail.json '{"to": "facilities@company.com", "subject": "Resource Booking Conflicts", "body": "APPROVED: Conf Room B, Conf Room C, Projector, Video Camera\nCONFLICT: Conf Room A", "attachments": []}'
+```
+
+**Step 3** (sql): Create BOOKED calendar events for approved resources (dynamic dates based on next Monday)
+```
+sql /data/data/org.fossify.calendar/databases/events.db "INSERT INTO events ... 'BOOKED: Conf Room B - Sam' ..."
+```
+
+**Step 4-5** (sql): Create additional booking events for Conf Room C, Projector, Video Camera
+
+**Step 6** (exec): Create DM channel to Alex and notify about Conf Room A conflict
+```
+exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -c \"INSERT INTO posts ... 'Conf Room A booking conflict' ...\""
+```
+
+**Verifier:** Checks email with conflict report, 4 calendar booking events within ±2 days of expected dates, and DM to Alex about Conf Room A conflict.
 
 ### MattermostSendFileTask
 
-**Status:** NO GT (needs image file handling) | **Steps:** 0
+**Status:** PASS | **Steps:** 8
 
 **Goal:** It's alex's 21st birthday today. Send a birthday message to him privately on mattermost. Upload a birthday cake image to the message.
 
-*GT implemented in `run_gt_mwenv_broker.py` Python code (dynamic dates/channels). Passes verification but not in JSON format.*
+**Ground Truth Steps:**
+
+**Step 1** (exec): Get Mattermost admin API token
+```
+exec "curl -s -X POST http://localhost:8065/api/v4/users/login -H 'Content-Type: application/json' -d '{\"login_id\":\"admin@test.com\",\"password\":\"password\"}' -D /dev/stderr 2>&1"
+```
+
+**Step 2** (exec): Pull birthday image from device
+```
+exec "adb -s emulator-5554 pull /sdcard/Pictures/21bd-1.jpg /tmp/21bd-1.jpg"
+```
+
+**Step 3** (exec): Create DM channel harry→alex via Mattermost API
+```
+exec "curl -s -X POST http://localhost:8065/api/v4/channels/direct -H 'Authorization: Bearer $TOKEN' -d '[\"harry_id\",\"alex_id\"]'"
+```
+
+**Step 4** (exec): Upload birthday image via Mattermost file API
+```
+exec "curl -s -X POST 'http://localhost:8065/api/v4/files?channel_id=DM_CH' -H 'Authorization: Bearer $TOKEN' -F 'files=@/tmp/21bd-1.jpg'"
+```
+
+**Step 5** (exec): Insert post with file attachment via SQL file (preserves JSON quotes in fileids)
+```
+exec "echo SQL | base64 -d > /tmp/_mm_post.sql && cat /tmp/_mm_post.sql | docker exec -i mattermost-docker-postgres-1 psql -U mmuser -d mattermost"
+```
+
+**Step 6** (exec): Fix DM channel creator to alex
+```
+exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -c \"UPDATE channels SET creatorid='alex_id' WHERE id='DM_CH'\""
+```
+
+**Verifier:** Checks DM to Alex with "birthday" message, exactly 1 file uploaded, and pixel-perfect image match (PIL ImageChops.difference) against /sdcard/Pictures/21bd-1.jpg.
 
 ### MattermostShiftCoverageTask
 
-**Status:** PASS (Python runner, no JSON GT) | **Steps:** ~15
+**Status:** PASS | **Steps:** 6
 
 **Goal:** Review shift swap requests in 'shift-requests' channel.
 
-*No CLI ground truth — requires GUI interaction.*
+**Ground Truth Steps:**
+
+**Step 1** (exec): Look up shift-requests channel and read messages
+```
+exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -c \"SELECT id FROM channels WHERE name='shift-requests'\""
+```
+
+**Step 2** (exec): Read shift request messages to identify Alex (family emergency, Monday) and Sofia (doctor, Wednesday)
+```
+exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -c \"SELECT id,message FROM posts WHERE channelid='CH_ID' AND deleteat=0 ORDER BY createat ASC\""
+```
+
+**Step 3** (exec): Reply to Alex: denied (conflicts with All Hands Meeting, threaded reply)
+```
+exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -c \"INSERT INTO posts ... rootid='ALEX_MSG_ID' ... 'Denied: Conflicts with All Hands Meeting on Monday.' ...\""
+```
+
+**Step 4** (exec): Reply to Sofia: escalated to HR (threaded reply)
+```
+exec "docker exec mattermost-docker-postgres-1 psql -U mmuser -d mattermost -t -c \"INSERT INTO posts ... rootid='SOFIA_MSG_ID' ... 'Request escalated to HR for Wednesday coverage.' ...\""
+```
+
+**Step 5** (write-file): Email HR about Sofia's shift swap
+```
+write-file /sdcard/Android/data/com.gmailclone/files/sentEmail.json '{"to": "hr@company.com", "subject": "Shift Swap Request", "body": "Sofia has requested shift coverage for YYYY-MM-DD due to a doctor appointment.", "attachments": []}'
+```
+
+**Verifier:** Checks threaded replies to correct messages (denied for Monday, escalated for Wednesday), email to HR with shift date, and correct reasoning.
 
 
 ### MattermostTechnicalDebtTriageTask
