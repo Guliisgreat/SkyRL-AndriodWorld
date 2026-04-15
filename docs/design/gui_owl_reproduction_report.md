@@ -3,7 +3,7 @@
 **Date:** 2026-04-15
 **Model:** GUI-Owl-1.5-32B-Instruct (mPLUG, Qwen3-VL based)
 **Benchmark:** AndroidWorld (116 tasks)
-**Paper SR:** 71.6% | **Reference in-process SR:** 79/116 (68.1%) | **Our HTTP SR:** 80/116 (69.0%)
+**Paper SR:** 69.8% | **Reference in-process SR:** 79/116 (68.1%) | **Our HTTP SR:** 80/116 (69.0%)
 
 ---
 
