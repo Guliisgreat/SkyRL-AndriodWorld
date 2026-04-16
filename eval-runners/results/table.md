@@ -94,14 +94,17 @@ cross-app data joins, hidden system state inspection).
 
 ## Overall
 
-| Agent | Model | Action Space | API | Max Turns | Success | Rate | Avg Steps | Avg In Tokens | Avg Out Tokens |
-|-------|-------|-------------|-----|----------:|--------:|-----:|----------:|--------------:|---------------:|
-| Claude Code CLI | claude-opus-4-6 | ADB shell | Anthropic | 50 | **41/50** | **82.0%** | 37.4 | 959,655 | 6,824 |
-| Claude Code CLI | claude-opus-4-6 | ADB shell | Anthropic | 30 | 22/50 | 44.0% | 32.0 | 833,182 | 5,914 |
-| Claude Code CLI | claude-sonnet-4 | ADB shell | Anthropic | 30 | 4/50 | 8.0% | 10.7 | 317,412 | 2,148 |
-| Qwen3-VL-32B | qwen3-vl-32b-instruct | GUI (pixel swipe) | OpenRouter | 30 | 1/50 | 2.0% | 12.7 | 45,631 | 1,426 |
-| MAI-UI-8B | MAI-UI-8B | GUI (tap/swipe) | Local vLLM | 50 | 1/50 | 2.0% | 3.4 | 20,940 | 320 |
-| UI-Venus-1.5-8B | UI-Venus-1.5-8B | GUI (tap/swipe) | Local vLLM | 50 | 1/50 | 2.0% | 43.3 | 146,979 | 5,297 |
+| Agent | Model | Action Space | Prompt | API | Max Turns | Success | Rate | Avg Steps | Avg In Tokens | Avg Out Tokens |
+|-------|-------|-------------|--------|-----|----------:|--------:|-----:|----------:|--------------:|---------------:|
+| Claude Code CLI | claude-opus-4-6 | ADB shell | `clean_optimized_tools` | Anthropic | 50 | **37/50** | **74.0%** | 16.0 | 333,024 | 3,245 |
+| Claude Code CLI | claude-opus-4-6 | ADB shell | `clean_optimized` | Anthropic | 50 | 36/50 | 72.0% | 18.0 | 394,933 | 3,944 |
+| Claude Code CLI | claude-sonnet-4 | ADB shell | `clean_optimized_tools` | Anthropic | 50 | 32/50 | 64.0% | 14.2 | 356,139 | 3,502 |
+| Claude Code CLI | claude-sonnet-4 | ADB shell | `clean_optimized` | Anthropic | 50 | 29/50 | 58.0% | 14.6 | 364,902 | 3,710 |
+| Qwen3-VL-32B | qwen3-vl-32b-instruct | GUI (pixel swipe) | — | OpenRouter | 30 | 1/50 | 2.0% | 12.7 | 45,631 | 1,426 |
+| MAI-UI-8B | MAI-UI-8B | GUI (tap/swipe) | — | Local vLLM | 50 | 1/50 | 2.0% | 3.4 | 20,940 | 320 |
+| UI-Venus-1.5-8B | UI-Venus-1.5-8B | GUI (tap/swipe) | — | Local vLLM | 50 | 1/50 | 2.0% | 43.3 | 146,979 | 5,297 |
+
+Note: GUI agent runs used placeholder task goals `"(goal loaded from container)"`, but this does not affect GUI agents since they receive the real goal from the container's `/reset` response via screenshots. All CLI runs above use real task descriptions.
 
 ## Per-Task Results (Opus 4.6, 50 turns)
 
@@ -160,28 +163,28 @@ cross-app data joins, hidden system state inspection).
 
 ## Key Observations
 
-- **CLI agents massively outperform GUI agents** — Opus 4.6 CLI achieves 82% vs GUI agents at 2% (Qwen3-VL-32B, MAI-UI-8B, and UI-Venus-1.5-8B all score 2%), a 41x gap. All three GUI agents solved exactly 1 task — the same one (task 11: FilterDeleteOldNonContactKeywordSms). This validates the tier4 task design: these tasks require ADB shell, content providers, sqlite3, and file system access that GUI agents cannot perform.
-- **Turn budget matters significantly** — Opus 4.6 jumps from 44% (30 turns) to 82% (50 turns). Many tasks require multi-step discovery (find DB path → inspect schema → query → verify), and 30 turns is insufficient.
-- **Model capability matters for CLI** — Opus 4.6 (82%) vs Sonnet 4 (8%) shows that stronger reasoning enables better ADB command construction, schema discovery, and cross-app data joins.
-- **Remaining hard tasks** — The 9 tasks Opus 4.6 fails involve: SMS coverage verification, permission introspection, expense category aggregation, and calendar duration calculations. These require precise content provider queries or complex multi-step temporal reasoning.
+- **CLI agents massively outperform GUI agents** — Opus 4.6 CLI achieves 74% vs GUI agents at 2% (Qwen3-VL-32B, MAI-UI-8B, UI-Venus-1.5-8B all score 2%), a 37x gap. All three GUI agents solved exactly 1 task — the same one (task 11: FilterDeleteOldNonContactKeywordSms). This validates the tier4 task design: these tasks require ADB shell, content providers, sqlite3, and file system access that GUI agents cannot perform.
+- **Specialized tools help** — `clean_optimized_tools` (with sql/read-file/write-file/find-files) consistently outperforms `clean_optimized` (adb only): Opus 74% vs 72%, Sonnet 64% vs 58%. The gain comes from automatic shell escaping in database and file operations.
+- **Model capability matters** — Opus 4.6 (74%) vs Sonnet 4 (64%) with the same tools prompt. The gap narrows with tools (was larger without).
+- **Remaining hard tasks** — 13 tasks Opus fails include: cross-app joins (contacts+SMS, expense+calendar), coverage checks (permissions, WiFi, SMS read status), and temporal reasoning (calendar duration). These require multi-step schema discovery and precise data manipulation.
 
 ## Run Details
 
-| | Opus 4.6 (50t) | Opus 4.6 (30t) | Sonnet 4 (30t) | Qwen3-VL-32B | MAI-UI-8B | Venus-1.5-8B |
-|--|----------------|----------------|----------------|--------------|-----------|--------------|
-| Date | 2026-04-15 | 2026-04-15 | 2026-04-15 | 2026-04-15 | 2026-04-16 | 2026-04-16 |
-| Runner | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_qwen3vl.py` | `run_mai.py` | `run_venus.py` |
-| Prompt/Agent | `clean_optimized` | `clean_optimized` | `clean_optimized` | `Qwen3VLAgentMCP` | `MAIUINaivigationAgent` | `VenusNaviAgent` |
-| Docker image | `2026plusswipe_tier4` | `2026plusswipe_tier4` | `2026plusswipe_tier4` | `2026plusswipe_tier4` | `2026plusswipe_tier4` | `2026plusswipe_tier4` |
-| Max turns | 50 | 30 | 30 | 30 | 50 | 50 |
-| Effort | high | high | high | — | — | — |
-| vLLM version | — | — | — | — | **0.11.0** | **0.11.0** |
-| Avg steps/task | 37.4 | 32.0 | 10.7 | 12.7 | 3.4 | 43.3 |
-| Avg input tokens/task | 959,655 | 833,182 | 317,412 | 45,631 | 20,940 | 146,979 |
-| Avg output tokens/task | 6,824 | 5,914 | 2,148 | 1,426 | 320 | 5,297 |
-| Total input tokens | 47,982,759 | 41,659,098 | 15,870,590 | 2,281,561 | 1,047,019 | 7,348,946 |
-| Total output tokens | 341,225 | 295,695 | 107,420 | 71,291 | 15,988 | 264,839 |
-| Results dir | `ClaudeCodeCLI_claudeopus420250514_260415_2339/` | `ClaudeCodeCLI_claudeopus420250514_260415_2318/` | `ClaudeCodeCLI_claudesonnet420250514_260415_2301/` | `ClaudeCodeCLI_qwenqwen3vl32binstruct_260415_2240/` | `ClaudeCodeCLI_..._MAIUI8B_260416_0031/` | `ClaudeCodeCLI_..._Venus158B_260416_0039/` |
+| | Opus 4.6 tools | Opus 4.6 | Sonnet 4 tools | Sonnet 4 | Qwen3-VL-32B | MAI-UI-8B | Venus-1.5-8B |
+|--|----------------|----------|----------------|----------|--------------|-----------|--------------|
+| Date | 2026-04-16 | 2026-04-16 | 2026-04-16 | 2026-04-16 | 2026-04-15 | 2026-04-16 | 2026-04-16 |
+| Runner | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_qwen3vl.py` | `run_mai.py` | `run_venus.py` |
+| Prompt/Agent | `clean_optimized_tools` | `clean_optimized` | `clean_optimized_tools` | `clean_optimized` | `Qwen3VLAgentMCP` | `MAIUINaivigationAgent` | `VenusNaviAgent` |
+| Docker image | `2026plusswipe_tier4` | `2026plusswipe_tier4` | `2026plusswipe_tier4` | `2026plusswipe_tier4` | `2026plusswipe_tier4` | `2026plusswipe_tier4` | `2026plusswipe_tier4` |
+| Max turns | 50 | 50 | 50 | 50 | 30 | 50 | 50 |
+| Effort | high | high | high | high | — | — | — |
+| vLLM version | — | — | — | — | — | **0.11.0** | **0.11.0** |
+| Avg steps/task | 16.0 | 18.0 | 14.2 | 14.6 | 12.7 | 3.4 | 43.3 |
+| Avg input tokens/task | 333,024 | 394,933 | 356,139 | 364,902 | 45,631 | 20,940 | 146,979 |
+| Avg output tokens/task | 3,245 | 3,944 | 3,502 | 3,710 | 1,426 | 320 | 5,297 |
+| Total input tokens | 16,651,189 | 19,746,655 | 17,806,932 | 18,245,096 | 2,281,561 | 1,047,019 | 7,348,946 |
+| Total output tokens | 162,257 | 197,203 | 175,122 | 185,525 | 71,291 | 15,988 | 264,839 |
+| Results dir | `..._claudeopus4_260416_1329/` | `..._claudeopus4_260416_1316/` | `..._claudesonnet4_260416_1250/` | `..._claudesonnet4_260416_1301/` | `..._qwen3vl32b_260415_2240/` | `..._MAIUI8B_260416_0031/` | `..._Venus158B_260416_0039/` |
 
 ---
 
