@@ -125,6 +125,8 @@ class Tier4BulkDeleteCalendarTestEvents(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._test_event_ids and not self._keep_event_ids:
+      return 0.0
     res = adb_utils.issue_generic_request(
         ["shell", "content", "query", "--uri", _CALENDAR_EVENTS_URI,
          "--projection", "_id"],
@@ -256,6 +258,8 @@ class Tier4FilterCalendarLongNoReminder(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = getattr(env, "interaction_cache", "") or ""
     for title in self._ground_truth:
       if title not in cache:
@@ -347,6 +351,8 @@ class Tier4DedupCalendarDeleteDuplicateEvents(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._dup_pairs:
+      return 0.0
     # Each dup pair should have exactly 1 event remaining
     for title, dtstart in self._dup_pairs:
       res = adb_utils.issue_generic_request(
@@ -462,6 +468,8 @@ class Tier4CoverageCalendarEventsHaveReminders(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = getattr(env, "interaction_cache", "") or ""
     for title in self._ground_truth:
       if title not in cache:

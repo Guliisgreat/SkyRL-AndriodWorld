@@ -155,6 +155,8 @@ class Tier4CrossAppContactsNoRecentSms(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = getattr(env, "interaction_cache", "") or ""
     for name in self._ground_truth:
       if name not in cache:
@@ -211,6 +213,8 @@ class Tier4FilterContactsBirthdayNoPhone(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = getattr(env, "interaction_cache", "") or ""
     for name in self._ground_truth:
       if name not in cache:
@@ -311,6 +315,8 @@ class Tier4DedupContactsDuplicatePhones(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._dup_names:
+      return 0.0
     cache = getattr(env, "interaction_cache", "") or ""
     for name in self._dup_names:
       if name not in cache:
@@ -367,6 +373,8 @@ class Tier4DedupMergeContactsSamePhone(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._deleted_names:
+      return 0.0
     res = adb_utils.issue_generic_request(
         ["shell", "content", "query", "--uri", _CONTACTS_PHONES_URI,
          "--projection", "display_name"],

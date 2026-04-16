@@ -180,6 +180,8 @@ class Tier4FilterExpenseHighTravelLastMonth(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = getattr(env, 'interaction_cache', '') or ''
     for name in self._ground_truth:
       if name not in cache:
@@ -235,6 +237,8 @@ class Tier4AggregationExpenseCategoryTop3(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = getattr(env, 'interaction_cache', '') or ''
     for name in self._ground_truth:
       if name.lower() not in cache.lower():
@@ -336,6 +340,8 @@ class Tier4TopKExpenseHighestAmount(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = getattr(env, 'interaction_cache', '') or ''
     for name in self._ground_truth:
       if name not in cache:

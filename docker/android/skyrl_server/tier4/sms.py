@@ -136,6 +136,8 @@ class Tier4CrossAppSmsNumbersNotInContacts(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = getattr(env, "interaction_cache", "") or ""
     cache_clean = cache.replace("-", "").replace(" ", "")
     for num in self._ground_truth:
@@ -230,6 +232,8 @@ class Tier4FilterDeleteOldNonContactKeywordSms(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._to_delete_nums:
+      return 0.0
     old_threshold_ms = int(time.time() * 1000) - (30 * 24 * 3600 * 1000)
     res = adb_utils.issue_generic_request(
         ["shell", "content", "query", "--uri", _SMS_INBOX_URI,
@@ -289,6 +293,8 @@ class Tier4TopKSmsThreadsByCount(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = getattr(env, "interaction_cache", "") or ""
     cache_clean = cache.replace("-", "").replace(" ", "")
     for num in self._ground_truth:
