@@ -47,6 +47,7 @@ PROMPT_MODULES = {
     "optimized_terminal_v1": "skyrl_agent.agents.android.claude_sdk.prompts.optimized_terminal_v1",
     "optimized_terminal_v2": "skyrl_agent.agents.android.claude_sdk.prompts.optimized_terminal_v2",
     "clean_optimized": "agents.cli.claude_sdk.prompts.clean_optimized",
+    "clean_optimized_tools": "agents.cli.claude_sdk.prompts.clean_optimized_tools",
 }
 DEFAULT_PROMPT = "adb_baseline"
 
