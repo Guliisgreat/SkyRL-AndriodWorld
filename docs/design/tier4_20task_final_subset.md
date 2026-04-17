@@ -200,9 +200,29 @@ while CLI cost stays near-constant.
 
 ### Previous benchmarks miss this entirely
 
-AndroidWorld and MobileWorld test zero tasks requiring: content provider
-queries, SQL, file metadata, system introspection, cross-app data joins, or
-bulk processing. This subset fills that gap.
+We verified this by checking all 116 AndroidWorld tasks and 117 MobileWorld
+tasks against the 7 capability categories our subset requires:
+
+| Capability | Tier4 (25) | AndroidWorld (116) | MobileWorld (117) |
+|------------|:----------:|:------------------:|:-----------------:|
+| Content provider queries | 7 tasks | None | None |
+| Bulk file operations | 5 tasks | None | Minimal (GUI-based) |
+| File metadata (sizes, times) | 4 tasks | None | Minimal (GUI-based) |
+| Cross-app data joins | 3 tasks | Minimal (1 create-then-send) | Partial (GUI sequential) |
+| System introspection | 3 tasks | None | None |
+| Data aggregation (SUM, COUNT) | 2 tasks | Partial (5 IR tasks, GUI-readable) | Minimal (GUI-readable) |
+| Multi-condition filters | 2 tasks | None | None |
+
+AndroidWorld's 5 information-retrieval tasks (e.g., "how many climbing
+activities this week?") are the closest overlap, but they are answerable by
+reading the app UI — no SQL aggregation is required. Our tasks require
+programmatic computation that no app screen provides.
+
+MobileWorld's cross-app tasks (e.g., CheckConferenceAndSendSmsTask) involve
+sequential GUI operations in two apps, not querying and correlating data
+programmatically. Our cross-app tasks require set operations (SMS senders ∩
+¬Contacts) and data transfer (calendar events → Markor note) that demand
+structured data access.
 
 ### The future is multimodal
 
