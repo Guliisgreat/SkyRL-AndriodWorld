@@ -138,7 +138,7 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
         "--model", model,
         "--max-turns", str(max_turns),
         "--output-format", "json",
-        "--allowedTools", "Bash(command:*)",
+        "--allowedTools", f"Bash(python {ANDROID_ENV_SCRIPT} *)",
     ]
 
     print(f"  Running claude CLI (model={model}, max_turns={max_turns})...")

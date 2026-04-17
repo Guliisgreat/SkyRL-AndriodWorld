@@ -34,7 +34,7 @@ Evaluation and inference runners for Android agent benchmarks. Supports multiple
 # AndroidWorld (16 containers)
 PYTHONPATH=eval-runners/common/runtime:. \
 python eval-runners/common/runtime/pool_broker.py \
-  --pool-size 16 --docker-image androidworld:2026 --port 9400 \
+  --pool-size 32 --docker-image androidworld:2026plusswipe --port 9400 \
   --base-env-id 700 --parallel 4
 
 # MobileWorld (pre-existing containers, scan port range)
@@ -76,9 +76,9 @@ source .env  # OPENAI_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY, DASHSCOPE_
 # Claude Code CLI (ADB agent) on AndroidWorld
 PYTHONPATH=eval-runners/benchmarks/androidworld:. \
 python eval-runners/benchmarks/androidworld/run_claude_cli.py \
-  --data data/androidworld_original/val_data_seed7.jsonl \
+  --data data/androidworld_original/val_data_seed30.jsonl \
   --broker-url http://localhost:9400 --pool-size 16 \
-  --model claude-opus-4-6 --prompt clean_optimized --max-turns 30
+  --model claude-opus-4-6 --prompt clean_optimized --max-turns 50
 
 # Qwen3-VL GUI agent on AndroidWorld (via OpenRouter)
 PYTHONPATH=eval-runners/benchmarks/androidworld:eval-runners/agents/gui:. \

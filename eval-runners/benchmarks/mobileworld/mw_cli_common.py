@@ -91,10 +91,24 @@ def load_system_prompt(prompt_name: str) -> str:
     return mod.build_system_prompt(script)
 
 
-def get_allowed_tools(prompt_name: str) -> str:
-    """Get required tools for a prompt (default: Bash only)."""
+def _default_allowed_tools(prompt_name: str) -> str:
+    """Default: only allow Bash calls to the correct env script for this prompt."""
     mod = load_prompt_module(prompt_name)
-    return getattr(mod, "REQUIRED_TOOLS", "Bash(command:*)")
+    env_script_attr = getattr(mod, "ENV_SCRIPT", None)
+    script = MW_TOOLS_SCRIPT if env_script_attr == "mw_tools" else MW_ENV_SCRIPT
+    return f"Bash(python {script} *)"
+
+
+def get_allowed_tools(prompt_name: str) -> str:
+    """Get required tools for a prompt (default: env script only)."""
+    mod = load_prompt_module(prompt_name)
+    required = getattr(mod, "REQUIRED_TOOLS", None)
+    if required is None:
+        return _default_allowed_tools(prompt_name)
+    # Replace the broken Bash(command:*) with the correct pattern
+    env_script_attr = getattr(mod, "ENV_SCRIPT", None)
+    script = MW_TOOLS_SCRIPT if env_script_attr == "mw_tools" else MW_ENV_SCRIPT
+    return required.replace("Bash(command:*)", f"Bash(python {script} *)")
 
 
 # ---------------------------------------------------------------------------
@@ -303,11 +317,14 @@ def force_eval(container_url, task_name, device_id="emulator-5554"):
 # ---------------------------------------------------------------------------
 
 def run_one_task(task_def, container_url, model, max_turns, system_prompt,
-                 effort=None, allowed_tools="Bash(command:*)",
+                 effort=None, allowed_tools=None,
                  disable_tree=True, prompt_suffix="",
                  task_timeout=900, adb_serial="localhost:5556",
                  device_id="emulator-5554"):
     """Run one Claude attempt on a MobileWorld task. Returns a result dict."""
+    if allowed_tools is None:
+        allowed_tools = f"Bash(python {MW_TOOLS_SCRIPT} *)"
+
     task_name = task_def["task_name"]
     trial = task_def.get("trial", 1)
 
@@ -1039,7 +1056,7 @@ def finalize_results(results, output_path, model, system_prompt, args,
 def preflight_checks(args, system_prompt, allowed_tools, disable_tree):
     """Print config info and verify prerequisites."""
     print(f"Prompt variant: {args.prompt}")
-    if allowed_tools != "Bash(command:*)":
+    if allowed_tools != _default_allowed_tools(args.prompt):
         print(f"Allowed tools: {allowed_tools}")
     if not disable_tree:
         print(f"A11y tree: enabled")

@@ -78,7 +78,7 @@ def _build_feedback_suffix(attempt_num, prev_result):
 
 def run_one_task_with_retries(task_def, container_url, model, max_turns,
                               system_prompt, effort=None,
-                              allowed_tools="Bash(command:*)",
+                              allowed_tools=None,
                               disable_tree=True, max_attempts=3):
     """Run a task with up to max_attempts, feeding eval reward back as signal.
 

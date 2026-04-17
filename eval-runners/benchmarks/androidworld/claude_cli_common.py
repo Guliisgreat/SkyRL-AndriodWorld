@@ -80,10 +80,19 @@ def load_system_prompt(prompt_name: str) -> str:
     return mod.build_system_prompt(ANDROID_ENV_SCRIPT)
 
 
+def _default_allowed_tools() -> str:
+    """Default: only allow Bash calls to the android_env.py wrapper."""
+    return f"Bash(python {ANDROID_ENV_SCRIPT} *)"
+
+
 def get_allowed_tools(prompt_name: str) -> str:
-    """Get required tools for a prompt (default: Bash only)."""
+    """Get required tools for a prompt (default: android_env.py only)."""
     mod = load_prompt_module(prompt_name)
-    return getattr(mod, "REQUIRED_TOOLS", "Bash(command:*)")
+    required = getattr(mod, "REQUIRED_TOOLS", None)
+    if required is None:
+        return _default_allowed_tools()
+    # Replace the broken Bash(command:*) with the correct pattern
+    return required.replace("Bash(command:*)", f"Bash(python {ANDROID_ENV_SCRIPT} *)")
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +195,7 @@ def broker_release(broker_url, env_id, healthy=True, retries=3):
 # ---------------------------------------------------------------------------
 
 def run_one_task(task_def, container_url, model, max_turns, system_prompt,
-                 effort=None, allowed_tools="Bash(command:*)",
+                 effort=None, allowed_tools=None,
                  disable_tree=True, prompt_suffix="",
                  skip_reset=False, task_timeout=900, auto_finish=True):
     """Run one Claude attempt on a task. Returns a result dict.
@@ -200,6 +209,9 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     task_timeout : int
         Max seconds for the Claude subprocess.
     """
+    if allowed_tools is None:
+        allowed_tools = _default_allowed_tools()
+
     task_id = task_def["task_id"]
     seed = task_def["seed"]
     task_text = task_def["task"]
@@ -753,7 +765,7 @@ def finalize_results(results, output_path, model, system_prompt, args,
 def preflight_checks(args, system_prompt, allowed_tools, disable_tree):
     """Print config info and verify prerequisites."""
     print(f"Prompt variant: {args.prompt}")
-    if allowed_tools != "Bash(command:*)":
+    if allowed_tools != _default_allowed_tools():
         print(f"Allowed tools: {allowed_tools}")
     if not disable_tree:
         print(f"A11y tree: enabled")
