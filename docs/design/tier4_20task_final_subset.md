@@ -46,39 +46,44 @@ credit where it succeeds.
 
 ### Task List
 
-| # | What the user would say | Quadrant | CLI | GUI (best) |
-|---|-------------------------|----------|:---:|:----------:|
-| | **Clean up my phone** | | | |
-| 0 | "Delete all temp files in Downloads" | Both | 5 steps | 8 steps (2/3) |
-| 5 | "Organize my screenshots by date" | CLI-only | 10 steps | — |
-| 17 | "Merge my duplicate contacts" | CLI-only | 12 steps | — |
-| 24 | "Change all low-priority tasks to medium" | Both | 12 steps | 16 steps (1/3) |
-| 47 | "Remove duplicate calendar events" | Neither | — | — |
-| | **Who's contacting me?** | | | |
-| 4 | "Which unknown numbers texted me this week?" | CLI-only | 8 steps | — |
-| 12 | "Who do I text the most?" | Neither | — | — |
-| 16 | "Do any contacts share the same phone number?" | CLI-only | 9 steps | — |
-| | **What's eating my storage?** | | | |
-| 36 | "How big are my Downloads? Top 3 largest?" | CLI-only | 7 steps | — |
-| 37 | "What are the 5 biggest files I downloaded?" | CLI-only | 6 steps | — |
-| 6 | "Move my large files to Archive" | Both | 11 steps | 14 steps (1/3) |
-| | **Manage my calendar** | | | |
-| 44 | "Make a note of all meetings about [topic]" | CLI-only | 14 steps | — |
-| 45 | "Which long meetings have no reminders?" | CLI-only | 12 steps | — |
-| 46 | "Total hours of meetings this month?" | Neither | — | — |
-| 48 | "What's the oldest event in my calendar?" | CLI-only | 11 steps | — |
-| 49 | "Did I forget reminders on any events?" | CLI-only | 18 steps | — |
-| | **Device info** | | | |
-| 2 | "What app versions are installed?" | Both | 6 steps | 22 steps (1/3) |
-| 40 | "Where is my audio playing?" | CLI-only | 8 steps | — |
-| 42 | "Is WiFi on? What network?" | Neither | — | — |
-| | **Analyze my data** | | | |
-| 8 | "Add a footer to all my markdown notes" | Both | 16 steps | 24 steps (2/3) |
-| 9 | "Which note has the most content?" | CLI-only | 8 steps | — |
-| 28 | "Total running distance this week?" | Both | 12 steps | 17 steps (1/3) |
-| 31 | "Find all long songs by [artist]" | CLI-only | 12 steps | — |
-| 32 | "What are my longest songs?" | CLI-only | 8 steps | — |
-| 34 | "Which files were created during meetings?" | CLI-only | 10 steps | — |
+| # | What the user would say | Type | CLI Steps | GUI Steps | GUI SR |
+|---|-------------------------|:----:|----------:|----------:|:------:|
+| | **Clean up my phone** | | | | |
+| 0 | "Delete all temp files in Downloads" | CLI-faster | 5 | 8 | 2/3 |
+| 5 | "Organize my screenshots by date" | CLI-only | 10 | — | 0/3 |
+| 17 | "Merge my duplicate contacts" | CLI-only | 12 | — | 0/3 |
+| 24 | "Change all low-priority tasks to medium" | CLI-faster | 12 | 16 | 1/3 |
+| 47 | "Remove duplicate calendar events" | Hard | — | — | 0/3 |
+| | **Who's contacting me?** | | | | |
+| 4 | "Which unknown numbers texted me this week?" | CLI-only | 8 | — | 0/3 |
+| 12 | "Who do I text the most?" | Hard | — | — | 0/3 |
+| 16 | "Do any contacts share the same phone number?" | CLI-only | 9 | — | 0/3 |
+| | **What's eating my storage?** | | | | |
+| 36 | "How big are my Downloads? Top 3 largest?" | CLI-only | 7 | — | 0/3 |
+| 37 | "What are the 5 biggest files I downloaded?" | CLI-only | 6 | — | 0/3 |
+| 6 | "Move my large files to Archive" | CLI-faster | 11 | 14 | 1/3 |
+| | **Manage my calendar** | | | | |
+| 44 | "Make a note of all meetings about [topic]" | CLI-only | 14 | — | 0/3 |
+| 45 | "Which long meetings have no reminders?" | CLI-only | 12 | — | 0/3 |
+| 46 | "Total hours of meetings this month?" | Hard | — | — | 0/3 |
+| 48 | "What's the oldest event in my calendar?" | CLI-only | 11 | — | 0/3 |
+| 49 | "Did I forget reminders on any events?" | CLI-only | 18 | — | 0/3 |
+| | **Device info** | | | | |
+| 2 | "What app versions are installed?" | CLI-faster | 6 | 22 | 1/3 |
+| 40 | "Where is my audio playing?" | CLI-only | 8 | — | 0/3 |
+| 42 | "Is WiFi on? What network?" | Hard | — | — | 0/3 |
+| | **Analyze my data** | | | | |
+| 8 | "Add a footer to all my markdown notes" | CLI-faster | 16 | 24 | 2/3 |
+| 9 | "Which note has the most content?" | CLI-only | 8 | — | 0/3 |
+| 28 | "Total running distance this week?" | CLI-faster | 12 | 17 | 1/3 |
+| 31 | "Find all long songs by [artist]" | CLI-only | 12 | — | 0/3 |
+| 32 | "What are my longest songs?" | CLI-only | 8 | — | 0/3 |
+| 34 | "Which files were created during meetings?" | CLI-only | 10 | — | 0/3 |
+
+**Type legend:**
+- **CLI-only** (15): CLI solves, all GUI agents fail — tasks GUI structurally cannot do
+- **CLI-faster** (6): Both solve, but CLI uses 1.3-3.7x fewer steps — GUI is inefficient
+- **Hard** (4): Both CLI and GUI fail — genuinely difficult tasks that keep scores honest
 
 ---
 
