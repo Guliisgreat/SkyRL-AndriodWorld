@@ -74,11 +74,12 @@ source .env  # OPENAI_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY, DASHSCOPE_
 # --- AndroidWorld ---
 
 # Claude Code CLI (ADB agent) on AndroidWorld
+CLAUDE_BIN=/home/ken/.local/share/claude/versions/2.1.110 \
 PYTHONPATH=eval-runners/benchmarks/androidworld:. \
 python eval-runners/benchmarks/androidworld/run_claude_cli.py \
-  --data data/androidworld_original/val_data_seed30.jsonl \
+  --data data/androidworld_original/val_data_refseed30.jsonl \
   --broker-url http://localhost:9400 --pool-size 16 \
-  --model claude-opus-4-6 --prompt clean_optimized --max-turns 50
+  --model claude-opus-4-7 --prompt clean_optimized --max-turns 50 --effort max
 
 # Qwen3-VL GUI agent on AndroidWorld (via OpenRouter)
 PYTHONPATH=eval-runners/benchmarks/androidworld:eval-runners/agents/gui:. \
