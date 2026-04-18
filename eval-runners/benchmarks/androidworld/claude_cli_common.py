@@ -259,8 +259,9 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     env.pop("CLAUDECODE", None)
 
     # Run claude CLI
+    claude_bin = os.environ.get("CLAUDE_BIN", "claude")
     cmd = [
-        "claude",
+        claude_bin,
         "-p", prompt,
         "--model", model,
         "--max-turns", str(max_turns),
@@ -681,7 +682,7 @@ def build_common_parser(description="Run Claude Code CLI on AndroidWorld tasks")
                         choices=list(PROMPT_MODULES.keys()),
                         help=f"System prompt variant (default: {DEFAULT_PROMPT})")
     parser.add_argument("--effort", default=None,
-                        choices=["low", "medium", "high", "max"],
+                        choices=["low", "medium", "high", "xhigh", "max"],
                         help="Claude reasoning effort level")
     return parser
 
