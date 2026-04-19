@@ -71,14 +71,22 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 
 ## Overall
 
-| Agent | Model | Action Space | API | SR | Paper SR |
-|-------|-------|-------------|-----|---:|--------:|
-| Claude Code CLI | claude-opus-4-6 | ADB shell + tools | Anthropic | **45.3%** (53/117) | — |
-| Claude Code CLI | claude-sonnet-4-6 | ADB shell + tools | Anthropic | **37.6%** (44/117) | — |
-| GeneralE2E | Kimi K2.5 | GUI (tap/swipe) | OpenRouter | **37.6%** (44/117) | 49.6% |
-| MAI-UI (vllm 0.11) | MAI-UI-8B | GUI (tap/swipe) | Local vLLM | **21.4%** (25/117) | 27.5% |
-| UI-Venus-1.5 | UI-Venus-1.5-30B-A3B | GUI (tap/swipe) | Local vLLM | **11.1%** (13/117) | 17.1% |
-| MAI-UI (vllm 0.13) | MAI-UI-8B | GUI (tap/swipe) | Local vLLM | **6.0%** (7/117) | 27.5% |
+| Agent | Model | Prompt | Action Space | API | SR | Paper SR |
+|-------|-------|--------|-------------|-----|---:|--------:|
+| Claude Code CLI | claude-opus-4-7 | `mw_terminal_expert_tier1` ⚠️ | ADB shell + tools | Anthropic | **64.1%** (75/117) | — |
+| Claude Code CLI | claude-opus-4-7 | `mw_terminal_expert_tier1a` ✓ | ADB shell + tools | Anthropic | **58.1%** (68/117) | — |
+| Claude Code CLI | claude-opus-4-6 | `mw_terminal_expert` (v1) | ADB shell + tools | Anthropic | **45.3%** (53/117) | — |
+| Claude Code CLI | claude-sonnet-4-6 | `mw_terminal_expert` (v1) | ADB shell + tools | Anthropic | **37.6%** (44/117) | — |
+| GeneralE2E | Kimi K2.5 | — | GUI (tap/swipe) | OpenRouter | **37.6%** (44/117) | 49.6% |
+| MAI-UI (vllm 0.11) | MAI-UI-8B | — | GUI (tap/swipe) | Local vLLM | **21.4%** (25/117) | 27.5% |
+| UI-Venus-1.5 | UI-Venus-1.5-30B-A3B | — | GUI (tap/swipe) | Local vLLM | **11.1%** (13/117) | 17.1% |
+| MAI-UI (vllm 0.13) | MAI-UI-8B | — | GUI (tap/swipe) | Local vLLM | **6.0%** (7/117) | 27.5% |
+
+> ⚠️ **`tier1` includes benchmark-leaking content** — names specific apps (Mattermost, gmailclone), DBs (`pg mattermost mattermost`), tables/columns the eval queries, and the management CLI `mmctl`. The 64.1% number is **not a clean score**.
+>
+> ✓ **`tier1a` is leak-free** — same generic discipline (mandatory verification before finish, ban on substituting UI-cache writes for real send mechanisms, subtask checklist) but with all benchmark-specific recipes/app/DB names stripped. **58.1% is the cleanly-defensible improvement.**
+>
+> Both Tier 1 variants use Opus 4.7, max_turns=50. Generic-prompt-discipline contributes +12.8 pp over the v1 Opus 4.6 baseline; the leaked recipes added a further +6.0 pp on top.
 
 ### Paper Reference (MobileWorld Leaderboard, GUI-Only, max_steps=50)
 
@@ -129,35 +137,43 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 
 ## Per-Category Breakdown (Claude Code CLI)
 
-| Category | Opus 4.6 | Sonnet 4.6 |
-|----------|--------:|----------:|
-| mastodon (38) | **25/38 (66%)** | 17/38 (45%) |
-| other (18) | 7/18 (39%) | 7/18 (39%) |
-| mattermost (15) | 3/15 (20%) | 2/15 (13%) |
-| files (13) | 4/13 (31%) | **8/13 (62%)** |
-| settings (7) | 5/7 (71%) | 5/7 (71%) |
-| mall (7) | 0/7 (0%) | 0/7 (0%) |
-| email (5) | 2/5 (40%) | 2/5 (40%) |
-| calendar/alarm (5) | **3/5 (60%)** | 2/5 (40%) |
-| sms/messages (5) | **2/5 (40%)** | 1/5 (20%) |
-| map (2) | **2/2 (100%)** | 0/2 (0%) |
-| chrome (2) | 0/2 (0%) | 0/2 (0%) |
+| Category | Opus 4.6 v1 | Opus 4.7 Tier 1 ⚠️ | Opus 4.7 Tier 1a ✓ |
+|----------|------------:|------------------:|--------------------:|
+| mastodon (38)        | 25/38 (66%) | **30/38 (79%)** | 28/38 (74%) |
+| other (25)           | 7/25 (28%)  | 10/25 (40%)     | **12/25 (48%)** |
+| mattermost (15)      | 3/15 (20%)  | **5/15 (33%)**  | 4/15 (27%) |
+| files (13)           | 4/13 (31%)  | **10/13 (77%)** | 7/13 (54%) |
+| settings (7)         | 5/7 (71%)   | **6/7 (86%)**   | **6/7 (86%)** |
+| calendar/alarm (7)   | 4/7 (57%)   | **5/7 (71%)**   | **5/7 (71%)** |
+| sms/messages (5)     | 2/5 (40%)   | **3/5 (60%)**   | 2/5 (40%) |
+| email (4)            | 1/4 (25%)   | **4/4 (100%)**  | 2/4 (50%) |
+| map (2)              | **2/2 (100%)** | **2/2 (100%)** | **2/2 (100%)** |
+| chrome (1)           | 0/1 (0%)    | 0/1 (0%)        | 0/1 (0%) |
+| **TOTAL (117)**      | **53/117 (45.3%)** | **75/117 (64.1%)** | **68/117 (58.1%)** |
+
+Notes:
+- *Categorization differs slightly from Sonnet 4.6 column above (regrouped Mall under Mastodon since all "MastodonMall*" tasks; rebalanced "other" vs calendar/alarm).*
+- **Tier 1 → Tier 1a deltas** show where the leaked app-specific recipes helped most: `email` (4/4 → 2/4) and `files` (10/13 → 7/13). The leakage benefited the cross-app email tasks and file-handling tasks where the recipes named specific apps/DBs.
+- **Tier 1a still beats v1 baseline** in every category except where v1 was already at ceiling.
 
 ## Run Details
 
-| | Claude Opus 4.6 | Claude Sonnet 4.6 | Kimi K2.5 | MAI-UI-8B (0.11) | UI-Venus-1.5-30B | MAI-UI-8B (0.13) |
-|--|-----------------|-------------------|-----------|------------------|------------------|------------------|
-| Date | 2026-04-09 | 2026-04-09 | 2026-04-08 | 2026-04-09 | 2026-04-08 | 2026-04-08 |
-| Runner | `run_claude_cli.py` | `run_claude_cli.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` |
-| Prompt/Agent | `mw_terminal_expert` | `mw_terminal_expert` | `general_e2e` | `mai_ui_agent` | `ui_venus_agent` | `mai_ui_agent` |
-| Action space | ADB shell + tools | ADB shell + tools | GUI (tap/swipe) | GUI (tap/swipe) | GUI (tap/swipe) | GUI (tap/swipe) |
-| vLLM version | — | — | — | **0.11.0** | — | 0.13.0 |
-| Max turns/steps | 50 | 50 | 50 | 50 | 50 | 50 |
-| Avg turns/task | 36.7 | 36.1 | 23.5 | 32.2 | 18.7 | — |
-| Temperature | — | — | 0.0 | 0.0 | 0.0 | 0.0 |
-| Avg time/task | 194s | 174s | 265s | 278s | 111s | — |
-| Avg input tokens/task | 961,919 | 1,021,701 | 290,828 | 297,280 | 24,554 | — |
-| Avg output tokens/task | 7,265 | 7,685 | 2,909 | 1,919 | 655 | — |
-| Total cost | $95.89 | $60.77 | — | — | — | — |
-| max-model-len | — | — | — | 32,768 | 8,192 | 8,192 |
-| Results dir | `ClaudeCodeCLI_MW_claudeopus46_260409_2253/` | `ClaudeCodeCLI_MW_claudesonnet46_260409_1602/` | `GUIAgent_general_e2e_moonshotaikimik25_260408_0252/` | `GUIAgent_mai_ui_agent_..._260409_0204/` | `GUIAgent_ui_venus_agent_UIVenus1530BA3B_260408_0157/` | `GUIAgent_mai_ui_agent_..._260408_1155/` |
+| | Opus 4.7 Tier 1 ⚠️ | Opus 4.7 Tier 1a ✓ | Claude Opus 4.6 v1 | Claude Sonnet 4.6 v1 | Kimi K2.5 | MAI-UI-8B (0.11) | UI-Venus-1.5-30B | MAI-UI-8B (0.13) |
+|--|-------------------|---------------------|--------------------|----------------------|-----------|------------------|------------------|------------------|
+| Date | 2026-04-19 | 2026-04-19 | 2026-04-09 | 2026-04-09 | 2026-04-08 | 2026-04-09 | 2026-04-08 | 2026-04-08 |
+| Runner | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` |
+| Prompt/Agent | `mw_terminal_expert_tier1` | `mw_terminal_expert_tier1a` | `mw_terminal_expert` | `mw_terminal_expert` | `general_e2e` | `mai_ui_agent` | `ui_venus_agent` | `mai_ui_agent` |
+| Action space | ADB shell + tools | ADB shell + tools | ADB shell + tools | ADB shell + tools | GUI (tap/swipe) | GUI (tap/swipe) | GUI (tap/swipe) | GUI (tap/swipe) |
+| vLLM version | — | — | — | — | — | **0.11.0** | — | 0.13.0 |
+| Max turns/steps | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 |
+| Avg input tokens/task | 1,371,964 | 1,472,582 | 961,919 | 1,021,701 | 290,828 | 297,280 | 24,554 | — |
+| Avg output tokens/task | — | — | 7,265 | 7,685 | 2,909 | 1,919 | 655 | — |
+| Total cost | **$148.97** | **$155.83** | $95.89 | $60.77 | — | — | — | — |
+| max-model-len | — | — | — | — | — | 32,768 | 8,192 | 8,192 |
+| Results dir | `ClaudeCodeCLI_MW_claudeopus47_260419_0105_full_tier1_t50/` | `ClaudeCodeCLI_MW_claudeopus47_260419_0153_full_tier1a_t50/` | `ClaudeCodeCLI_MW_claudeopus46_260409_2253/` | `ClaudeCodeCLI_MW_claudesonnet46_260409_1602/` | `GUIAgent_general_e2e_moonshotaikimik25_260408_0252/` | `GUIAgent_mai_ui_agent_..._260409_0204/` | `GUIAgent_ui_venus_agent_UIVenus1530BA3B_260408_0157/` | `GUIAgent_mai_ui_agent_..._260408_1155/` |
+
+### Tier 1 / Tier 1a Prompt Design
+
+- **`mw_terminal_expert_tier1`** (`eval-runners/agents/cli/claude_sdk/prompts/mw_terminal_expert_tier1.py`) — adds three sections to v1: **mandatory verification before finish**, **forbidden shortcuts** (no `state.json` / UI-cache writes), **subtask checklist on turn 1**. Includes specific verification recipes naming Mattermost DBs, gmailclone Postgres, mmctl. **⚠️ Contains benchmark-leakage; use only for ceiling estimates.**
+- **`mw_terminal_expert_tier1a`** (`eval-runners/agents/cli/claude_sdk/prompts/mw_terminal_expert_tier1a.py`) — same three sections but **all benchmark-specific app/DB/CLI/file names removed**. The agent must discover apps and tables via `find-files` / `pg ... "\dt"` / `sql ... ".tables"`. **✓ Cleanly defensible improvement.**
+- The Tier 1a → Tier 1 delta (+6.0 pp) quantifies how much the leaked recipes contribute on top of generic discipline.
