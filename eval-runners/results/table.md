@@ -82,6 +82,7 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 | Claude Code CLI | claude-sonnet-4-6 | `mw_terminal_expert` (v1) | ADB shell + tools | Anthropic | **37.6%** (44/117) | — |
 | Claude Code CLI | claude-sonnet-4-6 | `mw_terminal_expert_tier1a_pure` ✓ | raw bash (adb/exec/finish only) | Anthropic | **32.5%** (38/117) | — |
 | Terminus_2 | minimax-m2.7 | `tier1a` (14 helpers + encyclopedia) | ADB shell + tools | OpenRouter | **20.5%** (24/117) | — |
+| mini-swe-agent | minimax-m2.7 | `tier1a` (14 helpers + encyclopedia) | ADB shell + tools | OpenRouter | **18.8%** (22/117) | — |
 | Terminus_2 | minimax-m2.7 | `tier1b` (14 helpers, no encyclopedia) | ADB shell + tools | OpenRouter | **17.9%** (21/117) | — |
 | Terminus_2 | minimax-m2.7 | `tier1a_pure` (raw bash, no encyclopedia) | raw bash (adb/exec/finish only) | OpenRouter | **12.0%** (14/117) | — |
 | GeneralE2E | Kimi K2.5 | — | GUI (tap/swipe) | OpenRouter | **37.6%** (44/117) | 49.6% |
@@ -193,21 +194,33 @@ The Tier 1 family varies along two orthogonal axes:
 | chrome (1)           | 0/1 (0%)    | 0/1 (0%)    | 0/1 (0%)    | 0/1 (0%) | 0/1 (0%) | 0/1 (0%) | 0/1 (0%) |
 | **TOTAL (117)**      | **53/117 (45.3%)** | **75/117 (64.1%)** | **68/117 (58.1%)** | **78/117 (66.7%)** ⭐ | **51/117 (43.6%)** | **46/117 (39.3%)** | **38/117 (32.5%)** |
 
-### Per-Category — minimax-m2.7 (Terminus_2 + OpenRouter)
+### Per-Category — minimax-m2.7 (across agent harnesses + prompts)
 
-| Category | Tier 1a (helpers + enc) | Tier 1b (helpers only) | Tier 1a pure (raw bash) |
-|----------|------------------------:|------------------------:|------------------------:|
-| mastodon (38)        | 10/38 (26%) | **12/38 (32%)** | 4/38 (11%) |
-| other (25)           | **4/25 (16%)** | 1/25 (4%) | **4/25 (16%)** |
-| mattermost (15)      | 0/15 (0%)   | 0/15 (0%) | 1/15 (7%) |
-| files (13)           | **3/13 (23%)** | 2/13 (15%) | 1/13 (8%) |
-| settings (7)         | **4/7 (57%)** | 3/7 (43%) | **4/7 (57%)** |
-| calendar/alarm (7)   | 0/7 (0%)    | 0/7 (0%) | 0/7 (0%) |
-| sms/messages (5)     | 1/5 (20%)   | 1/5 (20%) | 0/5 (0%) |
-| email (4)            | 0/4 (0%)    | **1/4 (25%)** | 0/4 (0%) |
-| map (2)              | 1/2 (50%)   | 1/2 (50%) | 0/2 (0%) |
-| chrome (1)           | **1/1 (100%)** | 0/1 (0%) | 0/1 (0%) |
-| **TOTAL (117)**      | **24/117 (20.5%)** ⭐ | **21/117 (17.9%)** | **14/117 (12.0%)** |
+| Category | Terminus_2 + tier1a | mini-swe + tier1a | Terminus_2 + tier1b | Terminus_2 + tier1a pure |
+|----------|--------------------:|------------------:|---------------------:|--------------------------:|
+| mastodon (38)        | 10/38 (26%) | 8/38 (21%)  | **12/38 (32%)** | 4/38 (11%) |
+| other (25)           | **4/25 (16%)** | 2/25 (8%) | 1/25 (4%) | **4/25 (16%)** |
+| mattermost (15)      | 0/15 (0%)   | 0/15 (0%) | 0/15 (0%) | 1/15 (7%) |
+| files (13)           | 3/13 (23%)  | **6/13 (46%)** | 2/13 (15%) | 1/13 (8%) |
+| settings (7)         | **4/7 (57%)** | **4/7 (57%)** | 3/7 (43%) | **4/7 (57%)** |
+| calendar/alarm (7)   | 0/7 (0%)    | 1/7 (14%) | 0/7 (0%) | 0/7 (0%) |
+| sms/messages (5)     | **1/5 (20%)** | 0/5 (0%) | **1/5 (20%)** | 0/5 (0%) |
+| email (4)            | 0/4 (0%)    | 0/4 (0%) | **1/4 (25%)** | 0/4 (0%) |
+| map (2)              | 1/2 (50%)   | 0/2 (0%) | 1/2 (50%) | 0/2 (0%) |
+| chrome (1)           | **1/1 (100%)** | **1/1 (100%)** | 0/1 (0%) | 0/1 (0%) |
+| **TOTAL (117)**      | **24/117 (20.5%)** ⭐ | **22/117 (18.8%)** | **21/117 (17.9%)** | **14/117 (12.0%)** |
+
+### Agent harness comparison (same model + same prompt)
+
+Terminus_2 (JSON parser) vs mini-swe-agent (bash code-block parser), both with minimax-m2.7 + tier1a config:
+- **Both PASS:** 16 tasks
+- **Both FAIL:** 87 tasks
+- **MiniSWE only:** 6 tasks (mostly files/calendar/chrome)
+- **Terminus_2 only:** 8 tasks (mostly mattermost backend, sms, map)
+
+Net: Terminus_2 wins by 2 tasks (+1.7 pp) — within run-to-run variance. Per-category, the harnesses split: MiniSWE excels at files (+23 pp), Terminus_2 excels at structured-action tasks (sms/map/email).
+
+**MiniSWE hit max_turns 116/117 (99%)** vs Terminus_2's typical 70%. MiniSWE's bash-block format makes minimax less likely to emit a clean `finish` call within the budget — most "completed" tasks are auto-finished from the trailing text. Despite this, SR is comparable, suggesting auto-finish + verify-after-act salvages most cases.
 
 Notes:
 - **Tier 1a pure beats every other variant including the leaky Tier 1.** Removing the 14-command `mw_tools.py` wrapper and the 25-item Android encyclopedia *helped*. Big wins on `mattermost` (+27 pp vs Tier 1a), `sms/messages` (+40 pp), `mastodon` (+8 pp). One regression: `email` (-25 pp). The minimal prompt forces the agent to discover schemas / URIs / app paths fresh per task, which beats canned (potentially stale) prior knowledge.
