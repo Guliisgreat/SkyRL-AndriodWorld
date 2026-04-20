@@ -421,3 +421,306 @@ class Tier4CrossAppExpenseToMarkorCalendar(task_eval.TaskEval):
   @classmethod
   def generate_random_params(cls) -> dict[str, Any]:
     return {}
+
+
+# ── tier4_extra ──────────────────────────────────────────────────────────
+
+
+class Tier4ExtraAggregationExpenseAvgPerCategory(task_eval.TaskEval):
+  """Average expense amount per category this month. ADB-exclusive (computed value)."""
+
+  app_names = (_APP_NAME,)
+  complexity = 2.0
+  schema = {'type': 'object', 'properties': {}, 'required': []}
+  template = (
+      "What is the average expense amount (in dollars) per category this month"
+      " in Pro Expense? Output each category and its average."
+  )
+
+  def initialize_task(self, env: interface.AsyncEnv) -> None:
+    super().initialize_task(env)
+    _clear_expenses(env)
+    month_start = _month_start_ms()
+    now_ms = _now_ms()
+    mid = (month_start + now_ms) // 2
+
+    # Food: 3 expenses → avg = 2000/3 ≈ 667 cents = $6.67
+    # Housing: 2 expenses → avg = 5000/2 = 2500 cents = $25.00
+    category_amounts = {
+        _CATEGORY_FOOD: [500, 700, 800],        # total 2000, avg 667
+        _CATEGORY_HOUSING: [2000, 3000],          # total 5000, avg 2500
+        _CATEGORY_ENTERTAINMENT: [300, 400, 500], # total 1200, avg 400
+    }
+    rows = []
+    for cat, amounts in category_amounts.items():
+      for i, amt in enumerate(amounts):
+        rows.append(sqlite_schema_utils.Expense(
+            name=f'avgcat_{cat}_{i}', amount=amt, category=cat,
+            created_date=mid, modified_date=mid,
+        ))
+    _insert_expenses(rows, env)
+    # Ground truth: category with highest average is Housing ($25.00)
+    self._ground_truth_highest: str = 'Housing'
+    self._ground_truth_avg: str = '25.00'
+
+  def tear_down(self, env: interface.AsyncEnv) -> None:
+    _clear_expenses(env)
+    super().tear_down(env)
+
+  def is_successful(self, env: interface.AsyncEnv) -> float:
+    super().is_successful(env)
+    cache = (getattr(env, 'interaction_cache', '') or '').lower()
+    if 'housing' not in cache:
+      return 0.0
+    if 'food' not in cache:
+      return 0.0
+    return 1.0
+
+  @classmethod
+  def generate_random_params(cls) -> dict[str, Any]:
+    return {}
+
+
+# ── tier4_extra ──
+
+
+class Tier4ExtraFilterExpenseAboveAverage(task_eval.TaskEval):
+  """List expenses above the overall average. ADB-exclusive (computed threshold)."""
+
+  app_names = (_APP_NAME,)
+  complexity = 1.5
+  schema = {'type': 'object', 'properties': {}, 'required': []}
+  template = (
+      "List all expenses in Pro Expense whose amount is above the overall"
+      " average. Output the expense names."
+  )
+
+  def initialize_task(self, env: interface.AsyncEnv) -> None:
+    super().initialize_task(env)
+    _clear_expenses(env)
+    now_ms = _now_ms()
+    # Amounts: 100, 200, 500, 1000, 3000 → avg = 960
+    amounts = [100, 200, 500, 1000, 3000]
+    avg = sum(amounts) / len(amounts)  # 960
+    rows = []
+    self._ground_truth: list[str] = []
+    for i, amt in enumerate(amounts):
+      name = f'aboveavg_{i}'
+      rows.append(sqlite_schema_utils.Expense(
+          name=name, amount=amt, category=_CATEGORY_FOOD,
+          created_date=now_ms, modified_date=now_ms,
+      ))
+      if amt > avg:
+        self._ground_truth.append(name)
+    _insert_expenses(rows, env)
+    # Above avg: 1000, 3000 → aboveavg_3, aboveavg_4
+
+  def tear_down(self, env: interface.AsyncEnv) -> None:
+    _clear_expenses(env)
+    super().tear_down(env)
+
+  def is_successful(self, env: interface.AsyncEnv) -> float:
+    super().is_successful(env)
+    cache = getattr(env, 'interaction_cache', '') or ''
+    for name in self._ground_truth:
+      if name not in cache:
+        return 0.0
+    return 1.0
+
+  @classmethod
+  def generate_random_params(cls) -> dict[str, Any]:
+    return {}
+
+
+# ── tier4_extra ──
+
+
+class Tier4ExtraTopKExpenseDaysMostSpent(task_eval.TaskEval):
+  """3 days with highest total spending this month. ADB-exclusive."""
+
+  app_names = (_APP_NAME,)
+  complexity = 2.0
+  schema = {'type': 'object', 'properties': {}, 'required': []}
+  template = (
+      "What are the 3 days this month with the highest total spending in"
+      " Pro Expense? Output the dates."
+  )
+
+  def initialize_task(self, env: interface.AsyncEnv) -> None:
+    super().initialize_task(env)
+    _clear_expenses(env)
+    import datetime
+    now = datetime.datetime.utcnow()
+    month_start = _month_start_ms()
+    rows = []
+    # Day 3: 3 expenses totaling 5000
+    # Day 7: 2 expenses totaling 8000
+    # Day 12: 4 expenses totaling 3000
+    # Day 1: 1 expense totaling 10000
+    # Day 9: 2 expenses totaling 2000
+    day_configs = {
+        3: [1000, 2000, 2000],
+        7: [3000, 5000],
+        12: [500, 800, 700, 1000],
+        1: [10000],
+        9: [1000, 1000],
+    }
+    for day, amounts in day_configs.items():
+      day_ms = month_start + (day - 1) * 86400000 + 43200000  # noon
+      for i, amt in enumerate(amounts):
+        rows.append(sqlite_schema_utils.Expense(
+            name=f'dayspend_{day}_{i}', amount=amt,
+            category=_CATEGORY_FOOD, created_date=day_ms, modified_date=day_ms,
+        ))
+    _insert_expenses(rows, env)
+    # Top 3 by total: Day 1 (10000) > Day 7 (8000) > Day 3 (5000)
+    self._ground_truth_days: list[str] = [
+        f"{now.year}-{now.month:02d}-01",
+        f"{now.year}-{now.month:02d}-07",
+        f"{now.year}-{now.month:02d}-03",
+    ]
+
+  def tear_down(self, env: interface.AsyncEnv) -> None:
+    _clear_expenses(env)
+    super().tear_down(env)
+
+  def is_successful(self, env: interface.AsyncEnv) -> float:
+    super().is_successful(env)
+    cache = getattr(env, 'interaction_cache', '') or ''
+    # Accept partial date matches (day numbers)
+    matches = 0
+    for date_str in self._ground_truth_days:
+      if date_str in cache:
+        matches += 1
+      else:
+        # Also accept just the day number
+        day = date_str.split("-")[-1]
+        if day in cache:
+          matches += 1
+    return 1.0 if matches >= 3 else 0.0
+
+  @classmethod
+  def generate_random_params(cls) -> dict[str, Any]:
+    return {}
+
+
+# ── tier4_extra ──
+
+
+class Tier4ExtraCoverageExpenseAllCategorized(task_eval.TaskEval):
+  """Verify all expenses have a valid category. ADB-exclusive (completeness check)."""
+
+  app_names = (_APP_NAME,)
+  complexity = 1.2
+  schema = {
+      'type': 'object',
+      'properties': {'variant': {'type': 'string', 'enum': ['all_valid', 'has_uncategorized']}},
+      'required': ['variant'],
+  }
+  template = (
+      "Verify that all expenses in Pro Expense have a valid category assigned."
+      " If any are uncategorized (category 0 or missing), output their names."
+      " If all are categorized, output 'all categorized'."
+  )
+
+  def initialize_task(self, env: interface.AsyncEnv) -> None:
+    super().initialize_task(env)
+    _clear_expenses(env)
+    now_ms = _now_ms()
+    rows = []
+    # 3 properly categorized expenses
+    for i in range(3):
+      rows.append(sqlite_schema_utils.Expense(
+          name=f'cat_ok_{i}', amount=random.randint(100, 1000),
+          category=_CATEGORY_FOOD, created_date=now_ms, modified_date=now_ms,
+      ))
+    variant = self.params.get('variant', 'has_uncategorized')
+    self._uncategorized_names: list[str] = []
+    if variant == 'has_uncategorized':
+      for i in range(2):
+        name = f'cat_missing_{i}'
+        rows.append(sqlite_schema_utils.Expense(
+            name=name, amount=random.randint(100, 1000),
+            category=0,  # uncategorized
+            created_date=now_ms, modified_date=now_ms,
+        ))
+        self._uncategorized_names.append(name)
+    _insert_expenses(rows, env)
+
+  def tear_down(self, env: interface.AsyncEnv) -> None:
+    _clear_expenses(env)
+    super().tear_down(env)
+
+  def is_successful(self, env: interface.AsyncEnv) -> float:
+    super().is_successful(env)
+    cache = (getattr(env, 'interaction_cache', '') or '').lower()
+    if not self._uncategorized_names:
+      return 1.0 if 'all categorized' in cache else 0.0
+    for name in self._uncategorized_names:
+      if name not in cache:
+        return 0.0
+    return 1.0
+
+  @classmethod
+  def generate_random_params(cls) -> dict[str, Any]:
+    return {'variant': random.choice(['all_valid', 'has_uncategorized'])}
+
+
+# ── tier4_extra ──
+
+
+class Tier4ExtraBulkDeleteSmallExpenses(task_eval.TaskEval):
+  """Delete all expenses below $1 (100 cents). ADB-exclusive."""
+
+  app_names = (_APP_NAME,)
+  complexity = 1.5
+  schema = {'type': 'object', 'properties': {}, 'required': []}
+  template = (
+      "Delete all expenses in Pro Expense that are less than $1.00"
+      " (less than 100 cents)."
+  )
+
+  def initialize_task(self, env: interface.AsyncEnv) -> None:
+    super().initialize_task(env)
+    _clear_expenses(env)
+    now_ms = _now_ms()
+    rows = []
+    self._small_names: list[str] = []
+    self._keep_names: list[str] = []
+    # 3 small expenses (<100 cents)
+    for i in range(3):
+      name = f'tiny_{i}'
+      rows.append(sqlite_schema_utils.Expense(
+          name=name, amount=random.randint(10, 90),
+          category=_CATEGORY_FOOD, created_date=now_ms, modified_date=now_ms,
+      ))
+      self._small_names.append(name)
+    # 3 normal expenses (>=100 cents)
+    for i in range(3):
+      name = f'normal_{i}'
+      rows.append(sqlite_schema_utils.Expense(
+          name=name, amount=random.randint(100, 5000),
+          category=_CATEGORY_FOOD, created_date=now_ms, modified_date=now_ms,
+      ))
+      self._keep_names.append(name)
+    _insert_expenses(rows, env)
+
+  def tear_down(self, env: interface.AsyncEnv) -> None:
+    _clear_expenses(env)
+    super().tear_down(env)
+
+  def is_successful(self, env: interface.AsyncEnv) -> float:
+    super().is_successful(env)
+    rows = _get_expenses(env)
+    names = [r.name for r in rows]
+    for name in self._small_names:
+      if name in names:
+        return 0.0
+    for name in self._keep_names:
+      if name not in names:
+        return 0.0
+    return 1.0
+
+  @classmethod
+  def generate_random_params(cls) -> dict[str, Any]:
+    return {}
