@@ -81,6 +81,9 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 | Claude Code CLI | claude-sonnet-4-6 | `mw_terminal_expert_tier1a` ✓ | ADB shell + tools | Anthropic | **39.3%** (46/117) | — |
 | Claude Code CLI | claude-sonnet-4-6 | `mw_terminal_expert` (v1) | ADB shell + tools | Anthropic | **37.6%** (44/117) | — |
 | Claude Code CLI | claude-sonnet-4-6 | `mw_terminal_expert_tier1a_pure` ✓ | raw bash (adb/exec/finish only) | Anthropic | **32.5%** (38/117) | — |
+| Terminus_2 | minimax-m2.7 | `tier1a` (14 helpers + encyclopedia) | ADB shell + tools | OpenRouter | **20.5%** (24/117) | — |
+| Terminus_2 | minimax-m2.7 | `tier1b` (14 helpers, no encyclopedia) | ADB shell + tools | OpenRouter | **17.9%** (21/117) | — |
+| Terminus_2 | minimax-m2.7 | `tier1a_pure` (raw bash, no encyclopedia) | raw bash (adb/exec/finish only) | OpenRouter | **12.0%** (14/117) | — |
 | GeneralE2E | Kimi K2.5 | — | GUI (tap/swipe) | OpenRouter | **37.6%** (44/117) | 49.6% |
 | MAI-UI (vllm 0.11) | MAI-UI-8B | — | GUI (tap/swipe) | Local vLLM | **21.4%** (25/117) | 27.5% |
 | UI-Venus-1.5 | UI-Venus-1.5-30B-A3B | — | GUI (tap/swipe) | Local vLLM | **11.1%** (13/117) | 17.1% |
@@ -101,6 +104,31 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 > ⭐ **`tier1a_pure` is the new clean record (66.7%) on Opus 4.7** — beats both `tier1a` (58.1%) and even the leaky `tier1` (64.1%). Has *only 3 documented bridge commands* (`adb`, `exec`, `finish`), drops v1's 25-item Android encyclopedia, drops the 14-command `mw_tools.py` helpers. The agent composes `adb shell sqlite3 ...`, `exec "docker exec ... psql ..."`, etc. from raw shell. Three discipline rules retained (verify, no-cache-shortcut, subtask checklist) + 3 non-obvious Android patterns (media scanner, corrupt DB, integer ID maps). ~1,400 tokens (vs `tier1a`'s 2,500). Bridge: `mw_env.py` (minimal).
 >
 > **Asymmetric finding: opposite optimal prompts for Opus vs Sonnet.** On Sonnet 4.6, `tier1a_pure` actually *regresses* to 32.5% (vs `tier1a`'s 39.3%, a -6.8 pp drop). The same minimal prompt that helps Opus (+8.6 pp) hurts Sonnet (-6.8 pp). Intuition: Opus is capable enough to discover schemas/URIs/intent extras itself via `find-files`/`pm list`/`docker ps` — the encyclopedia is distraction. Sonnet burns too many turns trying to discover the same info — the encyclopedia is a needed crutch. **Use minimal prompts only with strong models; weaker models benefit from richer scaffolding.**
+
+### Two-axis prompt design matrix (encyclopedia × helpers)
+
+The Tier 1 family varies along two orthogonal axes:
+- **Encyclopedia**: 25 Android-domain knowledge items (filesystem layout, content URIs, intent extras, timestamp conventions, force-stop semantics, Postgres discovery hints) — present in `tier1` / `tier1a` / minimax `tier1a`; absent in `tier1a_pure` / `tier1b`.
+- **Helpers**: bridge tooling — either **3 wrappers** (raw bash via `mw_env.py`: just `adb`/`exec`/`finish`; agent composes raw `adb shell sqlite3 ...`, `am start ...`, `content query ...`) or **14 helpers** (`mw_tools.py`: `pg`/`content`/`intent`/`json-read`/`service-status`/`http`/etc).
+
+| Model | | No encyclopedia | With encyclopedia |
+|---|---|---|---|
+| **Opus 4.7** | 3 wrappers | **66.7%** ⭐ (`tier1a_pure`) | not tested (`tier1c`) |
+| | 14 helpers | 43.6% (`tier1b`) | 58.1% (`tier1a`) |
+| **Sonnet 4.6** | 3 wrappers | 32.5% (`tier1a_pure`) | not tested |
+| | 14 helpers | not tested | **39.3%** ⭐ (`tier1a`) |
+| **minimax-m2.7** | 3 wrappers | 12.0% (`tier1a_pure`) | not tested |
+| | 14 helpers | 17.9% (`tier1b`) | **20.5%** ⭐ (`tier1a`) |
+
+**Decomposition (what each axis contributes):**
+
+| Model | Add helpers (no enc) | Add encyclopedia (14 helpers) | Optimal config |
+|---|---:|---:|---|
+| Opus 4.7 | **−23.1 pp** (HURTS) | +14.5 pp | **3 wrappers, no encyclopedia** |
+| minimax-m2.7 | +5.9 pp | +2.6 pp | 14 helpers + encyclopedia |
+| Sonnet 4.6 | not isolated | not isolated | 14 helpers + encyclopedia (best of tested) |
+
+**Rule of thumb:** Strong models penalize helpers (distraction); weak models benefit from helpers (scaffolding). Encyclopedia helps in both directions but is a smaller lever than the helper toolset.
 
 ### Paper Reference (MobileWorld Leaderboard, GUI-Only, max_steps=50)
 
@@ -164,6 +192,22 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 | map (2)              | **2/2 (100%)** | **2/2 (100%)** | **2/2 (100%)** | **2/2 (100%)** | 1/2 (50%) | 1/2 (50%) | **2/2 (100%)** |
 | chrome (1)           | 0/1 (0%)    | 0/1 (0%)    | 0/1 (0%)    | 0/1 (0%) | 0/1 (0%) | 0/1 (0%) | 0/1 (0%) |
 | **TOTAL (117)**      | **53/117 (45.3%)** | **75/117 (64.1%)** | **68/117 (58.1%)** | **78/117 (66.7%)** ⭐ | **51/117 (43.6%)** | **46/117 (39.3%)** | **38/117 (32.5%)** |
+
+### Per-Category — minimax-m2.7 (Terminus_2 + OpenRouter)
+
+| Category | Tier 1a (helpers + enc) | Tier 1b (helpers only) | Tier 1a pure (raw bash) |
+|----------|------------------------:|------------------------:|------------------------:|
+| mastodon (38)        | 10/38 (26%) | **12/38 (32%)** | 4/38 (11%) |
+| other (25)           | **4/25 (16%)** | 1/25 (4%) | **4/25 (16%)** |
+| mattermost (15)      | 0/15 (0%)   | 0/15 (0%) | 1/15 (7%) |
+| files (13)           | **3/13 (23%)** | 2/13 (15%) | 1/13 (8%) |
+| settings (7)         | **4/7 (57%)** | 3/7 (43%) | **4/7 (57%)** |
+| calendar/alarm (7)   | 0/7 (0%)    | 0/7 (0%) | 0/7 (0%) |
+| sms/messages (5)     | 1/5 (20%)   | 1/5 (20%) | 0/5 (0%) |
+| email (4)            | 0/4 (0%)    | **1/4 (25%)** | 0/4 (0%) |
+| map (2)              | 1/2 (50%)   | 1/2 (50%) | 0/2 (0%) |
+| chrome (1)           | **1/1 (100%)** | 0/1 (0%) | 0/1 (0%) |
+| **TOTAL (117)**      | **24/117 (20.5%)** ⭐ | **21/117 (17.9%)** | **14/117 (12.0%)** |
 
 Notes:
 - **Tier 1a pure beats every other variant including the leaky Tier 1.** Removing the 14-command `mw_tools.py` wrapper and the 25-item Android encyclopedia *helped*. Big wins on `mattermost` (+27 pp vs Tier 1a), `sms/messages` (+40 pp), `mastodon` (+8 pp). One regression: `email` (-25 pp). The minimal prompt forces the agent to discover schemas / URIs / app paths fresh per task, which beats canned (potentially stale) prior knowledge.
