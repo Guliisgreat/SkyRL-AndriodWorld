@@ -58,6 +58,7 @@ PROMPT_MODULES = {
     "mw_terminal_expert_tools_v2": "agents.cli.claude_sdk.prompts.mw_terminal_expert_tools_v2",
     "mw_terminal_expert_tier1": "agents.cli.claude_sdk.prompts.mw_terminal_expert_tier1",
     "mw_terminal_expert_tier1a": "agents.cli.claude_sdk.prompts.mw_terminal_expert_tier1a",
+    "mw_terminal_expert_tier1b": "agents.cli.claude_sdk.prompts.mw_terminal_expert_tier1b",
 }
 DEFAULT_PROMPT = "mw_adb_baseline"
 
