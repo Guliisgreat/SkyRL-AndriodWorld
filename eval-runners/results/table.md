@@ -80,6 +80,7 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 | Claude Code CLI | claude-opus-4-7 | `mw_terminal_expert_tier1b` (no encyclopedia) | ADB shell + tools | Anthropic | **43.6%** (51/117) | — |
 | Claude Code CLI | claude-sonnet-4-6 | `mw_terminal_expert_tier1a` ✓ | ADB shell + tools | Anthropic | **39.3%** (46/117) | — |
 | Claude Code CLI | claude-sonnet-4-6 | `mw_terminal_expert` (v1) | ADB shell + tools | Anthropic | **37.6%** (44/117) | — |
+| Claude Code CLI | claude-sonnet-4-6 | `mw_terminal_expert_tier1a_pure` ✓ | raw bash (adb/exec/finish only) | Anthropic | **32.5%** (38/117) | — |
 | GeneralE2E | Kimi K2.5 | — | GUI (tap/swipe) | OpenRouter | **37.6%** (44/117) | 49.6% |
 | MAI-UI (vllm 0.11) | MAI-UI-8B | — | GUI (tap/swipe) | Local vLLM | **21.4%** (25/117) | 27.5% |
 | UI-Venus-1.5 | UI-Venus-1.5-30B-A3B | — | GUI (tap/swipe) | Local vLLM | **11.1%** (13/117) | 17.1% |
@@ -97,7 +98,9 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 >
 > **Thinking mode**: All Claude rows above use the Claude Code CLI default (no `--effort` flag → no extended thinking budget). Numbers are the no-thinking baseline. Adding `--effort high` is an untested upgrade path.
 >
-> ⭐ **`tier1a_pure` is the new clean record (66.7%)** — beats both `tier1a` (58.1%) and even the leaky `tier1` (64.1%). Has *only 3 documented bridge commands* (`adb`, `exec`, `finish`), drops v1's 25-item Android encyclopedia, drops the 14-command `mw_tools.py` helpers. The agent composes `adb shell sqlite3 ...`, `exec "docker exec ... psql ..."`, etc. from raw shell. Three discipline rules retained (verify, no-cache-shortcut, subtask checklist) + 3 non-obvious Android patterns (media scanner, corrupt DB, integer ID maps). ~1,400 tokens (vs `tier1a`'s 2,500). Bridge: `mw_env.py` (minimal). Lesson: fewer documented helpers + force-discovery beats more documented helpers + curated knowledge.
+> ⭐ **`tier1a_pure` is the new clean record (66.7%) on Opus 4.7** — beats both `tier1a` (58.1%) and even the leaky `tier1` (64.1%). Has *only 3 documented bridge commands* (`adb`, `exec`, `finish`), drops v1's 25-item Android encyclopedia, drops the 14-command `mw_tools.py` helpers. The agent composes `adb shell sqlite3 ...`, `exec "docker exec ... psql ..."`, etc. from raw shell. Three discipline rules retained (verify, no-cache-shortcut, subtask checklist) + 3 non-obvious Android patterns (media scanner, corrupt DB, integer ID maps). ~1,400 tokens (vs `tier1a`'s 2,500). Bridge: `mw_env.py` (minimal).
+>
+> **Asymmetric finding: opposite optimal prompts for Opus vs Sonnet.** On Sonnet 4.6, `tier1a_pure` actually *regresses* to 32.5% (vs `tier1a`'s 39.3%, a -6.8 pp drop). The same minimal prompt that helps Opus (+8.6 pp) hurts Sonnet (-6.8 pp). Intuition: Opus is capable enough to discover schemas/URIs/intent extras itself via `find-files`/`pm list`/`docker ps` — the encyclopedia is distraction. Sonnet burns too many turns trying to discover the same info — the encyclopedia is a needed crutch. **Use minimal prompts only with strong models; weaker models benefit from richer scaffolding.**
 
 ### Paper Reference (MobileWorld Leaderboard, GUI-Only, max_steps=50)
 
@@ -148,44 +151,48 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 
 ## Per-Category Breakdown (Claude Code CLI)
 
-| Category | Opus 4.6 v1 | Opus 4.7 Tier 1 ⚠️ | Opus 4.7 Tier 1a ✓ | Opus 4.7 Tier 1a pure ⭐ | Opus 4.7 Tier 1b | Sonnet 4.6 Tier 1a ✓ |
-|----------|------------:|------------------:|--------------------:|-------------------------:|-----------------:|----------------------:|
-| mastodon (38)        | 25/38 (66%) | 30/38 (79%) | 28/38 (74%) | **31/38 (82%)** | 28/38 (74%) | 22/38 (58%) |
-| other (25)           | 7/25 (28%)  | 10/25 (40%) | 12/25 (48%) | **13/25 (52%)** | 4/25 (16%) | 5/25 (20%) |
-| mattermost (15)      | 3/15 (20%)  | 5/15 (33%)  | 4/15 (27%)  | **8/15 (53%)** | 3/15 (20%) | 2/15 (13%) |
-| files (13)           | 4/13 (31%)  | **10/13 (77%)** | 7/13 (54%) | 8/13 (62%) | 4/13 (31%) | 5/13 (38%) |
-| settings (7)         | 5/7 (71%)   | **6/7 (86%)** | **6/7 (86%)** | **6/7 (86%)** | **6/7 (86%)** | 4/7 (57%) |
-| calendar/alarm (7)   | 4/7 (57%)   | **5/7 (71%)** | **5/7 (71%)** | **5/7 (71%)** | 4/7 (57%) | 3/7 (43%) |
-| sms/messages (5)     | 2/5 (40%)   | 3/5 (60%)   | 2/5 (40%)   | **4/5 (80%)** | 1/5 (20%) | 3/5 (60%) |
-| email (4)            | 1/4 (25%)   | **4/4 (100%)** | 2/4 (50%) | 1/4 (25%) | 0/4 (0%) | 1/4 (25%) |
-| map (2)              | **2/2 (100%)** | **2/2 (100%)** | **2/2 (100%)** | **2/2 (100%)** | 1/2 (50%) | 1/2 (50%) |
-| chrome (1)           | 0/1 (0%)    | 0/1 (0%)    | 0/1 (0%)    | 0/1 (0%) | 0/1 (0%) | 0/1 (0%) |
-| **TOTAL (117)**      | **53/117 (45.3%)** | **75/117 (64.1%)** | **68/117 (58.1%)** | **78/117 (66.7%)** ⭐ | **51/117 (43.6%)** | **46/117 (39.3%)** |
+| Category | Opus 4.6 v1 | Opus 4.7 T1 ⚠️ | Opus 4.7 T1a ✓ | Opus 4.7 T1a pure ⭐ | Opus 4.7 T1b | Sonnet 4.6 T1a ✓ | Sonnet 4.6 T1a pure |
+|----------|------------:|---------------:|----------------:|---------------------:|-------------:|------------------:|--------------------:|
+| mastodon (38)        | 25/38 (66%) | 30/38 (79%) | 28/38 (74%) | **31/38 (82%)** | 28/38 (74%) | 22/38 (58%) | 21/38 (55%) |
+| other (25)           | 7/25 (28%)  | 10/25 (40%) | 12/25 (48%) | **13/25 (52%)** | 4/25 (16%) | 5/25 (20%) | 0/25 (0%) |
+| mattermost (15)      | 3/15 (20%)  | 5/15 (33%)  | 4/15 (27%)  | **8/15 (53%)** | 3/15 (20%) | 2/15 (13%) | 2/15 (13%) |
+| files (13)           | 4/13 (31%)  | **10/13 (77%)** | 7/13 (54%) | 8/13 (62%) | 4/13 (31%) | 5/13 (38%) | 5/13 (38%) |
+| settings (7)         | 5/7 (71%)   | **6/7 (86%)** | **6/7 (86%)** | **6/7 (86%)** | **6/7 (86%)** | 4/7 (57%) | 5/7 (71%) |
+| calendar/alarm (7)   | 4/7 (57%)   | **5/7 (71%)** | **5/7 (71%)** | **5/7 (71%)** | 4/7 (57%) | 3/7 (43%) | 2/7 (29%) |
+| sms/messages (5)     | 2/5 (40%)   | 3/5 (60%)   | 2/5 (40%)   | **4/5 (80%)** | 1/5 (20%) | 3/5 (60%) | 1/5 (20%) |
+| email (4)            | 1/4 (25%)   | **4/4 (100%)** | 2/4 (50%) | 1/4 (25%) | 0/4 (0%) | 1/4 (25%) | 0/4 (0%) |
+| map (2)              | **2/2 (100%)** | **2/2 (100%)** | **2/2 (100%)** | **2/2 (100%)** | 1/2 (50%) | 1/2 (50%) | **2/2 (100%)** |
+| chrome (1)           | 0/1 (0%)    | 0/1 (0%)    | 0/1 (0%)    | 0/1 (0%) | 0/1 (0%) | 0/1 (0%) | 0/1 (0%) |
+| **TOTAL (117)**      | **53/117 (45.3%)** | **75/117 (64.1%)** | **68/117 (58.1%)** | **78/117 (66.7%)** ⭐ | **51/117 (43.6%)** | **46/117 (39.3%)** | **38/117 (32.5%)** |
 
 Notes:
 - **Tier 1a pure beats every other variant including the leaky Tier 1.** Removing the 14-command `mw_tools.py` wrapper and the 25-item Android encyclopedia *helped*. Big wins on `mattermost` (+27 pp vs Tier 1a), `sms/messages` (+40 pp), `mastodon` (+8 pp). One regression: `email` (-25 pp). The minimal prompt forces the agent to discover schemas / URIs / app paths fresh per task, which beats canned (potentially stale) prior knowledge.
 - **Tier 1 → Tier 1a deltas** show where the leaked app-specific recipes helped most: `email` (4/4 → 2/4) and `files` (10/13 → 7/13). Leakage benefited cross-app email and file tasks where recipes named specific apps/DBs.
 - **Tier 1a → Tier 1b deltas** were misleading: the 43.6% drop seemed to indicate "encyclopedia is load-bearing," but `tier1a_pure` (no encyclopedia, no helpers, just discipline + 3 patterns) lands at 66.7%. The actual culprit was Tier 1b retaining 14 documented helper commands as distraction.
 - **Sonnet 4.6 + Tier 1a vs Opus 4.7 + Tier 1a** — Sonnet underperforms Opus by 19 pp despite the same prompt. Discipline rules require self-imposed protocols (decompose subtasks, query verify destinations, retry on verify-fail) that Sonnet executes less consistently. Sonnet is 50% cheaper and barely beats its own v1 baseline (37.6% → 39.3%), suggesting Tier 1a's lift is mostly an Opus-only benefit on this task family.
+- **Asymmetric prompt-size finding**: minimizing the prompt has *opposite* effects on the two models.
+  - Opus 4.7: `tier1a` (58.1%) → `tier1a_pure` (66.7%) = **+8.6 pp** (less is more)
+  - Sonnet 4.6: `tier1a` (39.3%) → `tier1a_pure` (32.5%) = **-6.8 pp** (less is worse)
+  - Sonnet's biggest pure-only regression is `other` (20% → 0%) — without the encyclopedia, Sonnet can't compose the right `adb shell content query`/`am start --extra` commands and burns turns. Opus self-discovers the same. **Practical guidance: minimal prompts only with strong models; weaker models need richer scaffolding.**
 
 ## Run Details
 
-| | Opus 4.7 Tier 1a pure ⭐ | Opus 4.7 Tier 1 ⚠️ | Opus 4.7 Tier 1a ✓ | Opus 4.7 Tier 1b | Sonnet 4.6 Tier 1a ✓ | Opus 4.6 v1 | Sonnet 4.6 v1 | Kimi K2.5 | MAI-UI-8B (0.11) | UI-Venus-1.5-30B | MAI-UI-8B (0.13) |
-|--|-------------------------|-------------------|---------------------|------------------|----------------------|-------------|---------------|-----------|------------------|------------------|------------------|
-| Date | 2026-04-20 | 2026-04-19 | 2026-04-19 | 2026-04-19 | 2026-04-19 | 2026-04-09 | 2026-04-09 | 2026-04-08 | 2026-04-09 | 2026-04-08 | 2026-04-08 |
-| Runner | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` |
-| Prompt/Agent | `mw_terminal_expert_tier1a_pure` | `mw_terminal_expert_tier1` | `mw_terminal_expert_tier1a` | `mw_terminal_expert_tier1b` | `mw_terminal_expert_tier1a` | `mw_terminal_expert` | `mw_terminal_expert` | `general_e2e` | `mai_ui_agent` | `ui_venus_agent` | `mai_ui_agent` |
-| Action space | raw bash (adb/exec/finish only) | ADB shell + tools | ADB shell + tools | ADB shell + tools | ADB shell + tools | ADB shell + tools | ADB shell + tools | GUI (tap/swipe) | GUI (tap/swipe) | GUI (tap/swipe) | GUI (tap/swipe) |
-| Bridge script | `mw_env.py` (minimal) | `mw_tools.py` | `mw_tools.py` | `mw_tools.py` | `mw_tools.py` | `mw_tools.py` | `mw_tools.py` | — | — | — | — |
-| Thinking (`--effort`) | — (default) | — (default) | — (default) | — (default) | — (default) | — (default) | — (default) | — | — | — | — |
-| vLLM version | — | — | — | — | — | — | — | — | **0.11.0** | — | 0.13.0 |
-| Max turns/steps | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 |
-| Avg input tokens/task | — | 1,371,964 | 1,472,582 | — | — | 961,919 | 1,021,701 | 290,828 | 297,280 | 24,554 | — |
-| Avg output tokens/task | — | — | — | — | — | 7,265 | 7,685 | 2,909 | 1,919 | 655 | — |
-| Total cost | **$178.73** | **$148.97** | **$155.83** | — | **$77.72** | $95.89 | $60.77 | — | — | — | — |
-| Cost per win | $2.29 | $1.99 | $2.29 | — | $1.69 | $1.81 | $1.38 | — | — | — | — |
-| max-model-len | — | — | — | — | — | — | — | — | 32,768 | 8,192 | 8,192 |
-| Results dir | `ClaudeCodeCLI_MW_claudeopus47_260420_0253_full_tier1a_pure_t50/` | `ClaudeCodeCLI_MW_claudeopus47_260419_0105_full_tier1_t50/` | `ClaudeCodeCLI_MW_claudeopus47_260419_0153_full_tier1a_t50/` | `ClaudeCodeCLI_MW_claudeopus47_260419_1411_sub32_tier1b/` | `ClaudeCodeCLI_MW_claudesonnet46_260419_2120_full_tier1a_t50/` | `ClaudeCodeCLI_MW_claudeopus46_260409_2253/` | `ClaudeCodeCLI_MW_claudesonnet46_260409_1602/` | `GUIAgent_general_e2e_moonshotaikimik25_260408_0252/` | `GUIAgent_mai_ui_agent_..._260409_0204/` | `GUIAgent_ui_venus_agent_UIVenus1530BA3B_260408_0157/` | `GUIAgent_mai_ui_agent_..._260408_1155/` |
+| | Opus 4.7 Tier 1a pure ⭐ | Opus 4.7 Tier 1 ⚠️ | Opus 4.7 Tier 1a ✓ | Opus 4.7 Tier 1b | Sonnet 4.6 Tier 1a ✓ | Sonnet 4.6 Tier 1a pure | Opus 4.6 v1 | Sonnet 4.6 v1 | Kimi K2.5 | MAI-UI-8B (0.11) | UI-Venus-1.5-30B | MAI-UI-8B (0.13) |
+|--|-------------------------|-------------------|---------------------|------------------|----------------------|-------------------------|-------------|---------------|-----------|------------------|------------------|------------------|
+| Date | 2026-04-20 | 2026-04-19 | 2026-04-19 | 2026-04-19 | 2026-04-19 | 2026-04-20 | 2026-04-09 | 2026-04-09 | 2026-04-08 | 2026-04-09 | 2026-04-08 | 2026-04-08 |
+| Runner | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` |
+| Prompt/Agent | `mw_terminal_expert_tier1a_pure` | `mw_terminal_expert_tier1` | `mw_terminal_expert_tier1a` | `mw_terminal_expert_tier1b` | `mw_terminal_expert_tier1a` | `mw_terminal_expert_tier1a_pure` | `mw_terminal_expert` | `mw_terminal_expert` | `general_e2e` | `mai_ui_agent` | `ui_venus_agent` | `mai_ui_agent` |
+| Action space | raw bash (adb/exec/finish only) | ADB shell + tools | ADB shell + tools | ADB shell + tools | ADB shell + tools | raw bash (adb/exec/finish only) | ADB shell + tools | ADB shell + tools | GUI (tap/swipe) | GUI (tap/swipe) | GUI (tap/swipe) | GUI (tap/swipe) |
+| Bridge script | `mw_env.py` (minimal) | `mw_tools.py` | `mw_tools.py` | `mw_tools.py` | `mw_tools.py` | `mw_env.py` (minimal) | `mw_tools.py` | `mw_tools.py` | — | — | — | — |
+| Thinking (`--effort`) | — (default) | — (default) | — (default) | — (default) | — (default) | — (default) | — (default) | — (default) | — | — | — | — |
+| vLLM version | — | — | — | — | — | — | — | — | — | **0.11.0** | — | 0.13.0 |
+| Max turns/steps | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 |
+| Avg input tokens/task | — | 1,371,964 | 1,472,582 | — | — | 1,224,594 | 961,919 | 1,021,701 | 290,828 | 297,280 | 24,554 | — |
+| Avg output tokens/task | — | — | — | — | — | — | 7,265 | 7,685 | 2,909 | 1,919 | 655 | — |
+| Total cost | **$178.73** | **$148.97** | **$155.83** | — | **$77.72** | **$77.13** | $95.89 | $60.77 | — | — | — | — |
+| Cost per win | $2.29 | $1.99 | $2.29 | — | $1.69 | $2.03 | $1.81 | $1.38 | — | — | — | — |
+| max-model-len | — | — | — | — | — | — | — | — | — | 32,768 | 8,192 | 8,192 |
+| Results dir | `ClaudeCodeCLI_MW_claudeopus47_260420_0253_full_tier1a_pure_t50/` | `ClaudeCodeCLI_MW_claudeopus47_260419_0105_full_tier1_t50/` | `ClaudeCodeCLI_MW_claudeopus47_260419_0153_full_tier1a_t50/` | `ClaudeCodeCLI_MW_claudeopus47_260419_1411_sub32_tier1b/` | `ClaudeCodeCLI_MW_claudesonnet46_260419_2120_full_tier1a_t50/` | `ClaudeCodeCLI_MW_claudesonnet46_260420_1219_full_tier1a_pure_t50/` | `ClaudeCodeCLI_MW_claudeopus46_260409_2253/` | `ClaudeCodeCLI_MW_claudesonnet46_260409_1602/` | `GUIAgent_general_e2e_moonshotaikimik25_260408_0252/` | `GUIAgent_mai_ui_agent_..._260409_0204/` | `GUIAgent_ui_venus_agent_UIVenus1530BA3B_260408_0157/` | `GUIAgent_mai_ui_agent_..._260408_1155/` |
 
 ### Tier 1 / Tier 1a / Tier 1b Prompt Design
 
