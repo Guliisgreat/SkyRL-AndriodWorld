@@ -81,6 +81,14 @@ python eval-runners/benchmarks/androidworld/run_claude_cli.py \
   --broker-url http://localhost:9400 --pool-size 16 \
   --model claude-opus-4-7 --prompt clean_optimized --max-turns 50 --effort max
 
+OPENROUTER_API_KEY=... \
+python eval-runners/benchmarks/androidworld/run_terminus2.py \
+  --data data/androidworld_original/val_data_seed30.jsonl \
+  --broker-url http://localhost:9400 --pool-size 16 \
+  --model openrouter/minimax/minimax-m2.7 \
+  --api-base https://openrouter.ai/api/v1 \
+  --parser json --max-turns 50 
+
 # Qwen3-VL GUI agent on AndroidWorld (via OpenRouter)
 PYTHONPATH=eval-runners/benchmarks/androidworld:eval-runners/agents/gui:. \
 python eval-runners/benchmarks/mobileworld/run_qwen3vl.py \
