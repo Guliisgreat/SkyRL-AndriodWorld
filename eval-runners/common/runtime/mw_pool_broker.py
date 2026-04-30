@@ -126,7 +126,9 @@ class MWPoolBroker:
             req = urllib.request.Request(f"{entry.server_url}/health", method="GET")
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
-                return data.get("ok", False) or data.get("status") == "ok"
+                return (data.get("ok", False)
+                        or data.get("status") in ("ok", "healthy")
+                        or data.get("ready", False))
         except Exception:
             return False
 

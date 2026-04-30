@@ -27,7 +27,17 @@ from android_world.task_evals.single import sms
 from android_world.task_evals.single import system
 from android_world.task_evals.single import vlc
 from android_world.task_evals.single.calendar import calendar
+from .tier4 import broccoli as tier4_broccoli
+from .tier4 import calendar as tier4_calendar
+from .tier4 import contacts as tier4_contacts
+from .tier4 import cross_app as tier4_cross_app
+from .tier4 import expense as tier4_expense
+from .tier4 import joplin as tier4_joplin
+from .tier4 import opentracks as tier4_opentracks
+from .tier4 import retro_music as tier4_retro_music
+from .tier4 import tasks_app as tier4_tasks_app
 from .tier4 import files as tier4_files
+from .tier4 import markor as tier4_markor
 from .tier4 import sms as tier4_sms
 from .tier4 import system as tier4_system
 
@@ -175,6 +185,63 @@ _TIER4_TASKS = (
     tier4_system.Tier4HiddenStateListAppVersions,
     tier4_sms.Tier4AggregationCountUnreadSMS,
     tier4_sms.Tier4CrossAppSmsNumbersNotInContacts,
+    # Phase 1: Files/Markor
+    tier4_files.Tier4BulkRenameScreenshots,
+    tier4_files.Tier4BulkMoveLargeFiles,
+    tier4_files.Tier4FilterRecentLogFiles,
+    tier4_markor.Tier4BulkAppendFooterToMarkdown,
+    tier4_markor.Tier4AggregationLongestMarkorNote,
+    tier4_markor.Tier4TopKMarkorMostModifiedNotes,
+    # Phase 2: SMS/Contacts
+    tier4_sms.Tier4FilterDeleteOldNonContactKeywordSms,
+    tier4_sms.Tier4TopKSmsThreadsByCount,
+    tier4_contacts.Tier4CrossAppContactsNoRecentSms,
+    tier4_contacts.Tier4FilterContactsBirthdayNoPhone,
+    tier4_contacts.Tier4AggregationLongestContactName,
+    tier4_contacts.Tier4DedupContactsDuplicatePhones,
+    tier4_contacts.Tier4DedupMergeContactsSamePhone,
+    # Phase 8: DB-based — Pro Expense
+    tier4_expense.Tier4BulkRecategorizeExpense,
+    tier4_expense.Tier4FilterExpenseHighTravelLastMonth,
+    tier4_expense.Tier4AggregationExpenseCategoryTop3,
+    tier4_expense.Tier4DedupExpenseSuspectedDuplicates,
+    tier4_expense.Tier4TopKExpenseHighestAmount,
+    tier4_expense.Tier4CrossAppExpenseToMarkorCalendar,
+    # Phase 8: DB-based — Tasks.org
+    tier4_tasks_app.Tier4BulkChangePriorityTasks,
+    tier4_tasks_app.Tier4CoverageOverdueTasksCompleted,
+    # Phase 8: DB-based — Joplin
+    tier4_joplin.Tier4FilterJoplinContainsNotContains,
+    tier4_joplin.Tier4DedupJoplinSameTitleNotes,
+    # Phase 8: DB-based — OpenTracks
+    tier4_opentracks.Tier4AggregationOpenTracksWeeklyStats,
+    tier4_opentracks.Tier4TopKOpenTracksFastestActivity,
+    tier4_opentracks.Tier4CrossAppOpenTracksToTasks,
+    # Phase 8: DB-based — Retro Music
+    tier4_retro_music.Tier4FilterRetroMusicMultiCondition,
+    tier4_retro_music.Tier4TopKRetroMusicLongestSongs,
+    # Phase 8: DB-based — Broccoli
+    tier4_broccoli.Tier4CrossAppBroccoliToMarkorIndex,
+    # Phase 6: Cross-app non-DB
+    tier4_cross_app.Tier4CrossAppFilesCreatedDuringEvents,
+    tier4_cross_app.Tier4CrossAppMarkorPhonesVsContacts,
+    # Phase 5: Files + SMS Coverage
+    tier4_files.Tier4AggregationDownloadSizeTop3,
+    tier4_files.Tier4TopKLargestDownloadFiles,
+    tier4_sms.Tier4CoverageAllSmsRead,
+    # Phase 4: System/Settings
+    tier4_system.Tier4HiddenStateLocationPermissions,
+    tier4_system.Tier4HiddenStateAudioRouting,
+    tier4_system.Tier4CoverageAppsCameraPermission,
+    tier4_system.Tier4CoverageWifiConnected,
+    # Phase 3: Calendar
+    tier4_calendar.Tier4BulkDeleteCalendarTestEvents,
+    tier4_calendar.Tier4CrossAppCalendarToMarkor,
+    tier4_calendar.Tier4FilterCalendarLongNoReminder,
+    tier4_calendar.Tier4AggregationCalendarTotalDuration,
+    tier4_calendar.Tier4DedupCalendarDeleteDuplicateEvents,
+    tier4_calendar.Tier4TopKCalendarEarliestEvent,
+    tier4_calendar.Tier4CoverageCalendarEventsHaveReminders,
 )
 
 
