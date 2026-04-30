@@ -88,14 +88,65 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 
 ## Overall
 
-| Agent | Model | Action Space | API | SR | Paper SR |
-|-------|-------|-------------|-----|---:|--------:|
-| Claude Code CLI | claude-opus-4-6 | ADB shell + tools | Anthropic | **45.3%** (53/117) | — |
-| Claude Code CLI | claude-sonnet-4-6 | ADB shell + tools | Anthropic | **37.6%** (44/117) | — |
-| GeneralE2E | Kimi K2.5 | GUI (tap/swipe) | OpenRouter | **37.6%** (44/117) | 49.6% |
-| MAI-UI (vllm 0.11) | MAI-UI-8B | GUI (tap/swipe) | Local vLLM | **21.4%** (25/117) | 27.5% |
-| UI-Venus-1.5 | UI-Venus-1.5-30B-A3B | GUI (tap/swipe) | Local vLLM | **11.1%** (13/117) | 17.1% |
-| MAI-UI (vllm 0.13) | MAI-UI-8B | GUI (tap/swipe) | Local vLLM | **6.0%** (7/117) | 27.5% |
+| Agent | Model | Prompt | Action Space | API | SR | Paper SR |
+|-------|-------|--------|-------------|-----|---:|--------:|
+| Claude Code CLI | claude-opus-4-7 | `mw_terminal_expert_tier1a_pure` ✓ ⭐ | raw bash (adb/exec/finish only) | Anthropic | **66.7%** (78/117) | — |
+| Claude Code CLI | claude-opus-4-7 | `mw_terminal_expert_tier1` ⚠️ | ADB shell + tools | Anthropic | **64.1%** (75/117) | — |
+| Claude Code CLI | claude-opus-4-7 | `mw_terminal_expert_tier1a` ✓ | ADB shell + tools | Anthropic | **58.1%** (68/117) | — |
+| Claude Code CLI | claude-opus-4-6 | `mw_terminal_expert` (v1) | ADB shell + tools | Anthropic | **45.3%** (53/117) | — |
+| Claude Code CLI | claude-opus-4-7 | `mw_terminal_expert_tier1b` (no encyclopedia) | ADB shell + tools | Anthropic | **43.6%** (51/117) | — |
+| Claude Code CLI | claude-sonnet-4-6 | `mw_terminal_expert_tier1a` ✓ | ADB shell + tools | Anthropic | **39.3%** (46/117) | — |
+| Claude Code CLI | claude-sonnet-4-6 | `mw_terminal_expert` (v1) | ADB shell + tools | Anthropic | **37.6%** (44/117) | — |
+| Claude Code CLI | claude-sonnet-4-6 | `mw_terminal_expert_tier1a_pure` ✓ | raw bash (adb/exec/finish only) | Anthropic | **32.5%** (38/117) | — |
+| Terminus_2 | minimax-m2.7 | `tier1a` (14 helpers + encyclopedia) | ADB shell + tools | OpenRouter | **20.5%** (24/117) | — |
+| mini-swe-agent | minimax-m2.7 | `tier1a` (14 helpers + encyclopedia) | ADB shell + tools | OpenRouter | **18.8%** (22/117) | — |
+| Terminus_2 | minimax-m2.7 | `tier1b` (14 helpers, no encyclopedia) | ADB shell + tools | OpenRouter | **17.9%** (21/117) | — |
+| Terminus_2 | minimax-m2.7 | `tier1a_pure` (raw bash, no encyclopedia) | raw bash (adb/exec/finish only) | OpenRouter | **12.0%** (14/117) | — |
+| GeneralE2E | Kimi K2.5 | — | GUI (tap/swipe) | OpenRouter | **37.6%** (44/117) | 49.6% |
+| MAI-UI (vllm 0.11) | MAI-UI-8B | — | GUI (tap/swipe) | Local vLLM | **21.4%** (25/117) | 27.5% |
+| UI-Venus-1.5 | UI-Venus-1.5-30B-A3B | — | GUI (tap/swipe) | Local vLLM | **11.1%** (13/117) | 17.1% |
+| MAI-UI (vllm 0.13) | MAI-UI-8B | — | GUI (tap/swipe) | Local vLLM | **6.0%** (7/117) | 27.5% |
+
+> ⚠️ **`tier1` includes benchmark-leaking content** — names specific apps (Mattermost, gmailclone), DBs (`pg mattermost mattermost`), tables/columns the eval queries, and the management CLI `mmctl`. The 64.1% number is **not a clean score**.
+>
+> ✓ **`tier1a` is leak-free** — same generic discipline (mandatory verification before finish, ban on substituting UI-cache writes for real send mechanisms, subtask checklist) but with all benchmark-specific recipes/app/DB names stripped. **58.1% is the cleanly-defensible improvement.**
+>
+> Both Tier 1 variants use Opus 4.7, max_turns=50. Generic-prompt-discipline contributes +12.8 pp over the v1 Opus 4.6 baseline; the leaked recipes added a further +6.0 pp on top.
+>
+> **Tier 1b ablation (Opus 4.7, 43.6%)** — same three discipline rules but stripped of v1's 25-item Android encyclopedia (filesystem layout, content URIs, intent extras, timestamp conventions, etc.). Encyclopedia turns out to be load-bearing: tasks needing standard Android API knowledge (sms / email / files / calendar) regress 14-50 pp without it. Discipline rules alone do NOT compensate. Mastodon and settings tasks are encyclopedia-insensitive (74% / 86% on both).
+>
+> **Sonnet 4.6 + Tier 1a (39.3%)** — gets only +1.7 pp from Tier 1a vs its own v1 baseline (37.6%), far less than Opus 4.7's +12.8 pp gain from the same prompt. Tier 1a's discipline rules require *follow-through* (decompose subtasks, query verify destinations, retry on verify-fail) and Sonnet executes these less consistently than Opus. Cost-per-success: Sonnet+T1a $1.69, Opus 4.7+T1a $2.29 — Sonnet cheaper per win, but solves 22 fewer tasks.
+>
+> **Thinking mode**: All Claude rows above use the Claude Code CLI default (no `--effort` flag → no extended thinking budget). Numbers are the no-thinking baseline. Adding `--effort high` is an untested upgrade path.
+>
+> ⭐ **`tier1a_pure` is the new clean record (66.7%) on Opus 4.7** — beats both `tier1a` (58.1%) and even the leaky `tier1` (64.1%). Has *only 3 documented bridge commands* (`adb`, `exec`, `finish`), drops v1's 25-item Android encyclopedia, drops the 14-command `mw_tools.py` helpers. The agent composes `adb shell sqlite3 ...`, `exec "docker exec ... psql ..."`, etc. from raw shell. Three discipline rules retained (verify, no-cache-shortcut, subtask checklist) + 3 non-obvious Android patterns (media scanner, corrupt DB, integer ID maps). ~1,400 tokens (vs `tier1a`'s 2,500). Bridge: `mw_env.py` (minimal).
+>
+> **Asymmetric finding: opposite optimal prompts for Opus vs Sonnet.** On Sonnet 4.6, `tier1a_pure` actually *regresses* to 32.5% (vs `tier1a`'s 39.3%, a -6.8 pp drop). The same minimal prompt that helps Opus (+8.6 pp) hurts Sonnet (-6.8 pp). Intuition: Opus is capable enough to discover schemas/URIs/intent extras itself via `find-files`/`pm list`/`docker ps` — the encyclopedia is distraction. Sonnet burns too many turns trying to discover the same info — the encyclopedia is a needed crutch. **Use minimal prompts only with strong models; weaker models benefit from richer scaffolding.**
+
+### Two-axis prompt design matrix (encyclopedia × helpers)
+
+The Tier 1 family varies along two orthogonal axes:
+- **Encyclopedia**: 25 Android-domain knowledge items (filesystem layout, content URIs, intent extras, timestamp conventions, force-stop semantics, Postgres discovery hints) — present in `tier1` / `tier1a` / minimax `tier1a`; absent in `tier1a_pure` / `tier1b`.
+- **Helpers**: bridge tooling — either **3 wrappers** (raw bash via `mw_env.py`: just `adb`/`exec`/`finish`; agent composes raw `adb shell sqlite3 ...`, `am start ...`, `content query ...`) or **14 helpers** (`mw_tools.py`: `pg`/`content`/`intent`/`json-read`/`service-status`/`http`/etc).
+
+| Model | | No encyclopedia | With encyclopedia |
+|---|---|---|---|
+| **Opus 4.7** | 3 wrappers | **66.7%** ⭐ (`tier1a_pure`) | not tested (`tier1c`) |
+| | 14 helpers | 43.6% (`tier1b`) | 58.1% (`tier1a`) |
+| **Sonnet 4.6** | 3 wrappers | 32.5% (`tier1a_pure`) | not tested |
+| | 14 helpers | not tested | **39.3%** ⭐ (`tier1a`) |
+| **minimax-m2.7** | 3 wrappers | 12.0% (`tier1a_pure`) | not tested |
+| | 14 helpers | 17.9% (`tier1b`) | **20.5%** ⭐ (`tier1a`) |
+
+**Decomposition (what each axis contributes):**
+
+| Model | Add helpers (no enc) | Add encyclopedia (14 helpers) | Optimal config |
+|---|---:|---:|---|
+| Opus 4.7 | **−23.1 pp** (HURTS) | +14.5 pp | **3 wrappers, no encyclopedia** |
+| minimax-m2.7 | +5.9 pp | +2.6 pp | 14 helpers + encyclopedia |
+| Sonnet 4.6 | not isolated | not isolated | 14 helpers + encyclopedia (best of tested) |
+
+**Rule of thumb:** Strong models penalize helpers (distraction); weak models benefit from helpers (scaffolding). Encyclopedia helps in both directions but is a smaller lever than the helper toolset.
 
 ### Paper Reference (MobileWorld Leaderboard, GUI-Only, max_steps=50)
 
@@ -146,35 +197,82 @@ Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)
 
 ## Per-Category Breakdown (Claude Code CLI)
 
-| Category | Opus 4.6 | Sonnet 4.6 |
-|----------|--------:|----------:|
-| mastodon (38) | **25/38 (66%)** | 17/38 (45%) |
-| other (18) | 7/18 (39%) | 7/18 (39%) |
-| mattermost (15) | 3/15 (20%) | 2/15 (13%) |
-| files (13) | 4/13 (31%) | **8/13 (62%)** |
-| settings (7) | 5/7 (71%) | 5/7 (71%) |
-| mall (7) | 0/7 (0%) | 0/7 (0%) |
-| email (5) | 2/5 (40%) | 2/5 (40%) |
-| calendar/alarm (5) | **3/5 (60%)** | 2/5 (40%) |
-| sms/messages (5) | **2/5 (40%)** | 1/5 (20%) |
-| map (2) | **2/2 (100%)** | 0/2 (0%) |
-| chrome (2) | 0/2 (0%) | 0/2 (0%) |
+| Category | Opus 4.6 v1 | Opus 4.7 T1 ⚠️ | Opus 4.7 T1a ✓ | Opus 4.7 T1a pure ⭐ | Opus 4.7 T1b | Sonnet 4.6 T1a ✓ | Sonnet 4.6 T1a pure |
+|----------|------------:|---------------:|----------------:|---------------------:|-------------:|------------------:|--------------------:|
+| mastodon (38)        | 25/38 (66%) | 30/38 (79%) | 28/38 (74%) | **31/38 (82%)** | 28/38 (74%) | 22/38 (58%) | 21/38 (55%) |
+| other (25)           | 7/25 (28%)  | 10/25 (40%) | 12/25 (48%) | **13/25 (52%)** | 4/25 (16%) | 5/25 (20%) | 0/25 (0%) |
+| mattermost (15)      | 3/15 (20%)  | 5/15 (33%)  | 4/15 (27%)  | **8/15 (53%)** | 3/15 (20%) | 2/15 (13%) | 2/15 (13%) |
+| files (13)           | 4/13 (31%)  | **10/13 (77%)** | 7/13 (54%) | 8/13 (62%) | 4/13 (31%) | 5/13 (38%) | 5/13 (38%) |
+| settings (7)         | 5/7 (71%)   | **6/7 (86%)** | **6/7 (86%)** | **6/7 (86%)** | **6/7 (86%)** | 4/7 (57%) | 5/7 (71%) |
+| calendar/alarm (7)   | 4/7 (57%)   | **5/7 (71%)** | **5/7 (71%)** | **5/7 (71%)** | 4/7 (57%) | 3/7 (43%) | 2/7 (29%) |
+| sms/messages (5)     | 2/5 (40%)   | 3/5 (60%)   | 2/5 (40%)   | **4/5 (80%)** | 1/5 (20%) | 3/5 (60%) | 1/5 (20%) |
+| email (4)            | 1/4 (25%)   | **4/4 (100%)** | 2/4 (50%) | 1/4 (25%) | 0/4 (0%) | 1/4 (25%) | 0/4 (0%) |
+| map (2)              | **2/2 (100%)** | **2/2 (100%)** | **2/2 (100%)** | **2/2 (100%)** | 1/2 (50%) | 1/2 (50%) | **2/2 (100%)** |
+| chrome (1)           | 0/1 (0%)    | 0/1 (0%)    | 0/1 (0%)    | 0/1 (0%) | 0/1 (0%) | 0/1 (0%) | 0/1 (0%) |
+| **TOTAL (117)**      | **53/117 (45.3%)** | **75/117 (64.1%)** | **68/117 (58.1%)** | **78/117 (66.7%)** ⭐ | **51/117 (43.6%)** | **46/117 (39.3%)** | **38/117 (32.5%)** |
+
+### Per-Category — minimax-m2.7 (across agent harnesses + prompts)
+
+| Category | Terminus_2 + tier1a | mini-swe + tier1a | Terminus_2 + tier1b | Terminus_2 + tier1a pure |
+|----------|--------------------:|------------------:|---------------------:|--------------------------:|
+| mastodon (38)        | 10/38 (26%) | 8/38 (21%)  | **12/38 (32%)** | 4/38 (11%) |
+| other (25)           | **4/25 (16%)** | 2/25 (8%) | 1/25 (4%) | **4/25 (16%)** |
+| mattermost (15)      | 0/15 (0%)   | 0/15 (0%) | 0/15 (0%) | 1/15 (7%) |
+| files (13)           | 3/13 (23%)  | **6/13 (46%)** | 2/13 (15%) | 1/13 (8%) |
+| settings (7)         | **4/7 (57%)** | **4/7 (57%)** | 3/7 (43%) | **4/7 (57%)** |
+| calendar/alarm (7)   | 0/7 (0%)    | 1/7 (14%) | 0/7 (0%) | 0/7 (0%) |
+| sms/messages (5)     | **1/5 (20%)** | 0/5 (0%) | **1/5 (20%)** | 0/5 (0%) |
+| email (4)            | 0/4 (0%)    | 0/4 (0%) | **1/4 (25%)** | 0/4 (0%) |
+| map (2)              | 1/2 (50%)   | 0/2 (0%) | 1/2 (50%) | 0/2 (0%) |
+| chrome (1)           | **1/1 (100%)** | **1/1 (100%)** | 0/1 (0%) | 0/1 (0%) |
+| **TOTAL (117)**      | **24/117 (20.5%)** ⭐ | **22/117 (18.8%)** | **21/117 (17.9%)** | **14/117 (12.0%)** |
+
+### Agent harness comparison (same model + same prompt)
+
+Terminus_2 (JSON parser) vs mini-swe-agent (bash code-block parser), both with minimax-m2.7 + tier1a config:
+- **Both PASS:** 16 tasks
+- **Both FAIL:** 87 tasks
+- **MiniSWE only:** 6 tasks (mostly files/calendar/chrome)
+- **Terminus_2 only:** 8 tasks (mostly mattermost backend, sms, map)
+
+Net: Terminus_2 wins by 2 tasks (+1.7 pp) — within run-to-run variance. Per-category, the harnesses split: MiniSWE excels at files (+23 pp), Terminus_2 excels at structured-action tasks (sms/map/email).
+
+**MiniSWE hit max_turns 116/117 (99%)** vs Terminus_2's typical 70%. MiniSWE's bash-block format makes minimax less likely to emit a clean `finish` call within the budget — most "completed" tasks are auto-finished from the trailing text. Despite this, SR is comparable, suggesting auto-finish + verify-after-act salvages most cases.
+
+Notes:
+- **Tier 1a pure beats every other variant including the leaky Tier 1.** Removing the 14-command `mw_tools.py` wrapper and the 25-item Android encyclopedia *helped*. Big wins on `mattermost` (+27 pp vs Tier 1a), `sms/messages` (+40 pp), `mastodon` (+8 pp). One regression: `email` (-25 pp). The minimal prompt forces the agent to discover schemas / URIs / app paths fresh per task, which beats canned (potentially stale) prior knowledge.
+- **Tier 1 → Tier 1a deltas** show where the leaked app-specific recipes helped most: `email` (4/4 → 2/4) and `files` (10/13 → 7/13). Leakage benefited cross-app email and file tasks where recipes named specific apps/DBs.
+- **Tier 1a → Tier 1b deltas** were misleading: the 43.6% drop seemed to indicate "encyclopedia is load-bearing," but `tier1a_pure` (no encyclopedia, no helpers, just discipline + 3 patterns) lands at 66.7%. The actual culprit was Tier 1b retaining 14 documented helper commands as distraction.
+- **Sonnet 4.6 + Tier 1a vs Opus 4.7 + Tier 1a** — Sonnet underperforms Opus by 19 pp despite the same prompt. Discipline rules require self-imposed protocols (decompose subtasks, query verify destinations, retry on verify-fail) that Sonnet executes less consistently. Sonnet is 50% cheaper and barely beats its own v1 baseline (37.6% → 39.3%), suggesting Tier 1a's lift is mostly an Opus-only benefit on this task family.
+- **Asymmetric prompt-size finding**: minimizing the prompt has *opposite* effects on the two models.
+  - Opus 4.7: `tier1a` (58.1%) → `tier1a_pure` (66.7%) = **+8.6 pp** (less is more)
+  - Sonnet 4.6: `tier1a` (39.3%) → `tier1a_pure` (32.5%) = **-6.8 pp** (less is worse)
+  - Sonnet's biggest pure-only regression is `other` (20% → 0%) — without the encyclopedia, Sonnet can't compose the right `adb shell content query`/`am start --extra` commands and burns turns. Opus self-discovers the same. **Practical guidance: minimal prompts only with strong models; weaker models need richer scaffolding.**
 
 ## Run Details
 
-| | Claude Opus 4.6 | Claude Sonnet 4.6 | Kimi K2.5 | MAI-UI-8B (0.11) | UI-Venus-1.5-30B | MAI-UI-8B (0.13) |
-|--|-----------------|-------------------|-----------|------------------|------------------|------------------|
-| Date | 2026-04-09 | 2026-04-09 | 2026-04-08 | 2026-04-09 | 2026-04-08 | 2026-04-08 |
-| Runner | `run_claude_cli.py` | `run_claude_cli.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` |
-| Prompt/Agent | `mw_terminal_expert` | `mw_terminal_expert` | `general_e2e` | `mai_ui_agent` | `ui_venus_agent` | `mai_ui_agent` |
-| Action space | ADB shell + tools | ADB shell + tools | GUI (tap/swipe) | GUI (tap/swipe) | GUI (tap/swipe) | GUI (tap/swipe) |
-| vLLM version | — | — | — | **0.11.0** | — | 0.13.0 |
-| Max turns/steps | 50 | 50 | 50 | 50 | 50 | 50 |
-| Avg turns/task | 36.7 | 36.1 | 23.5 | 32.2 | 18.7 | — |
-| Temperature | — | — | 0.0 | 0.0 | 0.0 | 0.0 |
-| Avg time/task | 194s | 174s | 265s | 278s | 111s | — |
-| Avg input tokens/task | 961,919 | 1,021,701 | 290,828 | 297,280 | 24,554 | — |
-| Avg output tokens/task | 7,265 | 7,685 | 2,909 | 1,919 | 655 | — |
-| Total cost | $95.89 | $60.77 | — | — | — | — |
-| max-model-len | — | — | — | 32,768 | 8,192 | 8,192 |
-| Results dir | `ClaudeCodeCLI_MW_claudeopus46_260409_2253/` | `ClaudeCodeCLI_MW_claudesonnet46_260409_1602/` | `GUIAgent_general_e2e_moonshotaikimik25_260408_0252/` | `GUIAgent_mai_ui_agent_..._260409_0204/` | `GUIAgent_ui_venus_agent_UIVenus1530BA3B_260408_0157/` | `GUIAgent_mai_ui_agent_..._260408_1155/` |
+| | Opus 4.7 Tier 1a pure ⭐ | Opus 4.7 Tier 1 ⚠️ | Opus 4.7 Tier 1a ✓ | Opus 4.7 Tier 1b | Sonnet 4.6 Tier 1a ✓ | Sonnet 4.6 Tier 1a pure | Opus 4.6 v1 | Sonnet 4.6 v1 | Kimi K2.5 | MAI-UI-8B (0.11) | UI-Venus-1.5-30B | MAI-UI-8B (0.13) |
+|--|-------------------------|-------------------|---------------------|------------------|----------------------|-------------------------|-------------|---------------|-----------|------------------|------------------|------------------|
+| Date | 2026-04-20 | 2026-04-19 | 2026-04-19 | 2026-04-19 | 2026-04-19 | 2026-04-20 | 2026-04-09 | 2026-04-09 | 2026-04-08 | 2026-04-09 | 2026-04-08 | 2026-04-08 |
+| Runner | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` | `run_gui_agent_broker.py` |
+| Prompt/Agent | `mw_terminal_expert_tier1a_pure` | `mw_terminal_expert_tier1` | `mw_terminal_expert_tier1a` | `mw_terminal_expert_tier1b` | `mw_terminal_expert_tier1a` | `mw_terminal_expert_tier1a_pure` | `mw_terminal_expert` | `mw_terminal_expert` | `general_e2e` | `mai_ui_agent` | `ui_venus_agent` | `mai_ui_agent` |
+| Action space | raw bash (adb/exec/finish only) | ADB shell + tools | ADB shell + tools | ADB shell + tools | ADB shell + tools | raw bash (adb/exec/finish only) | ADB shell + tools | ADB shell + tools | GUI (tap/swipe) | GUI (tap/swipe) | GUI (tap/swipe) | GUI (tap/swipe) |
+| Bridge script | `mw_env.py` (minimal) | `mw_tools.py` | `mw_tools.py` | `mw_tools.py` | `mw_tools.py` | `mw_env.py` (minimal) | `mw_tools.py` | `mw_tools.py` | — | — | — | — |
+| Thinking (`--effort`) | — (default) | — (default) | — (default) | — (default) | — (default) | — (default) | — (default) | — (default) | — | — | — | — |
+| vLLM version | — | — | — | — | — | — | — | — | — | **0.11.0** | — | 0.13.0 |
+| Max turns/steps | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 | 50 |
+| Avg input tokens/task | — | 1,371,964 | 1,472,582 | — | — | 1,224,594 | 961,919 | 1,021,701 | 290,828 | 297,280 | 24,554 | — |
+| Avg output tokens/task | — | — | — | — | — | — | 7,265 | 7,685 | 2,909 | 1,919 | 655 | — |
+| Total cost | **$178.73** | **$148.97** | **$155.83** | — | **$77.72** | **$77.13** | $95.89 | $60.77 | — | — | — | — |
+| Cost per win | $2.29 | $1.99 | $2.29 | — | $1.69 | $2.03 | $1.81 | $1.38 | — | — | — | — |
+| max-model-len | — | — | — | — | — | — | — | — | — | 32,768 | 8,192 | 8,192 |
+| Results dir | `ClaudeCodeCLI_MW_claudeopus47_260420_0253_full_tier1a_pure_t50/` | `ClaudeCodeCLI_MW_claudeopus47_260419_0105_full_tier1_t50/` | `ClaudeCodeCLI_MW_claudeopus47_260419_0153_full_tier1a_t50/` | `ClaudeCodeCLI_MW_claudeopus47_260419_1411_sub32_tier1b/` | `ClaudeCodeCLI_MW_claudesonnet46_260419_2120_full_tier1a_t50/` | `ClaudeCodeCLI_MW_claudesonnet46_260420_1219_full_tier1a_pure_t50/` | `ClaudeCodeCLI_MW_claudeopus46_260409_2253/` | `ClaudeCodeCLI_MW_claudesonnet46_260409_1602/` | `GUIAgent_general_e2e_moonshotaikimik25_260408_0252/` | `GUIAgent_mai_ui_agent_..._260409_0204/` | `GUIAgent_ui_venus_agent_UIVenus1530BA3B_260408_0157/` | `GUIAgent_mai_ui_agent_..._260408_1155/` |
+
+### Tier 1 / Tier 1a / Tier 1b Prompt Design
+
+- **`mw_terminal_expert_tier1`** (`eval-runners/agents/cli/claude_sdk/prompts/mw_terminal_expert_tier1.py`) — adds three sections to v1: **mandatory verification before finish**, **forbidden shortcuts** (no `state.json` / UI-cache writes), **subtask checklist on turn 1**. Includes specific verification recipes naming Mattermost DBs, gmailclone Postgres, mmctl. **⚠️ Contains benchmark-leakage; use only for ceiling estimates.**
+- **`mw_terminal_expert_tier1a`** (`eval-runners/agents/cli/claude_sdk/prompts/mw_terminal_expert_tier1a.py`) — same three sections but **all benchmark-specific app/DB/CLI/file names removed**. The agent must discover apps and tables via `find-files` / `pg ... "\dt"` / `sql ... ".tables"`. Inherits v1's 25-item Android encyclopedia. **✓ Cleanly defensible improvement.**
+- **`mw_terminal_expert_tier1b`** (`eval-runners/agents/cli/claude_sdk/prompts/mw_terminal_expert_tier1b.py`) — minimalist build (`clean_optimized` philosophy + the three discipline rules), stripped of v1's Android encyclopedia but **kept all 14 `mw_tools.py` helper commands documented**. Result: 43.6%, below v1 baseline. Initially attributed to "encyclopedia is load-bearing"; `tier1a_pure` later showed the actual culprit was the 14 documented helpers being distracting.
+- **`mw_terminal_expert_tier1a_pure`** (`eval-runners/agents/cli/claude_sdk/prompts/mw_terminal_expert_tier1a_pure.py`) — **⭐ best clean variant (66.7%)**. Documents only 3 bridge commands (`adb`, `exec`, `finish`), no `mw_tools.py` helpers, no v1 encyclopedia. Agent composes raw `adb shell sqlite3 ...`, `exec "docker exec ... psql ..."`, etc. Bridge: `mw_env.py` (minimal). Carries the three Tier 1 generic discipline rules + 3 non-obvious Android patterns from `clean_optimized`. ~1,400 tokens. Beats every other variant including the leaky `tier1` (64.1%).
+- The Tier 1a → Tier 1 delta (+6.0 pp) quantifies how much the leaked recipes contribute on top of generic discipline.
+- The Tier 1a → Tier 1a pure delta (**+8.6 pp**) shows that *removing* documented helpers and the encyclopedia improves SR — the agent makes better decisions when forced to discover schemas/URIs/paths fresh per task.
