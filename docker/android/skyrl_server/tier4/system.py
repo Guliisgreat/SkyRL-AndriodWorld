@@ -71,6 +71,8 @@ class Tier4HiddenStateListAppVersions(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = getattr(env, "interaction_cache", "") or ""
     for app_name, expected_version in self._ground_truth.items():
       if app_name not in cache:

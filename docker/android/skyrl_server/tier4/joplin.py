@@ -125,6 +125,8 @@ class Tier4FilterJoplinContainsNotContains(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = getattr(env, 'interaction_cache', '') or ''
     for title in self._ground_truth:
       if title not in cache:
@@ -186,6 +188,8 @@ class Tier4DedupJoplinSameTitleNotes(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = getattr(env, 'interaction_cache', '') or ''
     for title in self._ground_truth:
       if title not in cache:

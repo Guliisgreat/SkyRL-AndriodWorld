@@ -82,6 +82,110 @@ GUI-only task IDs: 0, 1, 8, 20, 28, 29, 30, 37, 40, 47, 55, 75, 76, 78, 80
 
 ---
 
+# Tier 4 ADB-Exclusive Task Evaluation Results
+
+Benchmark: `all_tasks_seed7.jsonl` (50 ADB-exclusive tasks, seed=7)
+Docker image: `androidworld:2026plusswipe_tier4`
+
+These tasks extend AndroidWorld with 50 tasks specifically designed so that
+CLI/ADB agents can solve them efficiently while GUI agents would need
+prohibitively many error-prone steps (bulk file ops, database queries,
+cross-app data joins, hidden system state inspection).
+
+## Overall
+
+| Agent | Model | Action Space | Prompt | API | Max Turns | Success | Rate | Avg Steps | Avg In Tokens | Avg Out Tokens |
+|-------|-------|-------------|--------|-----|----------:|--------:|-----:|----------:|--------------:|---------------:|
+| Claude Code CLI | claude-opus-4-6 | ADB shell | `clean_optimized_tools` | Anthropic | 50 | **37/50** | **74.0%** | 16.0 | 333,024 | 3,245 |
+| Claude Code CLI | claude-opus-4-6 | ADB shell | `clean_optimized` | Anthropic | 50 | 36/50 | 72.0% | 18.0 | 394,933 | 3,944 |
+| Claude Code CLI | claude-sonnet-4 | ADB shell | `clean_optimized_tools` | Anthropic | 50 | 32/50 | 64.0% | 14.2 | 356,139 | 3,502 |
+| Claude Code CLI | claude-sonnet-4 | ADB shell | `clean_optimized` | Anthropic | 50 | 29/50 | 58.0% | 14.6 | 364,902 | 3,710 |
+| Qwen3-VL-32B | qwen3-vl-32b-instruct | GUI (pixel swipe) | — | OpenRouter | 50 | 16/50 | 32.0% | 12.6 | 47,768 | 1,535 |
+| MAI-UI-8B | MAI-UI-8B | GUI (tap/swipe) | — | Local vLLM | 50 | 15/50 | 30.0% | 24.4 | 233,223 | 2,107 |
+| UI-Venus-1.5-8B | UI-Venus-1.5-8B | GUI (tap/swipe) | — | Local vLLM | 50 | 8/50 | 16.0% | 5.2 | 16,837 | 504 |
+
+## Per-Task Results (Opus 4.6, 50 turns)
+
+| # | Task | Steps | Result |
+|---|------|------:|--------|
+| 0 | Tier4BulkDeleteTmpInDownloads | 57 | OK |
+| 1 | Tier4CoverageNoTmpInDownloads | 33 | OK |
+| 2 | Tier4HiddenStateListAppVersions | 36 | OK |
+| 3 | Tier4AggregationCountUnreadSMS | 25 | OK |
+| 4 | Tier4CrossAppSmsNumbersNotInContacts | 30 | OK |
+| 5 | Tier4BulkRenameScreenshots | 37 | OK |
+| 6 | Tier4BulkMoveLargeFiles | 26 | OK |
+| 7 | Tier4FilterRecentLogFiles | 19 | OK |
+| 8 | Tier4BulkAppendFooterToMarkdown | 41 | OK |
+| 9 | Tier4AggregationLongestMarkorNote | 28 | FAIL |
+| 10 | Tier4TopKMarkorMostModifiedNotes | 42 | OK |
+| 11 | Tier4FilterDeleteOldNonContactKeywordSms | 27 | OK |
+| 12 | Tier4TopKSmsThreadsByCount | 51 | FAIL |
+| 13 | Tier4CrossAppContactsNoRecentSms | 41 | OK |
+| 14 | Tier4FilterContactsBirthdayNoPhone | 59 | OK |
+| 15 | Tier4AggregationLongestContactName | 29 | OK |
+| 16 | Tier4DedupContactsDuplicatePhones | 43 | OK |
+| 17 | Tier4DedupMergeContactsSamePhone | 42 | OK |
+| 18 | Tier4BulkRecategorizeExpense | 23 | OK |
+| 19 | Tier4FilterExpenseHighTravelLastMonth | 36 | OK |
+| 20 | Tier4AggregationExpenseCategoryTop3 | 12 | FAIL |
+| 21 | Tier4DedupExpenseSuspectedDuplicates | 37 | OK |
+| 22 | Tier4TopKExpenseHighestAmount | 31 | OK |
+| 23 | Tier4CrossAppExpenseToMarkorCalendar | 50 | OK |
+| 24 | Tier4BulkChangePriorityTasks | 49 | OK |
+| 25 | Tier4CoverageOverdueTasksCompleted | 29 | OK |
+| 26 | Tier4FilterJoplinContainsNotContains | 40 | OK |
+| 27 | Tier4DedupJoplinSameTitleNotes | 40 | OK |
+| 28 | Tier4AggregationOpenTracksWeeklyStats | 29 | OK |
+| 29 | Tier4TopKOpenTracksFastestActivity | 36 | OK |
+| 30 | Tier4CrossAppOpenTracksToTasks | 51 | OK |
+| 31 | Tier4FilterRetroMusicMultiCondition | 45 | OK |
+| 32 | Tier4TopKRetroMusicLongestSongs | 50 | OK |
+| 33 | Tier4CrossAppBroccoliToMarkorIndex | 34 | OK |
+| 34 | Tier4CrossAppFilesCreatedDuringEvents | 35 | OK |
+| 35 | Tier4CrossAppMarkorPhonesVsContacts | 37 | OK |
+| 36 | Tier4AggregationDownloadSizeTop3 | 36 | OK |
+| 37 | Tier4TopKLargestDownloadFiles | 35 | OK |
+| 38 | Tier4CoverageAllSmsRead | 21 | FAIL |
+| 39 | Tier4HiddenStateLocationPermissions | 55 | FAIL |
+| 40 | Tier4HiddenStateAudioRouting | 41 | OK |
+| 41 | Tier4CoverageAppsCameraPermission | 41 | FAIL |
+| 42 | Tier4CoverageWifiConnected | 33 | FAIL |
+| 43 | Tier4BulkDeleteCalendarTestEvents | 26 | OK |
+| 44 | Tier4CrossAppCalendarToMarkor | 28 | OK |
+| 45 | Tier4FilterCalendarLongNoReminder | 52 | OK |
+| 46 | Tier4AggregationCalendarTotalDuration | 40 | FAIL |
+| 47 | Tier4DedupCalendarDeleteDuplicateEvents | 29 | OK |
+| 48 | Tier4TopKCalendarEarliestEvent | 51 | OK |
+| 49 | Tier4CoverageCalendarEventsHaveReminders | 51 | FAIL |
+
+## Key Observations
+
+- **CLI agents outperform GUI agents** — Opus 4.6 CLI achieves 74% vs best GUI (Qwen3-VL-32B) at 32%, a 2.3x gap. GUI agents can solve tasks where information is visually accessible (reading counts, browsing lists, editing text), but fail on bulk operations, database queries, system introspection, and cross-app data joins.
+- **Specialized tools help** — `clean_optimized_tools` (with sql/read-file/write-file/find-files) consistently outperforms `clean_optimized` (adb only): Opus 74% vs 72%, Sonnet 64% vs 58%. The gain comes from automatic shell escaping in database and file operations.
+- **Model capability matters** — Opus 4.6 (74%) vs Sonnet 4 (64%) with the same tools prompt. The gap narrows with tools (was larger without).
+- **Remaining hard tasks** — 13 tasks Opus fails include: cross-app joins (contacts+SMS, expense+calendar), coverage checks (permissions, WiFi, SMS read status), and temporal reasoning (calendar duration). These require multi-step schema discovery and precise data manipulation.
+
+## Run Details
+
+| | Opus 4.6 tools | Opus 4.6 | Sonnet 4 tools | Sonnet 4 | Qwen3-VL-32B | MAI-UI-8B | Venus-1.5-8B |
+|--|----------------|----------|----------------|----------|--------------|-----------|--------------|
+| Date | 2026-04-16 | 2026-04-16 | 2026-04-16 | 2026-04-16 | 2026-04-16 | 2026-04-16 | 2026-04-16 |
+| Runner | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_claude_cli.py` | `run_qwen3vl.py` | `run_mai.py` | `run_venus.py` |
+| Prompt/Agent | `clean_optimized_tools` | `clean_optimized` | `clean_optimized_tools` | `clean_optimized` | `Qwen3VLAgentMCP` | `MAIUINaivigationAgent` | `VenusNaviAgent` |
+| Docker image | `2026plusswipe_tier4` | `2026plusswipe_tier4` | `2026plusswipe_tier4` | `2026plusswipe_tier4` | `2026plusswipe_tier4` | `2026plusswipe_tier4` | `2026plusswipe_tier4` |
+| Max turns | 50 | 50 | 50 | 50 | 50 | 50 | 50 |
+| Effort | high | high | high | high | — | — | — |
+| vLLM version | — | — | — | — | — | **0.11.0** | **0.11.0** |
+| Avg steps/task | 16.0 | 18.0 | 14.2 | 14.6 | 12.6 | 24.4 | 5.2 |
+| Avg input tokens/task | 333,024 | 394,933 | 356,139 | 364,902 | 47,768 | 233,223 | 16,837 |
+| Avg output tokens/task | 3,245 | 3,944 | 3,502 | 3,710 | 1,535 | 2,107 | 504 |
+| Total input tokens | 16,651,189 | 19,746,655 | 17,806,932 | 18,245,096 | 2,388,403 | 11,661,141 | 841,833 |
+| Total output tokens | 162,257 | 197,203 | 175,122 | 185,525 | 76,733 | 105,351 | 25,194 |
+| Results dir | `..._claudeopus4_260416_1329/` | `..._claudeopus4_260416_1316/` | `..._claudesonnet4_260416_1250/` | `..._claudesonnet4_260416_1301/` | `..._qwen3vl32b_260416_1359/` | `..._MAIUI8B_260416_1451/` | `..._Venus158B_260416_1419/` |
+
+---
+
 # MobileWorld Evaluation Results
 
 Benchmark: `gui_only_tasks.jsonl` (117 GUI-only tasks)

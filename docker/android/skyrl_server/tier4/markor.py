@@ -65,6 +65,8 @@ class Tier4BulkAppendFooterToMarkdown(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._filenames:
+      return 0.0
     for name in self._filenames:
       res = adb_utils.issue_generic_request(
           ["shell", "tail", "-2", f"{_MARKOR_NOTES_DIR}/{name}"], env.controller
@@ -181,6 +183,8 @@ class Tier4TopKMarkorMostModifiedNotes(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = getattr(env, "interaction_cache", "") or ""
     for name in self._ground_truth:
       if name not in cache:
