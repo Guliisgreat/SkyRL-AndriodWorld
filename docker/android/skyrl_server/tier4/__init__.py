@@ -95,6 +95,40 @@ __all__ = [
     "Tier4DedupCalendarDeleteDuplicateEvents",
     "Tier4TopKCalendarEarliestEvent",
     "Tier4CoverageCalendarEventsHaveReminders",
+    # ── tier4_extra ──────────────────────────────────────────────────────
+    # System (5)
+    "Tier4ExtraHiddenStateRemainingStorage",
+    "Tier4ExtraHiddenStateRecentInstalls",
+    "Tier4ExtraHiddenStateUptime",
+    "Tier4ExtraHiddenStateBatteryDrain",
+    "Tier4ExtraHiddenStateMobileDataUsage",
+    # SMS (4)
+    "Tier4ExtraAggregationSmsAvgLength",
+    "Tier4ExtraFilterSmsContainingUrl",
+    "Tier4ExtraTopKSmsOldestMessages",
+    "Tier4ExtraCoverageSmsAllFromKnownContacts",
+    # Files (3)
+    "Tier4ExtraAggregationFileCountByExtension",
+    "Tier4ExtraFilterEmptyFilesInDownloads",
+    "Tier4ExtraBulkFlattenSubdirectories",
+    # Calendar (4)
+    "Tier4ExtraAggregationCalendarEventsPerDay",
+    "Tier4ExtraFilterCalendarWeekendEvents",
+    "Tier4ExtraTopKCalendarLongestEvents",
+    "Tier4ExtraBulkAddReminderToAllEvents",
+    # Expense (5)
+    "Tier4ExtraAggregationExpenseAvgPerCategory",
+    "Tier4ExtraFilterExpenseAboveAverage",
+    "Tier4ExtraTopKExpenseDaysMostSpent",
+    "Tier4ExtraCoverageExpenseAllCategorized",
+    "Tier4ExtraBulkDeleteSmallExpenses",
+    # Cross-app (6)
+    "Tier4ExtraCrossAppContactsToMarkor",
+    "Tier4ExtraCrossAppCalendarSmsConflicts",
+    "Tier4ExtraCrossAppExpenseVsCalendar",
+    "Tier4ExtraCrossAppSmsKeywordToTasks",
+    "Tier4ExtraCrossAppOpenTracksToMarkor",
+    "Tier4ExtraCrossAppJoplinToCalendar",
 ]
 
 Tier4BulkDeleteTmpInDownloads = files.Tier4BulkDeleteTmpInDownloads
@@ -147,3 +181,42 @@ Tier4AggregationCalendarTotalDuration = calendar.Tier4AggregationCalendarTotalDu
 Tier4DedupCalendarDeleteDuplicateEvents = calendar.Tier4DedupCalendarDeleteDuplicateEvents
 Tier4TopKCalendarEarliestEvent = calendar.Tier4TopKCalendarEarliestEvent
 Tier4CoverageCalendarEventsHaveReminders = calendar.Tier4CoverageCalendarEventsHaveReminders
+
+# ── tier4_extra re-exports ───────────────────────────────────────────────
+# System
+Tier4ExtraHiddenStateRemainingStorage = system.Tier4ExtraHiddenStateRemainingStorage
+Tier4ExtraHiddenStateRecentInstalls = system.Tier4ExtraHiddenStateRecentInstalls
+Tier4ExtraHiddenStateUptime = system.Tier4ExtraHiddenStateUptime
+Tier4ExtraHiddenStateBatteryDrain = system.Tier4ExtraHiddenStateBatteryDrain
+Tier4ExtraHiddenStateMobileDataUsage = system.Tier4ExtraHiddenStateMobileDataUsage
+# Backward-compatible aliases (old names → new classes)
+Tier4ExtraHiddenStateBatteryHealth = system.Tier4ExtraHiddenStateBatteryHealth
+Tier4ExtraHiddenStateDisabledApps = system.Tier4ExtraHiddenStateDisabledApps
+Tier4ExtraHiddenStateAppStorageUsage = system.Tier4ExtraHiddenStateAppStorageUsage
+# SMS
+Tier4ExtraAggregationSmsAvgLength = sms.Tier4ExtraAggregationSmsAvgLength
+Tier4ExtraFilterSmsContainingUrl = sms.Tier4ExtraFilterSmsContainingUrl
+Tier4ExtraTopKSmsOldestMessages = sms.Tier4ExtraTopKSmsOldestMessages
+Tier4ExtraCoverageSmsAllFromKnownContacts = sms.Tier4ExtraCoverageSmsAllFromKnownContacts
+# Files
+Tier4ExtraAggregationFileCountByExtension = files.Tier4ExtraAggregationFileCountByExtension
+Tier4ExtraFilterEmptyFilesInDownloads = files.Tier4ExtraFilterEmptyFilesInDownloads
+Tier4ExtraBulkFlattenSubdirectories = files.Tier4ExtraBulkFlattenSubdirectories
+# Calendar
+Tier4ExtraAggregationCalendarEventsPerDay = calendar.Tier4ExtraAggregationCalendarEventsPerDay
+Tier4ExtraFilterCalendarWeekendEvents = calendar.Tier4ExtraFilterCalendarWeekendEvents
+Tier4ExtraTopKCalendarLongestEvents = calendar.Tier4ExtraTopKCalendarLongestEvents
+Tier4ExtraBulkAddReminderToAllEvents = calendar.Tier4ExtraBulkAddReminderToAllEvents
+# Expense
+Tier4ExtraAggregationExpenseAvgPerCategory = expense.Tier4ExtraAggregationExpenseAvgPerCategory
+Tier4ExtraFilterExpenseAboveAverage = expense.Tier4ExtraFilterExpenseAboveAverage
+Tier4ExtraTopKExpenseDaysMostSpent = expense.Tier4ExtraTopKExpenseDaysMostSpent
+Tier4ExtraCoverageExpenseAllCategorized = expense.Tier4ExtraCoverageExpenseAllCategorized
+Tier4ExtraBulkDeleteSmallExpenses = expense.Tier4ExtraBulkDeleteSmallExpenses
+# Cross-app
+Tier4ExtraCrossAppContactsToMarkor = cross_app.Tier4ExtraCrossAppContactsToMarkor
+Tier4ExtraCrossAppCalendarSmsConflicts = cross_app.Tier4ExtraCrossAppCalendarSmsConflicts
+Tier4ExtraCrossAppExpenseVsCalendar = cross_app.Tier4ExtraCrossAppExpenseVsCalendar
+Tier4ExtraCrossAppSmsKeywordToTasks = cross_app.Tier4ExtraCrossAppSmsKeywordToTasks
+Tier4ExtraCrossAppOpenTracksToMarkor = cross_app.Tier4ExtraCrossAppOpenTracksToMarkor
+Tier4ExtraCrossAppJoplinToCalendar = cross_app.Tier4ExtraCrossAppJoplinToCalendar

@@ -446,3 +446,182 @@ class Tier4TopKLargestDownloadFiles(task_eval.TaskEval):
   @classmethod
   def generate_random_params(cls) -> dict[str, Any]:
     return {}
+
+
+# ── tier4_extra ──────────────────────────────────────────────────────────
+
+
+class Tier4ExtraAggregationFileCountByExtension(task_eval.TaskEval):
+  """Count files per extension in Downloads. ADB-exclusive (aggregation)."""
+
+  app_names = ("files",)
+  complexity = 1.5
+  schema = {"type": "object", "properties": {}, "required": []}
+  template = (
+      "Count how many files of each extension type (.txt, .log, .bin, .dat)"
+      " are in the Downloads folder. Output the counts per extension."
+  )
+
+  def initialize_task(self, env: interface.AsyncEnv) -> None:
+    super().initialize_task(env)
+    self._filenames: list[str] = []
+    ext_counts = {".txt": 3, ".log": 2, ".bin": 4, ".dat": 1}
+    self._ground_truth: dict[str, int] = dict(ext_counts)
+    for ext, count in ext_counts.items():
+      for i in range(count):
+        name = f"tier4ext_count_{i}{ext}"
+        file_utils.create_file(
+            name, device_constants.DOWNLOAD_DATA, env.controller, content="data"
+        )
+        self._filenames.append(name)
+
+  def tear_down(self, env: interface.AsyncEnv) -> None:
+    for name in self._filenames:
+      adb_utils.issue_generic_request(
+          ["shell", "rm", "-f", f"{device_constants.DOWNLOAD_DATA}/{name}"],
+          env.controller,
+      )
+    super().tear_down(env)
+
+  def is_successful(self, env: interface.AsyncEnv) -> float:
+    super().is_successful(env)
+    cache = getattr(env, "interaction_cache", "") or ""
+    # Check that each count appears in the output
+    for ext, count in self._ground_truth.items():
+      if str(count) not in cache:
+        return 0.0
+    return 1.0
+
+  @classmethod
+  def generate_random_params(cls) -> dict[str, Any]:
+    return {}
+
+
+# ── tier4_extra ──
+
+
+class Tier4ExtraFilterEmptyFilesInDownloads(task_eval.TaskEval):
+  """List zero-byte files in Downloads. ADB-exclusive (stat check)."""
+
+  app_names = ("files",)
+  complexity = 1.2
+  schema = {"type": "object", "properties": {}, "required": []}
+  template = (
+      "List all zero-byte (empty) files in the Downloads folder."
+      " Output the filenames."
+  )
+
+  def initialize_task(self, env: interface.AsyncEnv) -> None:
+    super().initialize_task(env)
+    self._all_names: list[str] = []
+    self._ground_truth: list[str] = []
+    # Create 3 empty files
+    for i in range(3):
+      name = f"tier4ext_empty_{random.randint(1000, 9999)}.txt"
+      adb_utils.issue_generic_request(
+          ["shell", "touch", f"{device_constants.DOWNLOAD_DATA}/{name}"],
+          env.controller,
+      )
+      self._all_names.append(name)
+      self._ground_truth.append(name)
+    # Create 2 non-empty files
+    for i in range(2):
+      name = f"tier4ext_notempty_{random.randint(1000, 9999)}.txt"
+      file_utils.create_file(
+          name, device_constants.DOWNLOAD_DATA, env.controller,
+          content="has content"
+      )
+      self._all_names.append(name)
+
+  def tear_down(self, env: interface.AsyncEnv) -> None:
+    for name in self._all_names:
+      adb_utils.issue_generic_request(
+          ["shell", "rm", "-f", f"{device_constants.DOWNLOAD_DATA}/{name}"],
+          env.controller,
+      )
+    super().tear_down(env)
+
+  def is_successful(self, env: interface.AsyncEnv) -> float:
+    super().is_successful(env)
+    cache = getattr(env, "interaction_cache", "") or ""
+    for name in self._ground_truth:
+      if name not in cache:
+        return 0.0
+    return 1.0
+
+  @classmethod
+  def generate_random_params(cls) -> dict[str, Any]:
+    return {}
+
+
+# ── tier4_extra ──
+
+
+class Tier4ExtraBulkFlattenSubdirectories(task_eval.TaskEval):
+  """Move all files from subdirectories into Downloads root. ADB-exclusive."""
+
+  app_names = ("files",)
+  complexity = 1.5
+  schema = {"type": "object", "properties": {}, "required": []}
+  template = (
+      "Move all files from any subdirectories within Downloads"
+      " (/storage/emulated/0/Download/) into the Downloads root folder,"
+      " then remove the empty subdirectories."
+  )
+
+  def initialize_task(self, env: interface.AsyncEnv) -> None:
+    super().initialize_task(env)
+    self._subdirs: list[str] = []
+    self._files: list[str] = []
+    # Create 2 subdirectories with files
+    for i in range(2):
+      subdir = f"tier4ext_subdir_{random.randint(1000, 9999)}"
+      subdir_path = f"{device_constants.DOWNLOAD_DATA}/{subdir}"
+      adb_utils.issue_generic_request(
+          ["shell", "mkdir", "-p", subdir_path], env.controller
+      )
+      self._subdirs.append(subdir)
+      for j in range(2):
+        fname = f"tier4ext_nested_{i}_{j}.txt"
+        file_utils.create_file(fname, subdir_path, env.controller, content="nested")
+        self._files.append(fname)
+
+  def tear_down(self, env: interface.AsyncEnv) -> None:
+    for fname in self._files:
+      adb_utils.issue_generic_request(
+          ["shell", "rm", "-f", f"{device_constants.DOWNLOAD_DATA}/{fname}"],
+          env.controller,
+      )
+    for subdir in self._subdirs:
+      adb_utils.issue_generic_request(
+          ["shell", "rm", "-rf", f"{device_constants.DOWNLOAD_DATA}/{subdir}"],
+          env.controller,
+      )
+    super().tear_down(env)
+
+  def is_successful(self, env: interface.AsyncEnv) -> float:
+    super().is_successful(env)
+    # All files should be in root Downloads
+    for fname in self._files:
+      res = adb_utils.issue_generic_request(
+          ["shell", "find", device_constants.DOWNLOAD_DATA, "-maxdepth", "1",
+           "-name", fname],
+          env.controller,
+      )
+      if not res.generic.output.decode().strip():
+        return 0.0
+    # Subdirectories should be gone
+    for subdir in self._subdirs:
+      res = adb_utils.issue_generic_request(
+          ["shell", "test", "-d",
+           f"{device_constants.DOWNLOAD_DATA}/{subdir}",
+           "&&", "echo", "exists"],
+          env.controller,
+      )
+      if "exists" in res.generic.output.decode():
+        return 0.0
+    return 1.0
+
+  @classmethod
+  def generate_random_params(cls) -> dict[str, Any]:
+    return {}

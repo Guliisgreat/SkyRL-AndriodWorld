@@ -364,3 +364,220 @@ class Tier4CoverageAllSmsRead(task_eval.TaskEval):
   @classmethod
   def generate_random_params(cls) -> dict[str, Any]:
     return {"variant": random.choice(["all_read", "has_unread"])}
+
+
+# ── tier4_extra ──────────────────────────────────────────────────────────
+
+
+class Tier4ExtraAggregationSmsAvgLength(task_eval.TaskEval):
+  """Average character length of all inbox SMS. ADB-exclusive (aggregation)."""
+
+  app_names = ("simple sms messenger",)
+  complexity = 1.5
+  schema = {"type": "object", "properties": {}, "required": []}
+  template = (
+      "What is the average character length of all SMS messages in your inbox?"
+      " Output the number (rounded to nearest integer)."
+  )
+
+  def initialize_task(self, env: interface.AsyncEnv) -> None:
+    super().initialize_task(env)
+    sms_validators.clear_sms_and_threads(env.controller)
+    time.sleep(2)
+    now_ms = int(time.time() * 1000)
+    bodies = [
+        "Hi",                           # 2
+        "How are you doing today?",     # 24
+        "Meeting at 3pm tomorrow",      # 24
+        "Please send the report ASAP. We need it before the deadline.",  # 58
+        "ok",                           # 2
+    ]
+    for i, body in enumerate(bodies):
+      _insert_sms_inbox(
+          user_data_generation.generate_random_number(),
+          body, now_ms - i * 60000, env,
+      )
+    total = sum(len(b) for b in bodies)
+    self._ground_truth: int = round(total / len(bodies))
+
+  def tear_down(self, env: interface.AsyncEnv) -> None:
+    sms_validators.clear_sms_and_threads(env.controller)
+    super().tear_down(env)
+
+  def is_successful(self, env: interface.AsyncEnv) -> float:
+    super().is_successful(env)
+    cache = getattr(env, "interaction_cache", "") or ""
+    numbers = re.findall(r"\b\d+\b", cache)
+    for n in numbers:
+      if abs(int(n) - self._ground_truth) <= 2:
+        return 1.0
+    return 0.0
+
+  @classmethod
+  def generate_random_params(cls) -> dict[str, Any]:
+    return {}
+
+
+# ── tier4_extra ──
+
+
+class Tier4ExtraFilterSmsContainingUrl(task_eval.TaskEval):
+  """List SMS messages that contain a URL. ADB-exclusive (content query + regex)."""
+
+  app_names = ("simple sms messenger",)
+  complexity = 1.5
+  schema = {"type": "object", "properties": {}, "required": []}
+  template = (
+      "List all SMS messages in the inbox that contain a URL (http:// or"
+      " https://). Output the sender phone numbers."
+  )
+
+  def initialize_task(self, env: interface.AsyncEnv) -> None:
+    super().initialize_task(env)
+    sms_validators.clear_sms_and_threads(env.controller)
+    time.sleep(2)
+    now_ms = int(time.time() * 1000)
+    self._ground_truth: list[str] = []
+    # SMS WITH URLs
+    url_sms = [
+        ("Check this out https://example.com/page", None),
+        ("Visit http://test.org for details", None),
+    ]
+    for body, _ in url_sms:
+      num = user_data_generation.generate_random_number()
+      _insert_sms_inbox(num, body, now_ms, env)
+      self._ground_truth.append(num.replace("-", "").replace(" ", ""))
+      now_ms -= 60000
+    # SMS WITHOUT URLs
+    for body in ["Hello there", "Meeting at 3pm", "Thanks!"]:
+      num = user_data_generation.generate_random_number()
+      _insert_sms_inbox(num, body, now_ms, env)
+      now_ms -= 60000
+
+  def tear_down(self, env: interface.AsyncEnv) -> None:
+    sms_validators.clear_sms_and_threads(env.controller)
+    super().tear_down(env)
+
+  def is_successful(self, env: interface.AsyncEnv) -> float:
+    super().is_successful(env)
+    cache = getattr(env, "interaction_cache", "") or ""
+    cache_clean = cache.replace("-", "").replace(" ", "")
+    for num in self._ground_truth:
+      if num not in cache_clean:
+        return 0.0
+    return 1.0
+
+  @classmethod
+  def generate_random_params(cls) -> dict[str, Any]:
+    return {}
+
+
+# ── tier4_extra ──
+
+
+class Tier4ExtraTopKSmsOldestMessages(task_eval.TaskEval):
+  """List the 3 oldest SMS messages by date. ADB-exclusive."""
+
+  app_names = ("simple sms messenger",)
+  complexity = 1.2
+  schema = {"type": "object", "properties": {}, "required": []}
+  template = (
+      "What are the 3 oldest SMS messages in your inbox?"
+      " List the sender phone numbers."
+  )
+
+  def initialize_task(self, env: interface.AsyncEnv) -> None:
+    super().initialize_task(env)
+    sms_validators.clear_sms_and_threads(env.controller)
+    time.sleep(2)
+    now_ms = int(time.time() * 1000)
+    # 7 messages with varying dates
+    offsets_days = [0, 1, 5, 15, 30, 60, 90]
+    random.shuffle(offsets_days)
+    named: list[tuple[str, int]] = []
+    for offset in offsets_days:
+      num = user_data_generation.generate_random_number()
+      date_ms = now_ms - offset * 86400 * 1000
+      _insert_sms_inbox(num, f"msg from {offset} days ago", date_ms, env)
+      named.append((num.replace("-", "").replace(" ", ""), date_ms))
+    named.sort(key=lambda x: x[1])
+    self._ground_truth: list[str] = [n for n, _ in named[:3]]
+
+  def tear_down(self, env: interface.AsyncEnv) -> None:
+    sms_validators.clear_sms_and_threads(env.controller)
+    super().tear_down(env)
+
+  def is_successful(self, env: interface.AsyncEnv) -> float:
+    super().is_successful(env)
+    cache = getattr(env, "interaction_cache", "") or ""
+    cache_clean = cache.replace("-", "").replace(" ", "")
+    for num in self._ground_truth:
+      if num not in cache_clean:
+        return 0.0
+    return 1.0
+
+  @classmethod
+  def generate_random_params(cls) -> dict[str, Any]:
+    return {}
+
+
+# ── tier4_extra ──
+
+
+class Tier4ExtraCoverageSmsAllFromKnownContacts(task_eval.TaskEval):
+  """Verify whether all inbox SMS are from known contacts. ADB-exclusive (cross-check)."""
+
+  app_names = ("simple sms messenger", "contacts")
+  complexity = 1.5
+  schema = {
+      "type": "object",
+      "properties": {"variant": {"type": "string", "enum": ["all_known", "has_unknown"]}},
+      "required": ["variant"],
+  }
+  template = (
+      "Are all SMS messages in the inbox from phone numbers that are in your"
+      " contacts? If yes, output 'all known'. If not, output how many are from"
+      " unknown numbers."
+  )
+
+  def initialize_task(self, env: interface.AsyncEnv) -> None:
+    super().initialize_task(env)
+    sms_validators.clear_sms_and_threads(env.controller)
+    adb_utils.delete_contacts(env.controller)
+    time.sleep(2)
+    variant = self.params.get("variant", "has_unknown")
+    now_ms = int(time.time() * 1000)
+
+    # Add 3 contacts and send SMS from each
+    contact_nums: list[str] = []
+    for i in range(3):
+      num = user_data_generation.generate_random_number()
+      contacts_utils.add_contact(f"Contact{i}", num, env.controller)
+      time.sleep(0.5)
+      _insert_sms_inbox(num, f"hello from contact {i}", now_ms - i * 60000, env)
+      contact_nums.append(num)
+
+    if variant == "has_unknown":
+      # Add 2 SMS from unknown numbers
+      self._unknown_count: int = 2
+      for i in range(2):
+        num = user_data_generation.generate_random_number()
+        _insert_sms_inbox(num, f"unknown msg {i}", now_ms - (i + 5) * 60000, env)
+    else:
+      self._unknown_count = 0
+
+  def tear_down(self, env: interface.AsyncEnv) -> None:
+    sms_validators.clear_sms_and_threads(env.controller)
+    adb_utils.delete_contacts(env.controller)
+    super().tear_down(env)
+
+  def is_successful(self, env: interface.AsyncEnv) -> float:
+    super().is_successful(env)
+    cache = (getattr(env, "interaction_cache", "") or "").lower()
+    if self._unknown_count == 0:
+      return 1.0 if ("all known" in cache or "all" in cache and "known" in cache) else 0.0
+    return 1.0 if str(self._unknown_count) in cache else 0.0
+
+  @classmethod
+  def generate_random_params(cls) -> dict[str, Any]:
+    return {"variant": random.choice(["all_known", "has_unknown"])}
