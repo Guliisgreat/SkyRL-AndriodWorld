@@ -158,7 +158,7 @@ def run_one_task_oracle(task_def, container_url, model, max_turns,
             "--model", model,
             "--max-turns", str(max_turns),
             "--output-format", "json",
-            "--allowedTools", "Bash(command:*)",
+            "--allowedTools", f"Bash(python {ANDROID_ENV_SCRIPT} *)",
         ]
 
         start_time = time.time()
