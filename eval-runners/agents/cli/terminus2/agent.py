@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import shlex
 import time
 from pathlib import Path
 
@@ -35,6 +37,68 @@ logger = logging.getLogger(__name__)
 # Limit how much command output is sent back to the LLM.
 MAX_OUTPUT_CHARS = 12_000
 
+# Forbidden ADB subcommands (mobile-agent constraint: no host↔device bridging,
+# no privilege elevation). Anchored on the android_env.py wrapper so
+# echoed/quoted strings that happen to mention these verbs don't trigger.
+# The inner adb command may be wrapped in single or double quotes, depending
+# on shlex.quote output (single by default; double if the string has `'`).
+_FORBIDDEN_ADB_PATTERN = re.compile(
+    r'''android_env\.py\s+adb\s+['"]adb\s+(?:-\S+\s+\S+\s+)*(push|pull|root)\b''',
+    re.IGNORECASE,
+)
+
+_FORBIDDEN_HINTS = {
+    "push": (
+        "`adb push` is forbidden — the agent operates on-device only, with "
+        "no host→device file transfer. Write content on-device instead: "
+        "`echo \"<base64>\" | base64 -d | adb shell sh -c 'cat > <path>'`."
+    ),
+    "pull": (
+        "`adb pull` is forbidden — the agent operates on-device only, with "
+        "no device→host file transfer. Read the file on-device with "
+        "`adb shell base64 <path>` (binary) or `adb shell cat <path>` "
+        "(text), and process the output in your next turn."
+    ),
+    "root": (
+        "`adb root` is forbidden"
+    ),
+}
+
+
+def _check_forbidden_adb(raw_command: str) -> str:
+    """Return a hint string if the command uses a forbidden adb verb, else ''."""
+    m = _FORBIDDEN_ADB_PATTERN.search(raw_command)
+    if not m:
+        return ""
+    verb = m.group(1).lower()
+    return _FORBIDDEN_HINTS.get(verb, f"`adb {verb}` is forbidden.")
+
+
+def _normalize_command(s: str, script: str) -> str:
+    """Wrap a model-emitted command as a `python <script>` invocation.
+
+    The android-json prompt asks the model to emit one of:
+        adb shell <cmd>                                 (or any other adb verb)
+        finish --status complete --description "<answer>"
+    The wrapper script path stays out of the prompt; we attach it here.
+
+    For `adb`, the entire string IS the inner adb command, passed as one
+    argv entry to the wrapper's `adb` subcommand — so we shell-quote the
+    whole thing. For `finish`, the args are already split, so we just
+    prepend the script path. Lines that already start with `python` pass
+    through unchanged so an explicit full invocation still works.
+    """
+    s = s.strip()
+    if not s or s.startswith("python"):
+        return s
+    first = s.split(None, 1)[0]
+    if first == "adb":
+        return f"python {shlex.quote(script)} adb {shlex.quote(s)}"
+    if first == "finish":
+        return f"python {shlex.quote(script)} {s}"
+    return s
+
+
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 _HARBOR_TEMPLATE_DIR = (
     Path(__import__("harbor").__file__).resolve().parent
@@ -50,12 +114,14 @@ class AndroidJSONParser:
     Expects:
       {"analysis": "...", "plan": "...", "commands": ["cmd1", "cmd2"], "task_complete": bool}
 
-    Commands are plain strings (not {keystrokes, duration} objects).
-    Falls back to Harbor's TerminusJSONPlainParser if commands contain objects.
+    Each command is a string starting with `adb` or `finish`. The wrapper
+    script path is attached at parse time via :func:`_normalize_command`,
+    so the prompt never has to mention it.
     """
 
-    def __init__(self):
+    def __init__(self, android_env_script: str = ""):
         self._fallback = TerminusJSONPlainParser()
+        self.android_env_script = android_env_script
 
     def parse_response(self, response: str) -> ParseResult:
         # Strip markdown code fences if present
@@ -90,11 +156,16 @@ class AndroidJSONParser:
         commands = []
         for cmd in commands_raw:
             if isinstance(cmd, str):
-                commands.append(ParsedCommand(keystrokes=cmd, duration=0))
+                commands.append(ParsedCommand(
+                    keystrokes=_normalize_command(cmd, self.android_env_script),
+                    duration=0,
+                ))
             elif isinstance(cmd, dict):
                 # Fallback: Harbor-style {keystrokes, duration}
                 commands.append(ParsedCommand(
-                    keystrokes=cmd.get("keystrokes", ""),
+                    keystrokes=_normalize_command(
+                        cmd.get("keystrokes", ""), self.android_env_script,
+                    ),
                     duration=cmd.get("duration", 0),
                 ))
 
@@ -139,11 +210,11 @@ def _load_harbor_template(parser_name: str) -> str:
     return _load_template(mapping.get(parser_name, "terminus-json-plain"))
 
 
-def _make_parser(parser_name: str):
+def _make_parser(parser_name: str, android_env_script: str = ""):
     if parser_name == "xml":
         return TerminusXMLPlainParser()
     if parser_name == "android-json":
-        return AndroidJSONParser()
+        return AndroidJSONParser(android_env_script=android_env_script)
     return TerminusJSONPlainParser()
 
 
@@ -193,7 +264,7 @@ class AndroidTerminus2Agent:
         self.template_override = template_override
         self.max_tokens = max_tokens
 
-        self.parser = _make_parser(parser_name)
+        self.parser = _make_parser(parser_name, android_env_script=android_env_script)
         self.environment: SkyrlServerEnvironment | None = None
 
         # Built lazily so callers can set api_base after construction.
@@ -347,6 +418,20 @@ class AndroidTerminus2Agent:
         for seq, (_, cmd) in enumerate(non_empty):
             raw = cmd.keystrokes.rstrip("\n").strip()
             is_last = (seq == len(non_empty) - 1)
+
+            forbidden_hint = _check_forbidden_adb(raw)
+            if forbidden_hint:
+                error_msg = f"ERROR: {forbidden_hint} No step was consumed."
+                logger.warning("BLOCKED: %s", raw[:200])
+                commands_log.append({
+                    "command": raw,
+                    "stdout": "",
+                    "stderr": error_msg,
+                    "return_code": -1,
+                    "blocked": True,
+                })
+                outputs.append(f"$ {raw}\n{error_msg}")
+                continue
 
             # Inject --no-step for all but the last ADB command so the
             # entire turn counts as a single step in the budget.

@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import tempfile
 import time
+
+logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
 # Ensure this directory is on sys.path for claude_cli_common
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
