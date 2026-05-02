@@ -84,7 +84,7 @@ def load_system_prompt(prompt_name: str) -> str:
 def get_allowed_tools(prompt_name: str) -> str:
     """Get required tools for a prompt (default: Bash only)."""
     mod = load_prompt_module(prompt_name)
-    return getattr(mod, "REQUIRED_TOOLS", "Bash(command:*)")
+    return getattr(mod, "REQUIRED_TOOLS", "Bash")
 
 
 # ---------------------------------------------------------------------------
