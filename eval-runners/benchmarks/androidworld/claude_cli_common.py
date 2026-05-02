@@ -11,6 +11,7 @@ import concurrent.futures
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,12 @@ ANDROID_ENV_SCRIPT = os.path.join(
 )
 ANDROID_ENV_SCRIPT = os.path.abspath(ANDROID_ENV_SCRIPT)
 
+WRAPPER_BASENAME = os.path.basename(ANDROID_ENV_SCRIPT)
+
+def _wrapper_path(stable: bool) -> str:
+    """Wrapper path the agent sees: basename when stable, absolute when not."""
+    return WRAPPER_BASENAME if stable else ANDROID_ENV_SCRIPT
+
 # ---------------------------------------------------------------------------
 # Prompt modules
 # ---------------------------------------------------------------------------
@@ -47,6 +54,7 @@ PROMPT_MODULES = {
     "optimized_terminal_v1": "skyrl_agent.agents.android.claude_sdk.prompts.optimized_terminal_v1",
     "optimized_terminal_v2": "skyrl_agent.agents.android.claude_sdk.prompts.optimized_terminal_v2",
     "clean_optimized": "agents.cli.claude_sdk.prompts.clean_optimized",
+    "clean_optimized_v10": "agents.cli.claude_sdk.prompts.clean_optimized_v10",
     "clean_optimized_tools": "agents.cli.claude_sdk.prompts.clean_optimized_tools",
 }
 DEFAULT_PROMPT = "adb_baseline"
@@ -75,16 +83,44 @@ def load_prompt_module(prompt_name: str):
     return mod
 
 
-def load_system_prompt(prompt_name: str) -> str:
-    """Load a system prompt by name and format it with ANDROID_ENV_SCRIPT."""
+def load_system_prompt(prompt_name: str, stable: bool = True) -> str:
+    """Load a system prompt by name and format it with the wrapper path.
+
+    With stable=True (default), the agent sees the basename `android_env.py`
+    and the script is copied into the per-task cwd. With stable=False, the
+    absolute ANDROID_ENV_SCRIPT path is embedded.
+    """
     mod = load_prompt_module(prompt_name)
-    return mod.build_system_prompt(ANDROID_ENV_SCRIPT)
+    return mod.build_system_prompt(_wrapper_path(stable))
 
 
-def get_allowed_tools(prompt_name: str) -> str:
-    """Get required tools for a prompt (default: Bash only)."""
+def _default_allowed_tools(stable: bool = True) -> str:
+    """Default: only allow Bash calls to the android_env.py wrapper."""
+    return f"Bash(python {_wrapper_path(stable)} *)"
+
+
+def _default_disallowed_tools() -> str:
+    """Default deny list. Hard-deny any Bash command containing adb pull/push/root.
+
+    The agent invokes ADB via `python android_env.py adb "<cmd>"`, so the
+    leading bash token is `python`, not `adb`. Middle-wildcard patterns match
+    the forbidden subcommand regardless of quoting style.
+    """
+    return ",".join([
+        "Bash(*adb pull*)",
+        "Bash(*adb push*)",
+        "Bash(*adb root*)",
+    ])
+
+
+def get_allowed_tools(prompt_name: str, stable: bool = True) -> str:
+    """Get required tools for a prompt (default: android_env.py only)."""
     mod = load_prompt_module(prompt_name)
-    return getattr(mod, "REQUIRED_TOOLS", "Bash")
+    required = getattr(mod, "REQUIRED_TOOLS", None)
+    if required is None:
+        return _default_allowed_tools(stable)
+    # Replace the broken Bash(command:*) with the correct pattern
+    return required.replace("Bash(command:*)", f"Bash(python {_wrapper_path(stable)} *)")
 
 
 # ---------------------------------------------------------------------------
@@ -187,9 +223,10 @@ def broker_release(broker_url, env_id, healthy=True, retries=3):
 # ---------------------------------------------------------------------------
 
 def run_one_task(task_def, container_url, model, max_turns, system_prompt,
-                 effort=None, allowed_tools="Bash(command:*)",
+                 effort=None, allowed_tools=None, disallowed_tools=None,
                  disable_tree=True, prompt_suffix="",
-                 skip_reset=False, task_timeout=900, auto_finish=True):
+                 skip_reset=False, task_timeout=900, auto_finish=True,
+                 stable_endpoint=True):
     """Run one Claude attempt on a task. Returns a result dict.
 
     Parameters
@@ -201,6 +238,11 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     task_timeout : int
         Max seconds for the Claude subprocess.
     """
+    if allowed_tools is None:
+        allowed_tools = _default_allowed_tools(stable_endpoint)
+    if disallowed_tools is None:
+        disallowed_tools = _default_disallowed_tools()
+
     task_id = task_def["task_id"]
     seed = task_def["seed"]
     task_text = task_def["task"]
@@ -248,14 +290,17 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     env.pop("CLAUDECODE", None)
 
     # Run claude CLI
+    claude_bin = os.environ.get("CLAUDE_BIN", "claude")
     cmd = [
-        "claude",
+        claude_bin,
         "-p", prompt,
         "--model", model,
         "--max-turns", str(max_turns),
         "--output-format", "json",
         "--allowedTools", allowed_tools,
     ]
+    if disallowed_tools:
+        cmd.extend(["--disallowedTools", disallowed_tools])
     if effort:
         cmd.extend(["--effort", effort])
 
@@ -266,11 +311,17 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     elapsed = 0
     claude_json = {}
     try:
-        result = subprocess.run(
-            cmd, env=env,
-            capture_output=True, text=True,
-            timeout=task_timeout,
-        )
+        with tempfile.TemporaryDirectory(prefix=f"claude_task{task_id}_cwd_") as run_cwd:
+            if stable_endpoint:
+                # Stage the wrapper into the cwd so the agent invokes it via
+                # the relative basename — no server-side absolute path leaks
+                # into the prompt or transcript.
+                shutil.copy(ANDROID_ENV_SCRIPT, os.path.join(run_cwd, WRAPPER_BASENAME))
+            result = subprocess.run(
+                cmd, env=env, cwd=run_cwd,
+                capture_output=True, text=True,
+                timeout=task_timeout,
+            )
         elapsed = time.time() - start_time
         print(f"  Claude finished in {elapsed:.0f}s (exit={result.returncode})")
 
@@ -471,7 +522,7 @@ def run_parallel(tasks, broker_url, pool_size, output_path, task_runner):
 # ATIF trajectory export
 # ---------------------------------------------------------------------------
 
-def result_to_atif(result, model, system_prompt):
+def result_to_atif(result, model, system_prompt, agent_name: str = "ClaudeCodeCLI"):
     """Convert a task result dict to an ATIF-v1.6 trajectory dict."""
     task_id = result.get("task_id", 0)
     session_id = f"androidworld-task{task_id}-{uuid.uuid4().hex[:8]}"
@@ -582,7 +633,7 @@ def result_to_atif(result, model, system_prompt):
         "schema_version": "ATIF-v1.6",
         "session_id": session_id,
         "agent": {
-            "name": "ClaudeCodeCLI",
+            "name": agent_name,
             "version": "1.0",
             "model_name": model,
             "tool_definitions": [{
@@ -625,14 +676,15 @@ def result_to_atif(result, model, system_prompt):
     return trajectory
 
 
-def save_atif_trajectories(results, output_dir, model, system_prompt):
+def save_atif_trajectories(results, output_dir, model, system_prompt,
+                            agent_name: str = "ClaudeCodeCLI"):
     """Save each task result as an individual ATIF JSON file."""
     atif_dir = os.path.join(output_dir, "atif_trajectories")
     os.makedirs(atif_dir, exist_ok=True)
 
     for result in results:
         task_id = result.get("task_id", 0)
-        traj = result_to_atif(result, model, system_prompt)
+        traj = result_to_atif(result, model, system_prompt, agent_name=agent_name)
         path = os.path.join(atif_dir, f"task_{task_id:03d}.json")
         with open(path, "w") as f:
             json.dump(traj, f, indent=2, default=str)
@@ -670,8 +722,19 @@ def build_common_parser(description="Run Claude Code CLI on AndroidWorld tasks")
                         choices=list(PROMPT_MODULES.keys()),
                         help=f"System prompt variant (default: {DEFAULT_PROMPT})")
     parser.add_argument("--effort", default=None,
-                        choices=["low", "medium", "high", "max"],
+                        choices=["low", "medium", "high", "xhigh", "max"],
                         help="Claude reasoning effort level")
+    parser.add_argument("--stable-endpoint",
+                        action=argparse.BooleanOptionalAction, default=True,
+                        help="Hide the wrapper's absolute path from the agent "
+                             "by copying android_env.py into the per-task tmp "
+                             "cwd. Use --no-stable-endpoint to embed the "
+                             "absolute path (legacy behavior).")
+    parser.add_argument("--deny-list",
+                        action=argparse.BooleanOptionalAction, default=True,
+                        help="Pass --disallowedTools to the claude CLI to "
+                             "block adb pull/push/root. Use --no-deny-list "
+                             "to omit the flag entirely (legacy behavior).")
     return parser
 
 
@@ -685,14 +748,20 @@ def load_tasks(data_path, task_ids=None):
     return tasks
 
 
-def resolve_output_path(args):
-    """Determine output path and create directories."""
+def resolve_output_path(args, agent_name: str = "ClaudeCodeCLI"):
+    """Determine output path and create directories.
+
+    The folder name follows {AgentClass}_{ModelShort}_{yymmdd}_{HHMM} per
+    CLAUDE.md. ``agent_name`` defaults to ``ClaudeCodeCLI`` for backward
+    compatibility with the original claude_cli runner; other runners (mini-swe,
+    terminus2) should pass their own label.
+    """
     if args.output:
         output_path = os.path.abspath(args.output)
     else:
         model_short = args.model.replace("-", "").replace(".", "").replace("/", "")
         ts = time.strftime("%y%m%d_%H%M")
-        exp_name = f"ClaudeCodeCLI_{model_short}_{ts}"
+        exp_name = f"{agent_name}_{model_short}_{ts}"
         output_dir = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             os.pardir, os.pardir, "results", exp_name,
@@ -705,7 +774,7 @@ def resolve_output_path(args):
 
 
 def finalize_results(results, output_path, model, system_prompt, args,
-                     extra_summary=None):
+                     extra_summary=None, agent_name: str = "ClaudeCodeCLI"):
     """Print summary, save summary.json, ATIF trajectories, and prompt metadata."""
     successes = sum(1 for r in results if r.get("reward", 0) > 0)
     print(f"\n{'='*70}")
@@ -741,7 +810,7 @@ def finalize_results(results, output_path, model, system_prompt, args,
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
 
-    save_atif_trajectories(results, output_dir, model, system_prompt)
+    save_atif_trajectories(results, output_dir, model, system_prompt, agent_name=agent_name)
 
     prompt_meta_path = os.path.join(output_dir, "prompt_variant.txt")
     with open(prompt_meta_path, "w") as f:
@@ -753,8 +822,12 @@ def finalize_results(results, output_path, model, system_prompt, args,
 
 def preflight_checks(args, system_prompt, allowed_tools, disable_tree):
     """Print config info and verify prerequisites."""
+    stable = getattr(args, "stable_endpoint", True)
+    deny_list = getattr(args, "deny_list", True)
     print(f"Prompt variant: {args.prompt}")
-    if allowed_tools != "Bash(command:*)":
+    print(f"Stable endpoint: {'on' if stable else 'OFF (legacy absolute path)'}")
+    print(f"Deny list: {'on' if deny_list else 'OFF (no --disallowedTools)'}")
+    if allowed_tools != _default_allowed_tools(stable):
         print(f"Allowed tools: {allowed_tools}")
     if not disable_tree:
         print(f"A11y tree: enabled")

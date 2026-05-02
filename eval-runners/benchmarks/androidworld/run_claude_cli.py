@@ -43,8 +43,8 @@ def main():
     args = parser.parse_args()
 
     # Load prompt config
-    system_prompt = load_system_prompt(args.prompt)
-    allowed_tools = get_allowed_tools(args.prompt)
+    system_prompt = load_system_prompt(args.prompt, stable=args.stable_endpoint)
+    allowed_tools = get_allowed_tools(args.prompt, stable=args.stable_endpoint)
     disable_tree = "Read" not in allowed_tools
 
     if not preflight_checks(args, system_prompt, allowed_tools, disable_tree):
@@ -65,7 +65,9 @@ def main():
         system_prompt=system_prompt,
         effort=args.effort,
         allowed_tools=allowed_tools,
+        disallowed_tools=None if args.deny_list else "",
         disable_tree=disable_tree,
+        stable_endpoint=args.stable_endpoint,
     )
 
     mode = "parallel" if args.broker_url else "sequential"

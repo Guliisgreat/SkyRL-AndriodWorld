@@ -109,7 +109,7 @@ def main():
         print(f"ERROR: android_env.py not found at {ANDROID_ENV_SCRIPT}")
         return 1
 
-    output_path = resolve_output_path(args)
+    output_path = resolve_output_path(args, agent_name="Terminus2")
 
     # Resolve template override to absolute path
     template_override = None
@@ -165,7 +165,8 @@ def main():
             tasks, args.container_url, output_path, task_runner,
         )
 
-    finalize_results(results, output_path, args.model, system_prompt, args)
+    finalize_results(results, output_path, args.model, system_prompt, args,
+                     agent_name="Terminus2")
     return 0
 
 
