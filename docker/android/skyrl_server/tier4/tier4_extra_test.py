@@ -532,12 +532,12 @@ class TestTier4ExtraCrossAppSmsKeywordToTasks(test_utils.AdbEvalTestBase):
         sqlite_schema_utils.Task(
             title="urgent: server down, check immediately",
             importance=0, created=0, modified=0, completed=0,
-            deleted=0, due_date=0,
+            deleted=0, dueDate=0,
         ),
         sqlite_schema_utils.Task(
             title="urgent review needed for PR #42",
             importance=0, created=0, modified=0, completed=0,
-            deleted=0, due_date=0,
+            deleted=0, dueDate=0,
         ),
     ]
     env = mock.MagicMock()

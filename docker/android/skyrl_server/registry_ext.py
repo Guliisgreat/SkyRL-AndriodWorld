@@ -242,6 +242,40 @@ _TIER4_TASKS = (
     tier4_calendar.Tier4DedupCalendarDeleteDuplicateEvents,
     tier4_calendar.Tier4TopKCalendarEarliestEvent,
     tier4_calendar.Tier4CoverageCalendarEventsHaveReminders,
+    # ── Tier4 extras (IDs 50–76) ──────────────────────────────────────
+    # System
+    tier4_system.Tier4ExtraHiddenStateRemainingStorage,
+    tier4_system.Tier4ExtraHiddenStateRecentInstalls,
+    tier4_system.Tier4ExtraHiddenStateUptime,
+    tier4_system.Tier4ExtraHiddenStateBatteryDrain,
+    tier4_system.Tier4ExtraHiddenStateMobileDataUsage,
+    # SMS
+    tier4_sms.Tier4ExtraAggregationSmsAvgLength,
+    tier4_sms.Tier4ExtraFilterSmsContainingUrl,
+    tier4_sms.Tier4ExtraTopKSmsOldestMessages,
+    tier4_sms.Tier4ExtraCoverageSmsAllFromKnownContacts,
+    # Files
+    tier4_files.Tier4ExtraAggregationFileCountByExtension,
+    tier4_files.Tier4ExtraFilterEmptyFilesInDownloads,
+    tier4_files.Tier4ExtraBulkFlattenSubdirectories,
+    # Expense
+    tier4_expense.Tier4ExtraAggregationExpenseAvgPerCategory,
+    tier4_expense.Tier4ExtraFilterExpenseAboveAverage,
+    tier4_expense.Tier4ExtraTopKExpenseDaysMostSpent,
+    tier4_expense.Tier4ExtraCoverageExpenseAllCategorized,
+    tier4_expense.Tier4ExtraBulkDeleteSmallExpenses,
+    # Calendar
+    tier4_calendar.Tier4ExtraAggregationCalendarEventsPerDay,
+    tier4_calendar.Tier4ExtraFilterCalendarWeekendEvents,
+    tier4_calendar.Tier4ExtraTopKCalendarLongestEvents,
+    tier4_calendar.Tier4ExtraBulkAddReminderToAllEvents,
+    # Cross-app
+    tier4_cross_app.Tier4ExtraCrossAppContactsToMarkor,
+    tier4_cross_app.Tier4ExtraCrossAppCalendarSmsConflicts,
+    tier4_cross_app.Tier4ExtraCrossAppExpenseVsCalendar,
+    tier4_cross_app.Tier4ExtraCrossAppSmsKeywordToTasks,
+    tier4_cross_app.Tier4ExtraCrossAppOpenTracksToMarkor,
+    tier4_cross_app.Tier4ExtraCrossAppJoplinToCalendar,
 )
 
 
