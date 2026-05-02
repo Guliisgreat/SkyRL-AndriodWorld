@@ -266,11 +266,12 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     elapsed = 0
     claude_json = {}
     try:
-        result = subprocess.run(
-            cmd, env=env,
-            capture_output=True, text=True,
-            timeout=task_timeout,
-        )
+        with tempfile.TemporaryDirectory(prefix=f"claude_task{task_id}_cwd_") as run_cwd:
+            result = subprocess.run(
+                cmd, env=env, cwd=run_cwd,
+                capture_output=True, text=True,
+                timeout=task_timeout,
+            )
         elapsed = time.time() - start_time
         print(f"  Claude finished in {elapsed:.0f}s (exit={result.returncode})")
 
