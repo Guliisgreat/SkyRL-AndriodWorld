@@ -23,6 +23,11 @@ COPY android/skyrl_server/registry_ext.py /data/skyrl_server/registry_ext.py
 # Merged env.py: 2026plusswipe optimizations + TASK_FAMILY env var support
 COPY androidworld_2026plusswipe_tier4/env.py /data/skyrl_server/env.py
 
+# Shrink AVD guest RAM from 16 GB → 4 GB to lower per-container host footprint.
+# Resident usage drops roughly 10 GB → ~4 GB. Tradeoff: heavy multi-app tasks may
+# OOM under memory pressure. Smoke-test before committing to this in production.
+RUN sed -i 's/^hw\.ramSize = .*/hw.ramSize = 4096/' /root/.android/avd/AWAvd.avd/config.ini
+
 # Default to tier4 task family with sequential sampling.
 # TASK_FAMILY  -> read by env.py (line 115) as runtime override
 # ENV_TASK_FAMILY -> read by server.py (line 90) as constructor arg
