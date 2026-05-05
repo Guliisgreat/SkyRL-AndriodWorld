@@ -68,6 +68,7 @@ def main():
         disallowed_tools=None if args.deny_list else "",
         disable_tree=disable_tree,
         stable_endpoint=args.stable_endpoint,
+        prompt_name=args.prompt,
     )
 
     mode = "parallel" if args.broker_url else "sequential"

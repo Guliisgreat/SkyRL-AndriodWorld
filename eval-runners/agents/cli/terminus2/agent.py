@@ -60,7 +60,10 @@ _FORBIDDEN_HINTS = {
         "(text), and process the output in your next turn."
     ),
     "root": (
-        "`adb root` is forbidden"
+        "`adb root` is forbidden — privilege elevation is not allowed in "
+        "this environment. Use only what the existing shell user can "
+        "access; for app-private state, query through content providers, "
+        "`cmd <service>`, or `run-as <pkg>`."
     ),
 }
 
@@ -74,29 +77,89 @@ def _check_forbidden_adb(raw_command: str) -> str:
     return _FORBIDDEN_HINTS.get(verb, f"`adb {verb}` is forbidden.")
 
 
-def _normalize_command(s: str, script: str) -> str:
+# Verbs whose args are already split into separate shell tokens by the model
+# (paths, --flags, quoted SQL/content). For these we just prepend the wrapper
+# script path; the host shell tokenizes the rest into argv. The bash-only
+# prompt advertises only `adb` and `finish`; the bash-plus-tools prompt also
+# advertises the typed I/O verbs. Each mode rejects verbs the prompt didn't
+# advertise — so a bash-only model emitting `sql ...` gets a "not recognized"
+# error rather than silently working through a verb it was never told about.
+_PASSTHROUGH_VERBS_BY_MODE: dict[str, tuple[str, ...]] = {
+    "bash-only": ("finish",),
+    "bash-plus-tools": ("finish", "sql", "write-file", "read-file", "find-files"),
+}
+
+# Human-readable verb lists for the rejection hint sent back to the model.
+_VERB_HINT_BY_MODE: dict[str, str] = {
+    "bash-only": "adb, finish",
+    "bash-plus-tools": "adb, sql, write-file, read-file, find-files, finish",
+}
+
+# Wrapper verbs that consume a step from the budget and accept --no-step.
+# `finish` is excluded: it ends the run and the wrapper rejects --no-step on it.
+_STEP_CONSUMING_VERBS = ("adb", "sql", "write-file", "read-file", "find-files")
+
+# Sentinel for commands whose verb isn't in the allowlist. Format:
+# "__REJECT__:<mode>:<cmd>". _normalize_command tags them so they never reach
+# the host shell; _execute_commands strips the tag, looks up the verb hint
+# for the mode, and emits a blocked-command stderr.
+_REJECT_PREFIX = "__REJECT__:"
+
+
+def _detect_tool_mode(template_override: str | None) -> str:
+    """Pick the verb allowlist mode from the template filename.
+
+    `optimized-vN-bash-plus-tools.txt` → bash-plus-tools (typed I/O verbs OK).
+    `optimized-vN-bash-only.txt` → bash-only (only `adb`/`finish`).
+    Anything else defaults to bash-only — the safer choice, since over-rejecting
+    a verb produces a clear error the model can recover from, while under-
+    rejecting silently leaks to the host shell.
+    """
+    if template_override:
+        path = str(template_override)
+        if "bash-plus-tools" in path:
+            return "bash-plus-tools"
+        if "bash-only" in path:
+            return "bash-only"
+    return "bash-only"
+
+
+def _normalize_command(s: str, script: str, tool_mode: str = "bash-only") -> str:
     """Wrap a model-emitted command as a `python <script>` invocation.
 
     The android-json prompt asks the model to emit one of:
         adb shell <cmd>                                 (or any other adb verb)
+        sql <db_path> "<SQL>"                           (bash-plus-tools only)
+        write-file <device_path> "<content>" [--append] (bash-plus-tools only)
+        read-file <device_path>                         (bash-plus-tools only)
+        find-files <directory> "<glob>"                 (bash-plus-tools only)
         finish --status complete --description "<answer>"
     The wrapper script path stays out of the prompt; we attach it here.
 
     For `adb`, the entire string IS the inner adb command, passed as one
     argv entry to the wrapper's `adb` subcommand — so we shell-quote the
-    whole thing. For `finish`, the args are already split, so we just
-    prepend the script path. Lines that already start with `python` pass
-    through unchanged so an explicit full invocation still works.
+    whole thing. For the other verbs, the args are already split into
+    shell tokens by the model, so we just prepend the script path.
+
+    `python` is NOT a model-facing verb. Letting model-emitted lines that
+    start with `python` pass through to the host shell unchanged would
+    let a model run arbitrary host code via `python -c "..."` or
+    `python /any/script.py`, defeating the device-only sandbox. So a
+    model-emitted `python ...` falls through to the reject branch like
+    any other unknown verb. Verbs not in the mode's allowlist are tagged
+    with `_REJECT_PREFIX` and handled by `_execute_commands` — they never
+    reach the host shell.
     """
     s = s.strip()
-    if not s or s.startswith("python"):
+    if not s:
         return s
     first = s.split(None, 1)[0]
     if first == "adb":
         return f"python {shlex.quote(script)} adb {shlex.quote(s)}"
-    if first == "finish":
+    allowed = _PASSTHROUGH_VERBS_BY_MODE.get(tool_mode, ())
+    if first in allowed:
         return f"python {shlex.quote(script)} {s}"
-    return s
+    return f"{_REJECT_PREFIX}{tool_mode}:{s}"
 
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
@@ -119,9 +182,14 @@ class AndroidJSONParser:
     so the prompt never has to mention it.
     """
 
-    def __init__(self, android_env_script: str = ""):
+    def __init__(
+        self,
+        android_env_script: str = "",
+        tool_mode: str = "bash-only",
+    ):
         self._fallback = TerminusJSONPlainParser()
         self.android_env_script = android_env_script
+        self.tool_mode = tool_mode
 
     def parse_response(self, response: str) -> ParseResult:
         # Strip markdown code fences if present
@@ -157,14 +225,18 @@ class AndroidJSONParser:
         for cmd in commands_raw:
             if isinstance(cmd, str):
                 commands.append(ParsedCommand(
-                    keystrokes=_normalize_command(cmd, self.android_env_script),
+                    keystrokes=_normalize_command(
+                        cmd, self.android_env_script, self.tool_mode,
+                    ),
                     duration=0,
                 ))
             elif isinstance(cmd, dict):
                 # Fallback: Harbor-style {keystrokes, duration}
                 commands.append(ParsedCommand(
                     keystrokes=_normalize_command(
-                        cmd.get("keystrokes", ""), self.android_env_script,
+                        cmd.get("keystrokes", ""),
+                        self.android_env_script,
+                        self.tool_mode,
                     ),
                     duration=cmd.get("duration", 0),
                 ))
@@ -210,11 +282,18 @@ def _load_harbor_template(parser_name: str) -> str:
     return _load_template(mapping.get(parser_name, "terminus-json-plain"))
 
 
-def _make_parser(parser_name: str, android_env_script: str = ""):
+def _make_parser(
+    parser_name: str,
+    android_env_script: str = "",
+    tool_mode: str = "bash-only",
+):
     if parser_name == "xml":
         return TerminusXMLPlainParser()
     if parser_name == "android-json":
-        return AndroidJSONParser(android_env_script=android_env_script)
+        return AndroidJSONParser(
+            android_env_script=android_env_script,
+            tool_mode=tool_mode,
+        )
     return TerminusJSONPlainParser()
 
 
@@ -263,8 +342,13 @@ class AndroidTerminus2Agent:
         self.reasoning_effort = reasoning_effort
         self.template_override = template_override
         self.max_tokens = max_tokens
+        self.tool_mode = _detect_tool_mode(template_override)
 
-        self.parser = _make_parser(parser_name, android_env_script=android_env_script)
+        self.parser = _make_parser(
+            parser_name,
+            android_env_script=android_env_script,
+            tool_mode=self.tool_mode,
+        )
         self.environment: SkyrlServerEnvironment | None = None
 
         # Built lazily so callers can set api_base after construction.
@@ -408,9 +492,14 @@ class AndroidTerminus2Agent:
 
         Only the last ADB command per turn counts as a step (via --no-step
         flag on earlier commands) so multiple commands in one turn consume
-        a single step from the budget.
+        a single step from the budget. If every command in the turn was
+        rejected/forbidden (no real wrapper call happened), we burn one
+        step at end-of-turn so the broker's budget still advances by 1 —
+        an LLM output round always costs a step, regardless of whether
+        the commands were valid.
         """
         outputs: list[str] = []
+        real_step_consumed = False
 
         non_empty = [(i, cmd) for i, cmd in enumerate(commands)
                      if cmd.keystrokes.rstrip("\n").strip()]
@@ -419,9 +508,30 @@ class AndroidTerminus2Agent:
             raw = cmd.keystrokes.rstrip("\n").strip()
             is_last = (seq == len(non_empty) - 1)
 
+            if raw.startswith(_REJECT_PREFIX):
+                # Format: "__REJECT__:<mode>:<cmd>"
+                rest = raw[len(_REJECT_PREFIX):]
+                mode, _, bad = rest.partition(":")
+                hint = _VERB_HINT_BY_MODE.get(
+                    mode, _VERB_HINT_BY_MODE["bash-only"],
+                )
+                first = bad.split(None, 1)[0] if bad else ""
+                error_msg = (
+                    f"ERROR: '{first}' is not a recognized verb. "
+                )
+                commands_log.append({
+                    "command": bad,
+                    "stdout": "",
+                    "stderr": error_msg,
+                    "return_code": -1,
+                    "blocked": True,
+                })
+                outputs.append(f"$ {bad}\n{error_msg}")
+                continue
+
             forbidden_hint = _check_forbidden_adb(raw)
             if forbidden_hint:
-                error_msg = f"ERROR: {forbidden_hint} No step was consumed."
+                error_msg = f"ERROR: {forbidden_hint}"
                 logger.warning("BLOCKED: %s", raw[:200])
                 commands_log.append({
                     "command": raw,
@@ -433,16 +543,27 @@ class AndroidTerminus2Agent:
                 outputs.append(f"$ {raw}\n{error_msg}")
                 continue
 
-            # Inject --no-step for all but the last ADB command so the
-            # entire turn counts as a single step in the budget.
+            # Inject --no-step for all but the last step-consuming command
+            # so the entire turn counts as a single step in the budget.
+            # Normalized form is `python <script> <verb> <args...>`; the
+            # wrapper accepts --no-step on adb/sql/write-file/read-file/
+            # find-files, but not on finish.
             exec_cmd = raw
-            if not is_last and " adb " in raw and "finish" not in raw:
-                exec_cmd = raw.replace(" adb ", " adb --no-step ", 1)
+            if not is_last:
+                parts = raw.split(None, 3)
+                if (
+                    len(parts) >= 3
+                    and parts[0] == "python"
+                    and parts[2] in _STEP_CONSUMING_VERBS
+                ):
+                    rest = parts[3:] if len(parts) > 3 else []
+                    exec_cmd = " ".join(parts[:3] + ["--no-step"] + rest)
 
             logger.info("EXEC: %s", exec_cmd[:200])
             result: ExecResult = await self.environment.exec(
                 exec_cmd, timeout_sec=self.command_timeout,
             )
+            real_step_consumed = True
 
             stdout = (result.stdout or "").rstrip()
             stderr = (result.stderr or "").rstrip()
@@ -457,6 +578,33 @@ class AndroidTerminus2Agent:
             })
 
             outputs.append(f"$ {raw}\n{output}")
+
+        # If every command in the turn was rejected/forbidden, no wrapper
+        # call happened — the broker's step budget would stall. Burn one
+        # step via a no-op `adb shell true` so 1 LLM round = 1 broker step.
+        if non_empty and not real_step_consumed:
+            burn_cmd = (
+                f"python {shlex.quote(self.android_env_script)} "
+                f"adb {shlex.quote('adb shell true')}"
+            )
+            logger.info("STEP BURN (all-blocked turn): %s", burn_cmd[:200])
+            try:
+                burn_result: ExecResult = await self.environment.exec(
+                    burn_cmd, timeout_sec=self.command_timeout,
+                )
+                burn_rc = burn_result.return_code
+                burn_stderr = (burn_result.stderr or "").rstrip()[:400]
+            except Exception as e:
+                logger.warning("Step-burn call failed: %s", e)
+                burn_rc = -1
+                burn_stderr = str(e)[:400]
+            commands_log.append({
+                "command": "<step burn after all-blocked turn>",
+                "stdout": "",
+                "stderr": burn_stderr,
+                "return_code": burn_rc,
+                "step_burn": True,
+            })
 
         combined = "\n\n".join(outputs)
         return _limit_output(combined)

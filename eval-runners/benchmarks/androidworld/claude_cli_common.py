@@ -34,6 +34,10 @@ ANDROID_ENV_SCRIPT = os.path.abspath(ANDROID_ENV_SCRIPT)
 
 WRAPPER_BASENAME = os.path.basename(ANDROID_ENV_SCRIPT)
 
+SHIM_WRAPPERS_DIR = os.path.join(
+    os.path.dirname(ANDROID_ENV_SCRIPT), "wrappers",
+)
+
 def _wrapper_path(stable: bool) -> str:
     """Wrapper path the agent sees: basename when stable, absolute when not."""
     return WRAPPER_BASENAME if stable else ANDROID_ENV_SCRIPT
@@ -55,6 +59,9 @@ PROMPT_MODULES = {
     "optimized_terminal_v2": "skyrl_agent.agents.android.claude_sdk.prompts.optimized_terminal_v2",
     "clean_optimized": "agents.cli.claude_sdk.prompts.clean_optimized",
     "clean_optimized_v10": "agents.cli.claude_sdk.prompts.clean_optimized_v10",
+    "clean_optimized_v10_tools": "agents.cli.claude_sdk.prompts.clean_optimized_v10_tools",
+    "clean_optimized_v11": "agents.cli.claude_sdk.prompts.clean_optimized_v11",
+    "clean_optimized_v11_tools": "agents.cli.claude_sdk.prompts.clean_optimized_v11_tools",
     "clean_optimized_tools": "agents.cli.claude_sdk.prompts.clean_optimized_tools",
 }
 DEFAULT_PROMPT = "adb_baseline"
@@ -83,14 +90,32 @@ def load_prompt_module(prompt_name: str):
     return mod
 
 
+def _invocation_style(prompt_name: str) -> str:
+    """Return 'direct' for v11+ shim-on-PATH prompts, 'android_env' otherwise."""
+    mod = load_prompt_module(prompt_name)
+    return getattr(mod, "INVOCATION_STYLE", "android_env")
+
+
+def _prompt_shims(prompt_name: str) -> list[str]:
+    """List of shim names a direct-invocation prompt expects on PATH."""
+    mod = load_prompt_module(prompt_name)
+    return list(getattr(mod, "SHIMS", ["adb", "finish"]))
+
+
 def load_system_prompt(prompt_name: str, stable: bool = True) -> str:
     """Load a system prompt by name and format it with the wrapper path.
 
     With stable=True (default), the agent sees the basename `android_env.py`
     and the script is copied into the per-task cwd. With stable=False, the
     absolute ANDROID_ENV_SCRIPT path is embedded.
+
+    For direct-invocation prompts (``INVOCATION_STYLE == "direct"``) the
+    agent never references android_env.py by name — the shim path is empty
+    and the prompt body ignores it.
     """
     mod = load_prompt_module(prompt_name)
+    if getattr(mod, "INVOCATION_STYLE", "android_env") == "direct":
+        return mod.build_system_prompt("")
     return mod.build_system_prompt(_wrapper_path(stable))
 
 
@@ -102,9 +127,9 @@ def _default_allowed_tools(stable: bool = True) -> str:
 def _default_disallowed_tools() -> str:
     """Default deny list. Hard-deny any Bash command containing adb pull/push/root.
 
-    The agent invokes ADB via `python android_env.py adb "<cmd>"`, so the
-    leading bash token is `python`, not `adb`. Middle-wildcard patterns match
-    the forbidden subcommand regardless of quoting style.
+    Middle-wildcard patterns match the forbidden subcommand regardless of how
+    the agent invokes ADB — whether wrapped (`python android_env.py adb "adb
+    pull …"`, legacy v10) or direct (`adb pull …`, v11+).
     """
     return ",".join([
         "Bash(*adb pull*)",
@@ -114,12 +139,24 @@ def _default_disallowed_tools() -> str:
 
 
 def get_allowed_tools(prompt_name: str, stable: bool = True) -> str:
-    """Get required tools for a prompt (default: android_env.py only)."""
+    """Get required tools for a prompt.
+
+    - Direct-invocation prompts (v11+): returns ``REQUIRED_TOOLS`` verbatim,
+      or a permissive list of ``Bash(<shim> *)`` patterns from ``SHIMS``.
+    - Legacy prompts (v10 and earlier): defaults to ``Bash(python android_env.py
+      *)`` and substitutes the ``Bash(command:*)`` sentinel inside any
+      ``REQUIRED_TOOLS`` value.
+    """
     mod = load_prompt_module(prompt_name)
+    invocation = getattr(mod, "INVOCATION_STYLE", "android_env")
     required = getattr(mod, "REQUIRED_TOOLS", None)
+    if invocation == "direct":
+        if required is not None:
+            return required
+        shims = _prompt_shims(prompt_name)
+        return ",".join(f"Bash({s} *)" for s in shims)
     if required is None:
         return _default_allowed_tools(stable)
-    # Replace the broken Bash(command:*) with the correct pattern
     return required.replace("Bash(command:*)", f"Bash(python {_wrapper_path(stable)} *)")
 
 
@@ -226,7 +263,7 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
                  effort=None, allowed_tools=None, disallowed_tools=None,
                  disable_tree=True, prompt_suffix="",
                  skip_reset=False, task_timeout=900, auto_finish=True,
-                 stable_endpoint=True):
+                 stable_endpoint=True, prompt_name=None):
     """Run one Claude attempt on a task. Returns a result dict.
 
     Parameters
@@ -237,11 +274,27 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
         Extra text appended after the task description (e.g., feedback).
     task_timeout : int
         Max seconds for the Claude subprocess.
+    prompt_name : Optional[str]
+        Name of the prompt module. When the module declares
+        ``INVOCATION_STYLE = "direct"`` (v11+), the runner stages shim
+        scripts (``adb``, ``finish``, …) into a per-task ``bin/`` and
+        configures PATH/ANDROID_ENV_SCRIPT so the agent issues those
+        commands directly without seeing ``android_env.py`` in its cwd.
     """
     if allowed_tools is None:
         allowed_tools = _default_allowed_tools(stable_endpoint)
     if disallowed_tools is None:
         disallowed_tools = _default_disallowed_tools()
+
+    direct_invocation = False
+    direct_shims: list[str] = []
+    if prompt_name:
+        try:
+            direct_invocation = _invocation_style(prompt_name) == "direct"
+            if direct_invocation:
+                direct_shims = _prompt_shims(prompt_name)
+        except Exception:
+            direct_invocation = False
 
     task_id = task_def["task_id"]
     seed = task_def["seed"]
@@ -312,7 +365,21 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     claude_json = {}
     try:
         with tempfile.TemporaryDirectory(prefix=f"claude_task{task_id}_cwd_") as run_cwd:
-            if stable_endpoint:
+            if direct_invocation:
+                # v11+: stage shim scripts into <run_cwd>/bin and prepend it
+                # to PATH so the agent's bare `adb`/`sql`/`finish`/... calls
+                # resolve to wrappers that forward to ANDROID_ENV_SCRIPT. The
+                # script itself is NOT copied into run_cwd.
+                bin_dir = os.path.join(run_cwd, "bin")
+                os.makedirs(bin_dir)
+                for shim in direct_shims:
+                    src = os.path.join(SHIM_WRAPPERS_DIR, shim)
+                    dst = os.path.join(bin_dir, shim)
+                    shutil.copy(src, dst)
+                    os.chmod(dst, 0o755)
+                env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+                env["ANDROID_ENV_SCRIPT"] = ANDROID_ENV_SCRIPT
+            elif stable_endpoint:
                 # Stage the wrapper into the cwd so the agent invokes it via
                 # the relative basename — no server-side absolute path leaks
                 # into the prompt or transcript.
@@ -824,10 +891,15 @@ def preflight_checks(args, system_prompt, allowed_tools, disable_tree):
     """Print config info and verify prerequisites."""
     stable = getattr(args, "stable_endpoint", True)
     deny_list = getattr(args, "deny_list", True)
+    direct = _invocation_style(args.prompt) == "direct"
     print(f"Prompt variant: {args.prompt}")
-    print(f"Stable endpoint: {'on' if stable else 'OFF (legacy absolute path)'}")
+    if direct:
+        print(f"Invocation style: direct (shim wrappers on PATH; "
+              f"android_env.py not staged into per-task cwd)")
+    else:
+        print(f"Stable endpoint: {'on' if stable else 'OFF (legacy absolute path)'}")
     print(f"Deny list: {'on' if deny_list else 'OFF (no --disallowedTools)'}")
-    if allowed_tools != _default_allowed_tools(stable):
+    if not direct and allowed_tools != _default_allowed_tools(stable):
         print(f"Allowed tools: {allowed_tools}")
     if not disable_tree:
         print(f"A11y tree: enabled")
@@ -835,6 +907,13 @@ def preflight_checks(args, system_prompt, allowed_tools, disable_tree):
     if not os.path.exists(ANDROID_ENV_SCRIPT):
         print(f"ERROR: android_env.py not found at {ANDROID_ENV_SCRIPT}")
         return False
+
+    if direct:
+        for shim in _prompt_shims(args.prompt):
+            shim_path = os.path.join(SHIM_WRAPPERS_DIR, shim)
+            if not os.path.exists(shim_path):
+                print(f"ERROR: shim wrapper {shim_path} not found")
+                return False
 
     try:
         subprocess.run(["claude", "--version"], capture_output=True, check=True)
