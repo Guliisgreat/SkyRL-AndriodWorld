@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""adb shim — direct-invocation entry point for v11+ prompts.
+
+The v11 prompts tell the agent to type `adb shell <command>` directly. The
+runner stages this script into a per-task `bin/` dir and prepends it to PATH,
+so the agent's `adb …` calls land here instead of the system `adb`.
+
+We reconstruct the full command line the agent typed (preserving quoting via
+shlex.quote) and forward it to `python $ANDROID_ENV_SCRIPT adb "<cmd>"`.
+
+Special-cases the `... | adb shell` pattern (stdin-piped command body) shown
+in the v11 shell-escaping section.
+"""
+import os
+import shlex
+import stat
+import subprocess
+import sys
+
+
+def _stdin_is_piped() -> bool:
+    try:
+        mode = os.fstat(0).st_mode
+    except OSError:
+        return False
+    return stat.S_ISFIFO(mode) or stat.S_ISREG(mode)
+
+
+def main() -> int:
+    script = os.environ.get("ANDROID_ENV_SCRIPT")
+    if not script:
+        print("ERROR: ANDROID_ENV_SCRIPT env var not set", file=sys.stderr)
+        return 1
+
+    args = sys.argv[1:]
+    if args == ["shell"] and _stdin_is_piped():
+        body = sys.stdin.read()
+        full_cmd = "adb shell " + shlex.quote(body)
+    elif args:
+        full_cmd = "adb " + " ".join(shlex.quote(a) for a in args)
+    else:
+        full_cmd = "adb"
+
+    return subprocess.call([sys.executable, script, "adb", full_cmd])
+
+
+if __name__ == "__main__":
+    sys.exit(main())
