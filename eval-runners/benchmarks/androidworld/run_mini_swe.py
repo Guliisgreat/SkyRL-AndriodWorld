@@ -73,6 +73,8 @@ def build_parser():
     parser.add_argument("--api-base", default=None,
                         help="Override LiteLLM api_base (e.g. https://openrouter.ai/api/v1 "
                              "or http://localhost:8000/v1 for local vLLM)")
+    parser.add_argument("--reasoning-effort", default=None,
+                        help="LLM reasoning effort (for models that support it)")
 
     # For output path generation compatibility
     parser.add_argument("--prompt", default="mini_swe_agent",
@@ -115,6 +117,10 @@ def main():
     if args.api_base:
         model_cfg = config.setdefault("model", {})
         model_cfg.setdefault("model_kwargs", {})["api_base"] = args.api_base
+
+    if args.reasoning_effort:
+        model_cfg = config.setdefault("model", {})
+        model_cfg.setdefault("model_kwargs", {})["reasoning_effort"] = args.reasoning_effort
 
     output_path = resolve_output_path(args, agent_name="MiniSweAgent")
     traj_dir = os.path.join(os.path.dirname(output_path), "trajectories")
