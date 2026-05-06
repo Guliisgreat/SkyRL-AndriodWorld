@@ -307,12 +307,12 @@ def run_mini_swe_task(
     step_count = state.get("step_count", 0)
     finished = state.get("terminated", False)
 
-    if not finished and auto_finish:
-        print(f"  Agent didn't call finish — auto-finishing...")
-        auto_reward = force_eval(container_url)
-        reward = auto_reward
-        finished = True
-        print(f"  Auto-finish reward: {auto_reward}")
+    # if not finished and auto_finish:
+    #     print(f"  Agent didn't call finish — auto-finishing...")
+    #     auto_reward = force_eval(container_url)
+    #     reward = auto_reward
+    #     finished = True
+    #     print(f"  Auto-finish reward: {auto_reward}")
 
     # Aggregate real token counts and a best-effort cost estimate from the
     # per-call response objects that LitellmModel.query stashes on each

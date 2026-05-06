@@ -223,12 +223,12 @@ async def run_terminus2_task(
     step_count = state.get("step_count", 0)
     finished = state.get("terminated", False)
 
-    if not finished and auto_finish:
-        print(f"  Agent didn't call finish — auto-finishing...")
-        auto_reward = force_eval(container_url)
-        reward = auto_reward
-        finished = True
-        print(f"  Auto-finish reward: {auto_reward}")
+    # if not finished and auto_finish:
+    #     print(f"  Agent didn't call finish — auto-finishing...")
+    #     auto_reward = force_eval(container_url)
+    #     reward = auto_reward
+    #     finished = True
+    #     print(f"  Auto-finish reward: {auto_reward}")
 
     status = "OK" if reward > 0 else "FAIL"
     print(f"  >>> REWARD: {reward} ({status}), steps={step_count}, "
