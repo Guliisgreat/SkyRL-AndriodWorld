@@ -95,10 +95,6 @@ _VERB_HINT_BY_MODE: dict[str, str] = {
     "bash-plus-tools": "adb, sql, write-file, read-file, find-files, finish",
 }
 
-# Wrapper verbs that consume a step from the budget and accept --no-step.
-# `finish` is excluded: it ends the run and the wrapper rejects --no-step on it.
-_STEP_CONSUMING_VERBS = ("adb", "sql", "write-file", "read-file", "find-files")
-
 # Sentinel for commands whose verb isn't in the allowlist. Format:
 # "__REJECT__:<mode>:<cmd>". _normalize_command tags them so they never reach
 # the host shell; _execute_commands strips the tag, looks up the verb hint
@@ -174,12 +170,25 @@ _HARBOR_TEMPLATE_DIR = (
 class AndroidJSONParser:
     """Parser for the simplified android-json format.
 
-    Expects:
-      {"analysis": "...", "plan": "...", "commands": ["cmd1", "cmd2"], "task_complete": bool}
+    Two equivalent shapes are accepted:
+      Singular (preferred, matches Mini-SWE's 1-cmd-per-turn invariant):
+        {"analysis": "...", "plan": "...", "command": "<single command>"}
+      Array (legacy bash-plus-tools template):
+        {"analysis": "...", "plan": "...", "commands": ["<cmd>", ...]}
 
-    Each command is a string starting with `adb` or `finish`. The wrapper
-    script path is attached at parse time via :func:`_normalize_command`,
-    so the prompt never has to mention it.
+    The agent.run() loop enforces 1-command-per-turn regardless of shape:
+    array-form responses with len > 1 are rejected at the run level.
+
+    Each command is a string starting with `adb` or `finish` (bash-only)
+    or one of the typed-tool verbs (bash-plus-tools). The wrapper script
+    path is attached at parse time via :func:`_normalize_command`, so the
+    prompt never has to mention it.
+
+    Termination is grounded in the action: ``is_task_complete`` is True iff
+    one of the emitted commands is a ``finish`` invocation. A separate JSON
+    `task_complete` field used to be honored, but it let the agent loop
+    short-circuit out before routing through ``cmd_finish``, which dropped
+    the answer for IR tasks; the field is now intentionally ignored.
     """
 
     def __init__(
@@ -220,10 +229,28 @@ class AndroidJSONParser:
                     error="No JSON found in response", warning="",
                 )
 
-        commands_raw = data.get("commands", [])
+        # Accept both schemas. The bash-only template (1 cmd/turn parity
+        # with Mini-SWE / Claude CLI) emits a singular `command` string;
+        # the bash-plus-tools template still uses a `commands` array.
+        # If both keys are present, the singular form wins. A non-list
+        # value under `commands` (e.g. model typo'd a string under the
+        # plural key) is treated as if it were the singular field, so we
+        # don't accidentally iterate over its characters.
+        command_singular = data.get("command")
+        commands_array = data.get("commands")
+        commands_raw: list = []
+        if isinstance(command_singular, str) and command_singular.strip():
+            commands_raw = [command_singular]
+        elif isinstance(commands_array, list):
+            commands_raw = commands_array
+        elif isinstance(commands_array, str) and commands_array.strip():
+            commands_raw = [commands_array]
+
         commands = []
+        is_task_complete = False
         for cmd in commands_raw:
             if isinstance(cmd, str):
+                raw_text = cmd.strip()
                 commands.append(ParsedCommand(
                     keystrokes=_normalize_command(
                         cmd, self.android_env_script, self.tool_mode,
@@ -232,6 +259,7 @@ class AndroidJSONParser:
                 ))
             elif isinstance(cmd, dict):
                 # Fallback: Harbor-style {keystrokes, duration}
+                raw_text = (cmd.get("keystrokes") or "").strip()
                 commands.append(ParsedCommand(
                     keystrokes=_normalize_command(
                         cmd.get("keystrokes", ""),
@@ -240,10 +268,18 @@ class AndroidJSONParser:
                     ),
                     duration=cmd.get("duration", 0),
                 ))
+            else:
+                continue
+            # Termination is grounded in the action: a `finish` command
+            # routes through cmd_finish (answer + status), the parser-level
+            # `task_complete` JSON field is intentionally ignored.
+            first = raw_text.split(None, 1)[0] if raw_text else ""
+            if first == "finish":
+                is_task_complete = True
 
         return ParseResult(
             commands=commands,
-            is_task_complete=data.get("task_complete", False),
+            is_task_complete=is_task_complete,
             error="",
             warning="",
             analysis=data.get("analysis", ""),
@@ -447,24 +483,41 @@ class AndroidTerminus2Agent:
                 )
                 continue
 
-            if parsed.is_task_complete:
-                task_complete = True
-                # Execute any remaining commands before breaking
-                if parsed.commands:
-                    await self._execute_commands(parsed.commands, commands_log)
-                break
+            non_empty = [
+                c for c in parsed.commands
+                if c.keystrokes.rstrip("\n").strip()
+            ]
 
-            if not parsed.commands:
+            if not non_empty:
                 terminal_output = (
-                    "No commands provided. Send at least one command or set "
-                    "task_complete to true."
+                    "No commands provided. "
                 )
                 continue
 
-            # ----- 3. Execute commands -----
+            if len(non_empty) > 1:
+                # Reject the whole turn; no command runs, no device step
+                # is consumed. The model is told to send the next command
+                # in its next response.
+                terminal_output = (
+                    f"ERROR: Each turn must contain exactly ONE command. "
+                )
+                commands_log.append({
+                    "command": "<multi-command turn rejected>",
+                    "stdout": "",
+                    "stderr": terminal_output,
+                    "return_code": -1,
+                    "blocked": True,
+                })
+                continue
+
+            # Exactly one command — execute it.
             terminal_output = await self._execute_commands(
-                parsed.commands, commands_log,
+                non_empty, commands_log,
             )
+
+            if parsed.is_task_complete:
+                task_complete = True
+                break
 
         elapsed = time.time() - start_time
 
@@ -488,123 +541,66 @@ class AndroidTerminus2Agent:
         commands: list,
         commands_log: list[dict],
     ) -> str:
-        """Execute parsed commands sequentially, return combined output.
+        """Execute at most one command and return its observation.
 
-        Only the last ADB command per turn counts as a step (via --no-step
-        flag on earlier commands) so multiple commands in one turn consume
-        a single step from the budget. If every command in the turn was
-        rejected/forbidden (no real wrapper call happened), we burn one
-        step at end-of-turn so the broker's budget still advances by 1 —
-        an LLM output round always costs a step, regardless of whether
-        the commands were valid.
+        The agent.run() loop now rejects multi-command turns up front to
+        match Mini-SWE / Claude CLI semantics (1 LLM round = at most 1
+        device API call = at most 1 device step), so this method receives
+        a list with 0 or 1 non-empty entry. Rejected/forbidden commands
+        emit feedback but do NOT consume a device step — there is no
+        synthetic step-burn and no `--no-step` injection.
         """
-        outputs: list[str] = []
-        real_step_consumed = False
+        non_empty = [c for c in commands
+                     if c.keystrokes.rstrip("\n").strip()]
+        if not non_empty:
+            return ""
 
-        non_empty = [(i, cmd) for i, cmd in enumerate(commands)
-                     if cmd.keystrokes.rstrip("\n").strip()]
+        cmd = non_empty[0]
+        raw = cmd.keystrokes.rstrip("\n").strip()
 
-        for seq, (_, cmd) in enumerate(non_empty):
-            raw = cmd.keystrokes.rstrip("\n").strip()
-            is_last = (seq == len(non_empty) - 1)
+        if raw.startswith(_REJECT_PREFIX):
+            # Format: "__REJECT__:<mode>:<cmd>"
+            rest = raw[len(_REJECT_PREFIX):]
+            _mode, _, bad = rest.partition(":")
+            first = bad.split(None, 1)[0] if bad else ""
+            error_msg = f"ERROR: '{first}' is not a recognized verb. "
+            commands_log.append({
+                "command": bad,
+                "stdout": "",
+                "stderr": error_msg,
+                "return_code": -1,
+                "blocked": True,
+            })
+            return _limit_output(f"$ {bad}\n{error_msg}")
 
-            if raw.startswith(_REJECT_PREFIX):
-                # Format: "__REJECT__:<mode>:<cmd>"
-                rest = raw[len(_REJECT_PREFIX):]
-                mode, _, bad = rest.partition(":")
-                hint = _VERB_HINT_BY_MODE.get(
-                    mode, _VERB_HINT_BY_MODE["bash-only"],
-                )
-                first = bad.split(None, 1)[0] if bad else ""
-                error_msg = (
-                    f"ERROR: '{first}' is not a recognized verb. "
-                )
-                commands_log.append({
-                    "command": bad,
-                    "stdout": "",
-                    "stderr": error_msg,
-                    "return_code": -1,
-                    "blocked": True,
-                })
-                outputs.append(f"$ {bad}\n{error_msg}")
-                continue
-
-            forbidden_hint = _check_forbidden_adb(raw)
-            if forbidden_hint:
-                error_msg = f"ERROR: {forbidden_hint}"
-                logger.warning("BLOCKED: %s", raw[:200])
-                commands_log.append({
-                    "command": raw,
-                    "stdout": "",
-                    "stderr": error_msg,
-                    "return_code": -1,
-                    "blocked": True,
-                })
-                outputs.append(f"$ {raw}\n{error_msg}")
-                continue
-
-            # Inject --no-step for all but the last step-consuming command
-            # so the entire turn counts as a single step in the budget.
-            # Normalized form is `python <script> <verb> <args...>`; the
-            # wrapper accepts --no-step on adb/sql/write-file/read-file/
-            # find-files, but not on finish.
-            exec_cmd = raw
-            if not is_last:
-                parts = raw.split(None, 3)
-                if (
-                    len(parts) >= 3
-                    and parts[0] == "python"
-                    and parts[2] in _STEP_CONSUMING_VERBS
-                ):
-                    rest = parts[3:] if len(parts) > 3 else []
-                    exec_cmd = " ".join(parts[:3] + ["--no-step"] + rest)
-
-            logger.info("EXEC: %s", exec_cmd[:200])
-            result: ExecResult = await self.environment.exec(
-                exec_cmd, timeout_sec=self.command_timeout,
-            )
-            real_step_consumed = True
-
-            stdout = (result.stdout or "").rstrip()
-            stderr = (result.stderr or "").rstrip()
-            output = stdout or stderr or "(no output)"
-            output = _limit_output(output)
-
+        forbidden_hint = _check_forbidden_adb(raw)
+        if forbidden_hint:
+            error_msg = f"ERROR: {forbidden_hint}"
+            logger.warning("BLOCKED: %s", raw[:200])
             commands_log.append({
                 "command": raw,
-                "stdout": stdout[:4000],
-                "stderr": stderr[:2000],
-                "return_code": result.return_code,
-            })
-
-            outputs.append(f"$ {raw}\n{output}")
-
-        # If every command in the turn was rejected/forbidden, no wrapper
-        # call happened — the broker's step budget would stall. Burn one
-        # step via a no-op `adb shell true` so 1 LLM round = 1 broker step.
-        if non_empty and not real_step_consumed:
-            burn_cmd = (
-                f"python {shlex.quote(self.android_env_script)} "
-                f"adb {shlex.quote('adb shell true')}"
-            )
-            logger.info("STEP BURN (all-blocked turn): %s", burn_cmd[:200])
-            try:
-                burn_result: ExecResult = await self.environment.exec(
-                    burn_cmd, timeout_sec=self.command_timeout,
-                )
-                burn_rc = burn_result.return_code
-                burn_stderr = (burn_result.stderr or "").rstrip()[:400]
-            except Exception as e:
-                logger.warning("Step-burn call failed: %s", e)
-                burn_rc = -1
-                burn_stderr = str(e)[:400]
-            commands_log.append({
-                "command": "<step burn after all-blocked turn>",
                 "stdout": "",
-                "stderr": burn_stderr,
-                "return_code": burn_rc,
-                "step_burn": True,
+                "stderr": error_msg,
+                "return_code": -1,
+                "blocked": True,
             })
+            return _limit_output(f"$ {raw}\n{error_msg}")
 
-        combined = "\n\n".join(outputs)
-        return _limit_output(combined)
+        logger.info("EXEC: %s", raw[:200])
+        result: ExecResult = await self.environment.exec(
+            raw, timeout_sec=self.command_timeout,
+        )
+
+        stdout = (result.stdout or "").rstrip()
+        stderr = (result.stderr or "").rstrip()
+        output = stdout or stderr or "(no output)"
+        output = _limit_output(output)
+
+        commands_log.append({
+            "command": raw,
+            "stdout": stdout[:4000],
+            "stderr": stderr[:2000],
+            "return_code": result.return_code,
+        })
+
+        return f"$ {raw}\n{output}"
