@@ -289,4 +289,4 @@ Keep the XML verifier integration in `run_gui_agent_androidlab.py` to detect any
 | `results/AndroidLab_CrossVal_v2_gpt4o_260327_0425/summary.json` | Aggregate statistics |
 | `results/AndroidLab_CrossVal_v2_gpt4o_260327_0425/xml_dumps/` | Raw + compressed XML for each task |
 | `run_gui_agent_androidlab.py` | Modified GUI runner with dual verification |
-| `docs/design/androidlab_crossval_results.md` | This document |
+| `docs/design/androidlab/crossval_results.md` | This document |

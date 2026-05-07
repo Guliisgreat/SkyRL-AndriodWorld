@@ -1,3 +1,7 @@
+> **STATUS: SUPERSEDED.** The 25-task subset was expanded first to 40 then
+> rebalanced to the current 45-task subset. See
+> [`../tier4/cli_dataset_45_balanced.md`](../tier4/cli_dataset_45_balanced.md).
+
 # Tier4 CLI-Advantage Benchmark: 25-Task Subset
 
 ## Motivation

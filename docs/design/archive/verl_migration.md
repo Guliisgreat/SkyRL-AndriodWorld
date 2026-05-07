@@ -1,3 +1,7 @@
+> **STATUS: ARCHIVED — migration complete.** SkyRL-Agent runs on verl
+> 0.6.1 today. This guide is preserved as a record of the dispatcher /
+> AgentLoop changes for anyone backporting to a fork.
+
 # verl 0.5 → 0.6.1 Migration Guide for SkyRL-Agent
 
 ## Table of Contents

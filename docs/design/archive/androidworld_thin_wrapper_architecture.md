@@ -1,3 +1,10 @@
+> **STATUS: ARCHIVED — superseded by current architecture.** AndroidWorld
+> evaluation now runs through the broker + container pool in
+> `eval-runners/common/runtime/` against the `androidworld:2026` image,
+> rather than as a pip dependency. See
+> [`../../ref_agent/code_structure.md`](../../ref_agent/code_structure.md)
+> for the current layout.
+
 # Thin Wrapper Architecture: AndroidWorld as Off-the-Shelf Dependency
 
 **Date:** 2026-03-10

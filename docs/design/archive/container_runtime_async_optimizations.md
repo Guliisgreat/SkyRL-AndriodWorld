@@ -1,3 +1,10 @@
+> **STATUS: ARCHIVED — historical.** This analysis predates the
+> `runtime/brokers` move from `skyrl-agent/skyrl_agent/runtime/android/`
+> to `eval-runners/common/runtime/` (commit `237ab9e0`). File paths in
+> this doc no longer exist; refer to
+> [`../../ref_agent/container_pool_broker.md`](../../ref_agent/container_pool_broker.md)
+> for the current async / health-loop design.
+
 # Container Runtime Async Optimizations
 
 Performance analysis and optimization plan for the host-side container management layer

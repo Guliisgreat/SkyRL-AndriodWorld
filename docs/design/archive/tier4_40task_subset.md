@@ -1,3 +1,7 @@
+> **STATUS: SUPERSEDED.** Replaced by the 45-task balanced subset in
+> [`../tier4/cli_dataset_45_balanced.md`](../tier4/cli_dataset_45_balanced.md),
+> which adds soft per-category balancing.
+
 # Tier4 CLI-Advantage Benchmark: 40-Task Subset
 
 ## Motivation

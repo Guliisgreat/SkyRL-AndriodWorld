@@ -1,3 +1,7 @@
+> **STATUS: ARCHIVED.** Comparison between the original AndroidWorld error
+> handling and the SkyRL-Agent rewrite. The current production design is
+> documented in [`../../error_recovery.md`](../../error_recovery.md).
+
 # Error Detection & Recovery: Design Comparison
 
 **Document Purpose**: Compare the error handling approaches between the original AndroidWorld implementation and the new SkyRL-Agent framework to facilitate discussion and gather feedback.

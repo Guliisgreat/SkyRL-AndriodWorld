@@ -1,3 +1,7 @@
+> **STATUS: ARCHIVED — implemented.** Self-verifying ADB solver shipped
+> as `skyrl-agent/skyrl_agent/agents/android/screen_adb_agent.py` and the
+> Claude Code CLI runner in `eval-runners/agents/cli/claude_sdk/`.
+
 # Claude Code CLI as AndroidWorld Agent
 
 **Date:** 2026-03-09

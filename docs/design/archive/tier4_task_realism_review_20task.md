@@ -1,3 +1,7 @@
+> **STATUS: SUPERSEDED.** Realism review of the original 20-task proposal.
+> The current realism filter is embedded in
+> [`../tier4/cli_dataset_45_balanced.md`](../tier4/cli_dataset_45_balanced.md).
+
 # Tier4 Task Realism Review
 
 Honest assessment: which of the 20 proposed tasks would a real user actually

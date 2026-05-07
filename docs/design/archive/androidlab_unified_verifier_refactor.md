@@ -1,3 +1,8 @@
+> **STATUS: ARCHIVED — implemented.** Cross-validation between ADB and XML
+> verifiers ships in `eval-runners/benchmarks/androidlab/cross_validate_dual.py`
+> and `cross_validate_verifiers.py`. Results live in
+> [`../androidlab/crossval_results.md`](../androidlab/crossval_results.md).
+
 # Android-Lab Unified Verifier Refactor
 
 **Date:** 2026-03-27

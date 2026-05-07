@@ -1,3 +1,8 @@
+> **STATUS: ARCHIVED — implemented.** Upgrade landed as the
+> `androidworld:2026` and `androidworld:2026plusswipe` Docker images
+> (see `docker/android/`). Current evaluation entry points live in
+> `eval-runners/benchmarks/androidworld/`.
+
 # Upgrade AndroidWorld Evaluator from 2024 Fork to Latest (2026)
 
 **Date:** 2026-03-10

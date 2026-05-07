@@ -1,3 +1,8 @@
+> **STATUS: SUPERSEDED.** Replaced by the 45-task balanced subset in
+> [`../tier4/cli_dataset_45_balanced.md`](../tier4/cli_dataset_45_balanced.md).
+> The 45-task version adds soft per-category balancing (8–12 tasks/category)
+> to defend against cherry-picking objections in the CLI-vs-GUI paper.
+
 # 5-Category 38-Task CLI-Advantage Subset
 
 A curated subset of 38 tasks selected from the 77-task tier4 source pool to
