@@ -1,3 +1,9 @@
+> **STATUS: ARCHIVED — implemented.** ADB-exclusive tasks ship in the
+> `androidworld:2026plusswipe_tier4` Docker image; current task list lives
+> at `eval-runners/data/tier4/all_tasks_seed7.jsonl` (50 tier4 + 27 extras
+> per commit `84fe2e7`). Runbook:
+> [`../tier4/2026plusswipe_integration.md`](../tier4/2026plusswipe_integration.md).
+
 # Tier 4: ADB-Exclusive Task Integration into AndroidWorld
 
 **Status:** Draft

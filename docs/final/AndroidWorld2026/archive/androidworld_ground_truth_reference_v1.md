@@ -1,4 +1,13 @@
-# AndroidWorld Ground Truth Reference — 116 Tasks
+> **STATUS: SUPERSEDED — v1 archived for historical reference.**
+>
+> This is **v1** of the AndroidWorld ground truth reference. The current
+> canonical version is
+> [`../androidworld_ground_truth_reference_v2.md`](../androidworld_ground_truth_reference_v2.md),
+> which incorporates manual review findings (notably the non-destructive
+> VLC schema-repair pattern for tasks 072 and 073). Do not use v1 for
+> SFT data generation or for evaluating new agents.
+
+# AndroidWorld Ground Truth Reference — 116 Tasks (v1, archived)
 
 Complete reference for all AndroidWorld benchmark tasks: task descriptions,
 ground truth ADB commands with step-by-step explanations, and verifier logic.

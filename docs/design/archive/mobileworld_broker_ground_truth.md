@@ -1,3 +1,8 @@
+> **STATUS: ARCHIVED — milestone summary.** One-time progress report from
+> when the MobileWorld broker pipeline reached 111/117 SFT-quality
+> trajectories. The canonical ground-truth reference is now
+> [`../../final/mobileworld/mobileworld_ground_truth_reference.md`](../../final/mobileworld/mobileworld_ground_truth_reference.md).
+
 # MobileWorld Broker + Ground Truth: Summary
 
 ## Overview

@@ -1,3 +1,8 @@
+> **STATUS: ARCHIVED — proposal not pursued.** Single-node broker
+> (`eval-runners/common/runtime/pool_broker.py`) is sufficient for current
+> evaluation throughput. Reopen if multi-node coordination becomes a
+> bottleneck.
+
 # Design Doc: Multi-Node Container Pool Broker
 
 **Status:** Proposal

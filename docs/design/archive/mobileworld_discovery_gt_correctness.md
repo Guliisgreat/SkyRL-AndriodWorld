@@ -1,3 +1,8 @@
+> **STATUS: ARCHIVED — superseded.** Per-task correctness analysis used
+> while building the MobileWorld discovery GT (81 tasks). Findings have
+> been folded into the canonical reference at
+> [`../../final/mobileworld/mobileworld_ground_truth_reference.md`](../../final/mobileworld/mobileworld_ground_truth_reference.md).
+
 # MobileWorld Discovery Ground Truth: Per-Task Correctness Analysis
 
 **Date**: 2026-03-31

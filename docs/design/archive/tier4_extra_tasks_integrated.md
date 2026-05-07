@@ -1,3 +1,8 @@
+> **STATUS: ARCHIVED — integrated.** The 27 extra tasks were merged into
+> the tier4 pool as IDs 50–76 (commit `84fe2e7`). Source pool now lives
+> at `eval-runners/data/tier4/all_tasks_seed7.jsonl`. Selection lives in
+> [`../tier4/cli_dataset_45_balanced.md`](../tier4/cli_dataset_45_balanced.md).
+
 # Tier4 Extra Tasks — 27 New GUI-Exclusive Benchmarks
 
 Added to expand the tier4 benchmark from 50 → 77 tasks. All classes are

@@ -1,3 +1,8 @@
+> **STATUS: ARCHIVED — implemented.** The persistent task-level pool
+> shipped as `eval-runners/common/runtime/pool_broker.py` with snapshot
+> restore on `/return` (commit `1e2ae5e6`). Current usage:
+> [`../../ref_agent/container_pool_broker.md`](../../ref_agent/container_pool_broker.md).
+
 # Implementation Spec: Persistent Container Pool (Model 2 — Task-Level Pool)
 
 **Date:** 2026-02-26

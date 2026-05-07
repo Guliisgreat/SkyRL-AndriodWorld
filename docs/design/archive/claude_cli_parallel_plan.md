@@ -1,3 +1,8 @@
+> **STATUS: ARCHIVED — implemented.** Parallel Claude Code CLI evaluation
+> ships in `eval-runners/benchmarks/androidworld/run_claude_cli.py` and
+> `eval-runners/benchmarks/mobileworld/run_claude_cli.py`, driven by the
+> shared broker in `eval-runners/common/runtime/pool_broker.py`.
+
 # Parallel Claude Code CLI with Broker
 
 **Date:** 2026-03-09

@@ -1,3 +1,7 @@
+> **STATUS: ARCHIVED — implemented.** Original integration proposal.
+> Active usage docs live at
+> [`../mobileworld/harbor_usage.md`](../mobileworld/harbor_usage.md).
+
 # MobileWorld × Harbor Integration Design
 
 **Date**: 2026-04-01

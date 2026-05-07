@@ -1,3 +1,7 @@
+> **STATUS: SUPERSEDED.** Original 20-task proposal. Subsequent iterations
+> grew to 25 → 40 → 38 → final 45-balanced. Current canonical subset:
+> [`../tier4/cli_dataset_45_balanced.md`](../tier4/cli_dataset_45_balanced.md).
+
 # Tier4 Benchmark Subset: 20-Task CLI-Exclusive Proposal
 
 ## Motivation
