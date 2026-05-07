@@ -1,0 +1,1037 @@
+{
+  "info": {
+    "model_stats": {
+      "instance_cost": 0.13496245,
+      "api_calls": 12
+    },
+    "config": {
+      "agent": {
+        "system_template": "You are an Android automation agent. You control an Android device by issuing ADB shell commands as defined in <command_space>. Format your response as shown in <format_example>.\n\n<command_space>\nadb shell <command>   # run any adb-shell command\nfinish --status complete --description \"<result>\"   # signal task done\n</command_space>\n\n<format_example>\nTHOUGHT: Your reasoning and analysis here\n\n```bash\nyour_command_here\n```\n</format_example>\nFailure to follow these rules will cause your response to be rejected.\n",
+        "instance_template": "<task_description>\n{{ task }}\n</task_description>\n\n<instructions>\n## Constraint\n\nDo NOT observe or manipulate the screen \u2014 no screenshots, no UI hierarchy dumps, no tap/swipe/keyevent input, no screen coordinates. Do NOT use `adb push`, `adb pull`, or `adb root` \u2014 all reading, writing, parsing, and file I/O happens on the device through `adb shell`.\n\n## Approach\n\nEach command costs a turn \u2014 be deliberate and batch related probes.\n\nBefore each action, reason about:\n- What has been observed on the device so far?\n- What is still an assumption that hasn't been verified?\n- What is the most likely failure mode of the next command?\n\nThen follow this cycle:\n\n1. **Discover** \u2014 find the relevant app, its data files, database schemas, and content providers. When checking multiple plausible locations, batch them into one command (e.g., `ls dirA; ls dirB; cat config`) instead of one probe per turn.\n2. **Inspect** \u2014 read existing data before modifying. Understand formats, ID mappings, timestamp units, and naming conventions. Match observed patterns exactly when creating new entries.\n3. **Act** \u2014 Android exposes three writing surfaces; pick by what the change has to drive, in this order:\n  (a) **Content providers** (`content insert/update/delete --uri ...`) when the data is exposed by a provider. Direct sqlite to a provider-backed database can skip derived/indexed columns and change notifications, so a ContentResolver consumer may see stale state.\n  (b) **System service commands** (`cmd <service> ...`, `service call <service> ...`, `am broadcast ...`) when the change has to take effect in a running service or hardware. A row in the settings DB records intent but does not always propagate to the live service. **Discover the right service before falling back to `settings put`:** `cmd help` lists services, `cmd <service> help` lists that service's actions, and `service list` enumerates binder services. If a service offers an action whose verb matches the change you need, prefer it.\n  (c) **Direct file or sqlite writes** under `/data/data/<pkg>/` for app-private state with no provider, and file writes (in the format and folder the app already uses) for apps that read from a watched directory. Apps that scan a watched folder typically read open-standard formats \u2014 common ones include GPX, M3U, vCard, and ICS \u2014 so when the watched folder is empty, search the device for any sample file of the format the app would expect (`find /sdcard /storage -type f -iname '*.<ext>'`) and reuse its layout exactly.\n  For multi-row or multi-file writes, issue a single batched script (multi-statement SQL piped in one call, or one shell command with all writes) rather than N separate calls.\n4. **Verify** \u2014 query back through the same surface a consumer would read from (a content URI, a service `dumpsys`, or the file the app reads), not the underlying row. Once confirmed, do not re-verify.\n5. **Sync** \u2014 force-stop the app so it re-reads from disk on next launch.\n\n## Principles\n\n1. **Never assume** \u2014 discover paths, package names, schemas, column values, content provider URIs, filename conventions, and extensions from the device. For text\u2192integer mappings inside a database (codes, types, statuses, priorities), recover the mapping by `SELECT DISTINCT <text_field>, <id_field>` from existing rows before inserting new ones.\n2. **Ground in reality** \u2014 base decisions on observed device state. Before any temporal reasoning, get the current date, time, and timezone from the device. Timestamps in databases are often UTC \u2014 convert to the device's timezone before comparing. Some apps store timestamps in milliseconds, others in seconds; check existing rows to confirm the unit.\n3. **Use exact task values** \u2014 copy names, text, and values EXACTLY from the task description. Do not paraphrase, regenerate, or reformat. For numeric values, preserve full precision from your source \u2014 do not truncate.\n4. **Find the destination, don't invent it** \u2014 when writing a new file, follow this precedence:\n  (a) find an existing example of the same file type owned by the target app and reuse its directory and naming convention exactly (case, extension, subfolder depth);\n  (b) if no example exists, infer the path from the app's storage (shared_prefs, content provider URIs, manifest data dirs);\n  (c) only fall back to a generic shared-storage path when the app exposes no observable preference.\n5. **Probe budget** \u2014 if 2-3 probes have not surfaced the answer, the next probe is unlikely to either; switch tactic. Forbidden time-sinks: extracting APKs (`unzip`/`xxd`/`strings` on `base.apk` or `classes.dex`), full `dumpsys package` / `pm dump`, recursive `find /` over the whole filesystem. If a text\u2192integer mapping isn't recoverable from existing rows or from the app's data dir, extend the observed integer pattern rather than reading the binary.\n6. **Stop when done** \u2014 once you have a verified answer or a successful write+sync, call `finish` immediately. Do not re-verify, sanity-check, or explore further.\n7. **Verify through the surface a consumer reads from** \u2014 the row a setting was written to is not always the surface a consumer queries. After writing, verify through the same path the consumer would use (a content URI, a service's `dumpsys`/`service call` output, or the file the app reads), not the underlying row. If a service-level read disagrees with the settings row, the service-level value is the one that matters; if `cmd <service> help` exposes a setter, prefer that setter on a re-attempt.\n8. **Discover before guessing a verb** \u2014 when you reach for a `cmd <service>` invocation, run `cmd <service> help` first instead of guessing the action name. The wrong verb returns \"Unknown command\" and looks like the service is unsupported, when in fact the right verb was one line away.\n\n## Shell Escaping\n\nWhen a command contains quotes, parentheses, or special characters, pipe it through stdin to avoid double-escaping issues with ADB:\n```bash\nadb shell \"echo 'foo (bar) baz' | wc -w\"\n```\nFall back to standard shell escaping when piping isn't applicable.\n\n## Android-Specific Patterns\n\nThese behaviors are non-obvious:\n- **Media scanner**: after writing files to shared storage, broadcast `android.intent.action.MEDIA_SCANNER_SCAN_FILE` so apps detect new files.\n- **Content provider notify**: after a `content insert` or a write to a provider-backed database, the provider usually emits change notifications itself; manual `am broadcast` is rarely needed for canonical providers.\n- **Corrupt databases**: if sqlite3 reports corruption, remove the DB and its WAL/SHM files, then recreate the required tables from scratch.\n\n## Rules\n\n1. For information-retrieval tasks, `--description` in `finish` IS your answer. Give ONLY what was asked \u2014 no extra commentary.\n2. ALWAYS call `finish` when done with a meaningful `--description`.\n3. Respond with required format.\n</instructions>\n",
+        "step_limit": 50,
+        "cost_limit": 10.0,
+        "output_path": "/shared/ken/SkyRL-AndriodWorld/eval-runners/results/MiniSweAgent_openaigpt53codex_260506_2127/trajectories/task_108.json"
+      },
+      "agent_type": "mini_swe_common._TerminatedAwareAgent",
+      "model": {
+        "model_name": "openai/gpt-5.3-codex",
+        "model_kwargs": {
+          "drop_params": true,
+          "reasoning_effort": "medium"
+        },
+        "litellm_model_registry": null,
+        "set_cache_control": null,
+        "cost_tracking": "ignore_errors",
+        "format_error_template": "Format error: Your response did not parse. Please format your response as shown in <format_example>.\n",
+        "observation_template": "{% if output.exception_info -%}\n<exception>{{ output.exception_info }}</exception>\n{% endif -%}\n<returncode>{{ output.returncode }}</returncode>\n{% if output.output | length < 12000 -%}\n<output>\n{{ output.output -}}\n</output>\n{%- else -%}\n<warning>Output was too long and has been truncated.</warning>\n<output_head>\n{{ output.output[:6000] }}\n</output_head>\n<elided>{{ output.output | length - 12000 }} characters elided</elided>\n<output_tail>\n{{ output.output[-6000:] }}\n</output_tail>\n{%- endif -%}\n",
+        "multimodal_regex": "",
+        "action_regex": "```(?:bash|mswea_bash_command)?\\s*\\n(.*?)\\n```"
+      },
+      "model_type": "minisweagent.models.litellm_textbased_model.LitellmTextbasedModel"
+    },
+    "mini_version": "2.2.8",
+    "exit_status": "complete",
+    "submission": "15",
+    "environment": "androidworld",
+    "container_url": "http://localhost:6408"
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are an Android automation agent. You control an Android device by issuing ADB shell commands as defined in <command_space>. Format your response as shown in <format_example>.\n\n<command_space>\nadb shell <command>   # run any adb-shell command\nfinish --status complete --description \"<result>\"   # signal task done\n</command_space>\n\n<format_example>\nTHOUGHT: Your reasoning and analysis here\n\n```bash\nyour_command_here\n```\n</format_example>\nFailure to follow these rules will cause your response to be rejected."
+    },
+    {
+      "role": "user",
+      "content": "<task_description>\nHow long was my mountain biking activity Friday in the OpenTracks app? Express your answer in minutes as a single integer.\n</task_description>\n\n<instructions>\n## Constraint\n\nDo NOT observe or manipulate the screen \u2014 no screenshots, no UI hierarchy dumps, no tap/swipe/keyevent input, no screen coordinates. Do NOT use `adb push`, `adb pull`, or `adb root` \u2014 all reading, writing, parsing, and file I/O happens on the device through `adb shell`.\n\n## Approach\n\nEach command costs a turn \u2014 be deliberate and batch related probes.\n\nBefore each action, reason about:\n- What has been observed on the device so far?\n- What is still an assumption that hasn't been verified?\n- What is the most likely failure mode of the next command?\n\nThen follow this cycle:\n\n1. **Discover** \u2014 find the relevant app, its data files, database schemas, and content providers. When checking multiple plausible locations, batch them into one command (e.g., `ls dirA; ls dirB; cat config`) instead of one probe per turn.\n2. **Inspect** \u2014 read existing data before modifying. Understand formats, ID mappings, timestamp units, and naming conventions. Match observed patterns exactly when creating new entries.\n3. **Act** \u2014 Android exposes three writing surfaces; pick by what the change has to drive, in this order:\n  (a) **Content providers** (`content insert/update/delete --uri ...`) when the data is exposed by a provider. Direct sqlite to a provider-backed database can skip derived/indexed columns and change notifications, so a ContentResolver consumer may see stale state.\n  (b) **System service commands** (`cmd <service> ...`, `service call <service> ...`, `am broadcast ...`) when the change has to take effect in a running service or hardware. A row in the settings DB records intent but does not always propagate to the live service. **Discover the right service before falling back to `settings put`:** `cmd help` lists services, `cmd <service> help` lists that service's actions, and `service list` enumerates binder services. If a service offers an action whose verb matches the change you need, prefer it.\n  (c) **Direct file or sqlite writes** under `/data/data/<pkg>/` for app-private state with no provider, and file writes (in the format and folder the app already uses) for apps that read from a watched directory. Apps that scan a watched folder typically read open-standard formats \u2014 common ones include GPX, M3U, vCard, and ICS \u2014 so when the watched folder is empty, search the device for any sample file of the format the app would expect (`find /sdcard /storage -type f -iname '*.<ext>'`) and reuse its layout exactly.\n  For multi-row or multi-file writes, issue a single batched script (multi-statement SQL piped in one call, or one shell command with all writes) rather than N separate calls.\n4. **Verify** \u2014 query back through the same surface a consumer would read from (a content URI, a service `dumpsys`, or the file the app reads), not the underlying row. Once confirmed, do not re-verify.\n5. **Sync** \u2014 force-stop the app so it re-reads from disk on next launch.\n\n## Principles\n\n1. **Never assume** \u2014 discover paths, package names, schemas, column values, content provider URIs, filename conventions, and extensions from the device. For text\u2192integer mappings inside a database (codes, types, statuses, priorities), recover the mapping by `SELECT DISTINCT <text_field>, <id_field>` from existing rows before inserting new ones.\n2. **Ground in reality** \u2014 base decisions on observed device state. Before any temporal reasoning, get the current date, time, and timezone from the device. Timestamps in databases are often UTC \u2014 convert to the device's timezone before comparing. Some apps store timestamps in milliseconds, others in seconds; check existing rows to confirm the unit.\n3. **Use exact task values** \u2014 copy names, text, and values EXACTLY from the task description. Do not paraphrase, regenerate, or reformat. For numeric values, preserve full precision from your source \u2014 do not truncate.\n4. **Find the destination, don't invent it** \u2014 when writing a new file, follow this precedence:\n  (a) find an existing example of the same file type owned by the target app and reuse its directory and naming convention exactly (case, extension, subfolder depth);\n  (b) if no example exists, infer the path from the app's storage (shared_prefs, content provider URIs, manifest data dirs);\n  (c) only fall back to a generic shared-storage path when the app exposes no observable preference.\n5. **Probe budget** \u2014 if 2-3 probes have not surfaced the answer, the next probe is unlikely to either; switch tactic. Forbidden time-sinks: extracting APKs (`unzip`/`xxd`/`strings` on `base.apk` or `classes.dex`), full `dumpsys package` / `pm dump`, recursive `find /` over the whole filesystem. If a text\u2192integer mapping isn't recoverable from existing rows or from the app's data dir, extend the observed integer pattern rather than reading the binary.\n6. **Stop when done** \u2014 once you have a verified answer or a successful write+sync, call `finish` immediately. Do not re-verify, sanity-check, or explore further.\n7. **Verify through the surface a consumer reads from** \u2014 the row a setting was written to is not always the surface a consumer queries. After writing, verify through the same path the consumer would use (a content URI, a service's `dumpsys`/`service call` output, or the file the app reads), not the underlying row. If a service-level read disagrees with the settings row, the service-level value is the one that matters; if `cmd <service> help` exposes a setter, prefer that setter on a re-attempt.\n8. **Discover before guessing a verb** \u2014 when you reach for a `cmd <service>` invocation, run `cmd <service> help` first instead of guessing the action name. The wrong verb returns \"Unknown command\" and looks like the service is unsupported, when in fact the right verb was one line away.\n\n## Shell Escaping\n\nWhen a command contains quotes, parentheses, or special characters, pipe it through stdin to avoid double-escaping issues with ADB:\n```bash\nadb shell \"echo 'foo (bar) baz' | wc -w\"\n```\nFall back to standard shell escaping when piping isn't applicable.\n\n## Android-Specific Patterns\n\nThese behaviors are non-obvious:\n- **Media scanner**: after writing files to shared storage, broadcast `android.intent.action.MEDIA_SCANNER_SCAN_FILE` so apps detect new files.\n- **Content provider notify**: after a `content insert` or a write to a provider-backed database, the provider usually emits change notifications itself; manual `am broadcast` is rarely needed for canonical providers.\n- **Corrupt databases**: if sqlite3 reports corruption, remove the DB and its WAL/SHM files, then recreate the required tables from scratch.\n\n## Rules\n\n1. For information-retrieval tasks, `--description` in `finish` IS your answer. Give ONLY what was asked \u2014 no extra commentary.\n2. ALWAYS call `finish` when done with a meaningful `--description`.\n3. Respond with required format.\n</instructions>"
+    },
+    {
+      "content": "THOUGHT: I need to identify the OpenTracks package and establish the device\u2019s current date/time/timezone before doing any time-based filtering. The most likely failure is that `grep` may return nothing if package naming is unexpected, so I\u2019ll search broadly for \u201ctrack\u201d.\n\n```bash\nadb shell \"date; settings get global time_zone; pm list packages | grep -i track\"\n```",
+      "role": "assistant",
+      "tool_calls": null,
+      "function_call": null,
+      "reasoning_content": "",
+      "reasoning_items": [
+        {
+          "type": "reasoning",
+          "id": "rs_096909692914964f0069fbb58a87388196b7560fe649d80f57",
+          "encrypted_content": null,
+          "summary": []
+        }
+      ],
+      "provider_specific_fields": null,
+      "extra": {
+        "actions": [
+          {
+            "command": "adb shell \"date; settings get global time_zone; pm list packages | grep -i track\""
+          }
+        ],
+        "response": {
+          "id": "chatcmpl-6c0a6b7a-8247-4a7e-81a9-d2751ed29400",
+          "created": 1778103689,
+          "model": "gpt-5.3-codex",
+          "object": "chat.completion",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "THOUGHT: I need to identify the OpenTracks package and establish the device\u2019s current date/time/timezone before doing any time-based filtering. The most likely failure is that `grep` may return nothing if package naming is unexpected, so I\u2019ll search broadly for \u201ctrack\u201d.\n\n```bash\nadb shell \"date; settings get global time_zone; pm list packages | grep -i track\"\n```",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null,
+                "reasoning_content": "",
+                "reasoning_items": [
+                  {
+                    "type": "reasoning",
+                    "id": "rs_096909692914964f0069fbb58a87388196b7560fe649d80f57",
+                    "encrypted_content": null,
+                    "summary": []
+                  }
+                ]
+              }
+            },
+            {
+              "finish_reason": "stop",
+              "index": 1,
+              "message": {
+                "content": "THOUGHT: Next I should discover where OpenTracks stores its track/activity data without using UI. The likely failure mode is inaccessible app-private storage; to mitigate, I\u2019ll probe both package metadata paths and shared-storage app directories plus likely DB/XML/GPX files in one batched command.\n\n```bash\nadb shell \"pkg=\\$(pm list packages | sed 's/package://g' | grep -Ei 'opentracks|open.?tracks'); echo PACKAGE:\\$pkg; for p in \\$pkg; do echo '---' \\$p; pm path \\$p; ls -la /sdcard/Android/data/\\$p 2>/dev/null; ls -la /sdcard/Android/data/\\$p/files 2>/dev/null; find /sdcard/Android/data/\\$p -maxdepth 4 -type f \\( -iname '*.db' -o -iname '*.sqlite*' -o -iname '*.gpx' -o -iname '*.csv' -o -iname '*.xml' -o -iname '*.json' \\) 2>/dev/null; done\"\n```",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null,
+                "reasoning_content": "",
+                "reasoning_items": [
+                  {
+                    "type": "reasoning",
+                    "id": "rs_096909692914964f0069fbb58cda5481968adb4691d64b0957",
+                    "encrypted_content": null,
+                    "summary": []
+                  }
+                ]
+              }
+            },
+            {
+              "finish_reason": "stop",
+              "index": 2,
+              "message": {
+                "content": "THOUGHT: I have to provide the requested value as a single integer in the finish description.\n\n```bash\nfinish --status complete --description \"90\"\n```",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null,
+                "reasoning_content": "",
+                "reasoning_items": [
+                  {
+                    "type": "reasoning",
+                    "id": "rs_096909692914964f0069fbb59d947c8196abdab38219a1437e",
+                    "encrypted_content": null,
+                    "summary": []
+                  }
+                ]
+              }
+            }
+          ],
+          "usage": {
+            "completion_tokens": 2014,
+            "prompt_tokens": 1690,
+            "total_tokens": 3704,
+            "completion_tokens_details": {
+              "reasoning_tokens": 1655,
+              "text_tokens": null,
+              "image_tokens": null
+            },
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 0,
+              "text_tokens": null,
+              "image_tokens": null,
+              "video_tokens": null
+            }
+          }
+        },
+        "cost": 0.0311535,
+        "timestamp": 1778103722.616788
+      }
+    },
+    {
+      "role": "user",
+      "content": "<returncode>0</returncode>\n<output>\n$ adb shell \"date; settings get global time_zone; pm list packages | grep -i track\"\nSun Oct 15 15:34:34 UTC 2023\nnull\npackage:de.dennisguse.opentracks\n\n</output>",
+      "extra": {
+        "raw_output": "$ adb shell \"date; settings get global time_zone; pm list packages | grep -i track\"\nSun Oct 15 15:34:34 UTC 2023\nnull\npackage:de.dennisguse.opentracks\n\n",
+        "returncode": 0,
+        "timestamp": 1778103722.7316895,
+        "exception_info": null
+      }
+    },
+    {
+      "content": "THOUGHT: I\u2019ve confirmed the package and current date (Sunday UTC), so \u201cFriday\u201d likely refers to Oct 13. Next I need to discover where OpenTracks stores activity records (external files vs internal DB). The likely failure mode is lack of `run-as` permission if the app is non-debuggable, so I\u2019ll probe both shared-storage paths and `run-as` in one batched command.\n\n```bash\nadb shell \"ls -la /sdcard/Android/data/de.dennisguse.opentracks/files 2>/dev/null; ls -la /sdcard/Android/media/de.dennisguse.opentracks 2>/dev/null; run-as de.dennisguse.opentracks ls -la databases 2>/dev/null; run-as de.dennisguse.opentracks ls -la files 2>/dev/null\"\n```",
+      "role": "assistant",
+      "tool_calls": null,
+      "function_call": null,
+      "reasoning_content": "",
+      "reasoning_items": [
+        {
+          "type": "reasoning",
+          "id": "rs_096909692914964f0069fbb5ab5438819689022bfb3855999a",
+          "encrypted_content": null,
+          "summary": []
+        }
+      ],
+      "provider_specific_fields": null,
+      "extra": {
+        "actions": [
+          {
+            "command": "adb shell \"ls -la /sdcard/Android/data/de.dennisguse.opentracks/files 2>/dev/null; ls -la /sdcard/Android/media/de.dennisguse.opentracks 2>/dev/null; run-as de.dennisguse.opentracks ls -la databases 2>/dev/null; run-as de.dennisguse.opentracks ls -la files 2>/dev/null\""
+          }
+        ],
+        "response": {
+          "id": "chatcmpl-edb4684c-2187-4130-b2cb-1e0ad6222af8",
+          "created": 1778103722,
+          "model": "gpt-5.3-codex",
+          "object": "chat.completion",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "THOUGHT: I\u2019ve confirmed the package and current date (Sunday UTC), so \u201cFriday\u201d likely refers to Oct 13. Next I need to discover where OpenTracks stores activity records (external files vs internal DB). The likely failure mode is lack of `run-as` permission if the app is non-debuggable, so I\u2019ll probe both shared-storage paths and `run-as` in one batched command.\n\n```bash\nadb shell \"ls -la /sdcard/Android/data/de.dennisguse.opentracks/files 2>/dev/null; ls -la /sdcard/Android/media/de.dennisguse.opentracks 2>/dev/null; run-as de.dennisguse.opentracks ls -la databases 2>/dev/null; run-as de.dennisguse.opentracks ls -la files 2>/dev/null\"\n```",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null,
+                "reasoning_content": "",
+                "reasoning_items": [
+                  {
+                    "type": "reasoning",
+                    "id": "rs_096909692914964f0069fbb5ab5438819689022bfb3855999a",
+                    "encrypted_content": null,
+                    "summary": []
+                  }
+                ]
+              }
+            }
+          ],
+          "usage": {
+            "completion_tokens": 503,
+            "prompt_tokens": 1844,
+            "total_tokens": 2347,
+            "completion_tokens_details": {
+              "reasoning_tokens": 319,
+              "text_tokens": null,
+              "image_tokens": null
+            },
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 1536,
+              "text_tokens": null,
+              "image_tokens": null,
+              "video_tokens": null
+            }
+          }
+        },
+        "cost": 0.0078498,
+        "timestamp": 1778103729.9077737
+      }
+    },
+    {
+      "role": "user",
+      "content": "<returncode>0</returncode>\n<output>\n$ adb shell \"ls -la /sdcard/Android/data/de.dennisguse.opentracks/files 2>/dev/null; ls -la /sdcard/Android/media/de.dennisguse.opentracks 2>/dev/null; run-as de.dennisguse.opentracks ls -la databases 2>/dev/null; run-as de.dennisguse.opentracks ls -la files 2>/dev/null\"\n</output>",
+      "extra": {
+        "raw_output": "$ adb shell \"ls -la /sdcard/Android/data/de.dennisguse.opentracks/files 2>/dev/null; ls -la /sdcard/Android/media/de.dennisguse.opentracks 2>/dev/null; run-as de.dennisguse.opentracks ls -la databases 2>/dev/null; run-as de.dennisguse.opentracks ls -la files 2>/dev/null\"\n",
+        "returncode": 0,
+        "timestamp": 1778103730.016813,
+        "exception_info": null
+      }
+    },
+    {
+      "content": "THOUGHT: Previous probe returned nothing, so storage paths tested were either absent or inaccessible. I need a concrete data surface. Most likely OpenTracks keeps DB in app-private storage and/or exports files under a named shared folder. I\u2019ll probe for both: explicit `run-as` viability (without suppressing errors) and a bounded search for OpenTracks-named paths in shared storage.\n\n```bash\nadb shell \"run-as de.dennisguse.opentracks id; run-as de.dennisguse.opentracks ls -la /data/data/de.dennisguse.opentracks; find /sdcard -maxdepth 4 -iname '*opentracks*' -print 2>/dev/null\"\n```",
+      "role": "assistant",
+      "tool_calls": null,
+      "function_call": null,
+      "reasoning_content": "",
+      "reasoning_items": [
+        {
+          "type": "reasoning",
+          "id": "rs_096909692914964f0069fbb5b2a7008196baf219d6819df789",
+          "encrypted_content": null,
+          "summary": []
+        }
+      ],
+      "provider_specific_fields": null,
+      "extra": {
+        "actions": [
+          {
+            "command": "adb shell \"run-as de.dennisguse.opentracks id; run-as de.dennisguse.opentracks ls -la /data/data/de.dennisguse.opentracks; find /sdcard -maxdepth 4 -iname '*opentracks*' -print 2>/dev/null\""
+          }
+        ],
+        "response": {
+          "id": "chatcmpl-49220355-8580-4086-b96f-625c5ce98cd5",
+          "created": 1778103730,
+          "model": "gpt-5.3-codex",
+          "object": "chat.completion",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "THOUGHT: Previous probe returned nothing, so storage paths tested were either absent or inaccessible. I need a concrete data surface. Most likely OpenTracks keeps DB in app-private storage and/or exports files under a named shared folder. I\u2019ll probe for both: explicit `run-as` viability (without suppressing errors) and a bounded search for OpenTracks-named paths in shared storage.\n\n```bash\nadb shell \"run-as de.dennisguse.opentracks id; run-as de.dennisguse.opentracks ls -la /data/data/de.dennisguse.opentracks; find /sdcard -maxdepth 4 -iname '*opentracks*' -print 2>/dev/null\"\n```",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null,
+                "reasoning_content": "",
+                "reasoning_items": [
+                  {
+                    "type": "reasoning",
+                    "id": "rs_096909692914964f0069fbb5b2a7008196baf219d6819df789",
+                    "encrypted_content": null,
+                    "summary": []
+                  }
+                ]
+              }
+            }
+          ],
+          "usage": {
+            "completion_tokens": 537,
+            "prompt_tokens": 2138,
+            "total_tokens": 2675,
+            "completion_tokens_details": {
+              "reasoning_tokens": 384,
+              "text_tokens": null,
+              "image_tokens": null
+            },
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 1664,
+              "text_tokens": null,
+              "image_tokens": null,
+              "video_tokens": null
+            }
+          }
+        },
+        "cost": 0.0086387,
+        "timestamp": 1778103739.093275
+      }
+    },
+    {
+      "role": "user",
+      "content": "<returncode>0</returncode>\n<output>\n$ adb shell \"run-as de.dennisguse.opentracks id; run-as de.dennisguse.opentracks ls -la /data/data/de.dennisguse.opentracks; find /sdcard -maxdepth 4 -iname '*opentracks*' -print 2>/dev/null\"\nrun-as: package not debuggable: de.dennisguse.opentracks\nrun-as: package not debuggable: de.dennisguse.opentracks\n\n</output>",
+      "extra": {
+        "raw_output": "$ adb shell \"run-as de.dennisguse.opentracks id; run-as de.dennisguse.opentracks ls -la /data/data/de.dennisguse.opentracks; find /sdcard -maxdepth 4 -iname '*opentracks*' -print 2>/dev/null\"\nrun-as: package not debuggable: de.dennisguse.opentracks\nrun-as: package not debuggable: de.dennisguse.opentracks\n\n",
+        "returncode": 0,
+        "timestamp": 1778103739.1982079,
+        "exception_info": null
+      }
+    },
+    {
+      "content": "THOUGHT: `run-as` is unavailable, so I need a consumer-readable surface. OpenTracks commonly exports tracks to shared storage (often GPX) in standard folders. The likely failure is missing that exact folder name/case, so I\u2019ll batch-check common directories and a bounded shared-storage search for track files.\n\n```bash\nadb shell \"ls -la /sdcard 2>/dev/null | grep -i open; ls -la /sdcard/OpenTracks 2>/dev/null; ls -la /storage/emulated/0/OpenTracks 2>/dev/null; find /sdcard -maxdepth 5 -type f \\\\( -iname '*.gpx' -o -iname '*.kml' -o -iname '*.tcx' -o -iname '*.fit' \\\\) 2>/dev/null | sed -n '1,200p'\"\n```",
+      "role": "assistant",
+      "tool_calls": null,
+      "function_call": null,
+      "reasoning_content": "",
+      "reasoning_items": [
+        {
+          "type": "reasoning",
+          "id": "rs_096909692914964f0069fbb5bbe688819680f58946a28d76c2",
+          "encrypted_content": null,
+          "summary": []
+        }
+      ],
+      "provider_specific_fields": null,
+      "extra": {
+        "actions": [
+          {
+            "command": "adb shell \"ls -la /sdcard 2>/dev/null | grep -i open; ls -la /sdcard/OpenTracks 2>/dev/null; ls -la /storage/emulated/0/OpenTracks 2>/dev/null; find /sdcard -maxdepth 5 -type f \\\\( -iname '*.gpx' -o -iname '*.kml' -o -iname '*.tcx' -o -iname '*.fit' \\\\) 2>/dev/null | sed -n '1,200p'\""
+          }
+        ],
+        "response": {
+          "id": "chatcmpl-df048169-d30e-43d1-8771-ad9a091a4167",
+          "created": 1778103739,
+          "model": "gpt-5.3-codex",
+          "object": "chat.completion",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "THOUGHT: `run-as` is unavailable, so I need a consumer-readable surface. OpenTracks commonly exports tracks to shared storage (often GPX) in standard folders. The likely failure is missing that exact folder name/case, so I\u2019ll batch-check common directories and a bounded shared-storage search for track files.\n\n```bash\nadb shell \"ls -la /sdcard 2>/dev/null | grep -i open; ls -la /sdcard/OpenTracks 2>/dev/null; ls -la /storage/emulated/0/OpenTracks 2>/dev/null; find /sdcard -maxdepth 5 -type f \\\\( -iname '*.gpx' -o -iname '*.kml' -o -iname '*.tcx' -o -iname '*.fit' \\\\) 2>/dev/null | sed -n '1,200p'\"\n```",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null,
+                "reasoning_content": "",
+                "reasoning_items": [
+                  {
+                    "type": "reasoning",
+                    "id": "rs_096909692914964f0069fbb5bbe688819680f58946a28d76c2",
+                    "encrypted_content": null,
+                    "summary": []
+                  }
+                ]
+              }
+            }
+          ],
+          "usage": {
+            "completion_tokens": 560,
+            "prompt_tokens": 2412,
+            "total_tokens": 2972,
+            "completion_tokens_details": {
+              "reasoning_tokens": 374,
+              "text_tokens": null,
+              "image_tokens": null
+            },
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 1920,
+              "text_tokens": null,
+              "image_tokens": null,
+              "video_tokens": null
+            }
+          }
+        },
+        "cost": 0.009037,
+        "timestamp": 1778103748.0735896
+      }
+    },
+    {
+      "role": "user",
+      "content": "<returncode>0</returncode>\n<output>\n$ adb shell \"ls -la /sdcard 2>/dev/null | grep -i open; ls -la /sdcard/OpenTracks 2>/dev/null; ls -la /storage/emulated/0/OpenTracks 2>/dev/null; find /sdcard -maxdepth 5 -type f \\\\( -iname '*.gpx' -o -iname '*.kml' -o -iname '*.tcx' -o -iname '*.fit' \\\\) 2>/dev/null | sed -n '1,200p'\"\n</output>",
+      "extra": {
+        "raw_output": "$ adb shell \"ls -la /sdcard 2>/dev/null | grep -i open; ls -la /sdcard/OpenTracks 2>/dev/null; ls -la /storage/emulated/0/OpenTracks 2>/dev/null; find /sdcard -maxdepth 5 -type f \\\\( -iname '*.gpx' -o -iname '*.kml' -o -iname '*.tcx' -o -iname '*.fit' \\\\) 2>/dev/null | sed -n '1,200p'\"\n",
+        "returncode": 0,
+        "timestamp": 1778103748.204899,
+        "exception_info": null
+      }
+    },
+    {
+      "content": "THOUGHT: Shared files aren\u2019t present. Since app-private storage is inaccessible, the best remaining read surface is a content provider. I need to discover provider authorities without full package dumps; likely failure is command availability differences, so I\u2019ll try a couple of lightweight provider-discovery commands in one go.\n\n```bash\nadb shell \"cmd package query-content-providers --brief --user 0 2>/dev/null | grep -i -E 'track|open|dennisguse|guse'; pm list packages -f | grep de.dennisguse.opentracks; cmd activity provider list 2>/dev/null | grep -i -E 'track|open|dennisguse|guse'\"\n```",
+      "role": "assistant",
+      "tool_calls": null,
+      "function_call": null,
+      "reasoning_content": "",
+      "reasoning_items": [
+        {
+          "type": "reasoning",
+          "id": "rs_096909692914964f0069fbb5c4ed148196b769e2bfda423966",
+          "encrypted_content": null,
+          "summary": []
+        }
+      ],
+      "provider_specific_fields": null,
+      "extra": {
+        "actions": [
+          {
+            "command": "adb shell \"cmd package query-content-providers --brief --user 0 2>/dev/null | grep -i -E 'track|open|dennisguse|guse'; pm list packages -f | grep de.dennisguse.opentracks; cmd activity provider list 2>/dev/null | grep -i -E 'track|open|dennisguse|guse'\""
+          }
+        ],
+        "response": {
+          "id": "chatcmpl-c5428161-f7e3-46a4-8158-50fc34b32252",
+          "created": 1778103748,
+          "model": "gpt-5.3-codex",
+          "object": "chat.completion",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "THOUGHT: Shared files aren\u2019t present. Since app-private storage is inaccessible, the best remaining read surface is a content provider. I need to discover provider authorities without full package dumps; likely failure is command availability differences, so I\u2019ll try a couple of lightweight provider-discovery commands in one go.\n\n```bash\nadb shell \"cmd package query-content-providers --brief --user 0 2>/dev/null | grep -i -E 'track|open|dennisguse|guse'; pm list packages -f | grep de.dennisguse.opentracks; cmd activity provider list 2>/dev/null | grep -i -E 'track|open|dennisguse|guse'\"\n```",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null,
+                "reasoning_content": "",
+                "reasoning_items": [
+                  {
+                    "type": "reasoning",
+                    "id": "rs_096909692914964f0069fbb5c4ed148196b769e2bfda423966",
+                    "encrypted_content": null,
+                    "summary": []
+                  }
+                ]
+              }
+            }
+          ],
+          "usage": {
+            "completion_tokens": 370,
+            "prompt_tokens": 2729,
+            "total_tokens": 3099,
+            "completion_tokens_details": {
+              "reasoning_tokens": 216,
+              "text_tokens": null,
+              "image_tokens": null
+            },
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 2304,
+              "text_tokens": null,
+              "image_tokens": null,
+              "video_tokens": null
+            }
+          }
+        },
+        "cost": 0.00632695,
+        "timestamp": 1778103754.734483
+      }
+    },
+    {
+      "role": "user",
+      "content": "<returncode>0</returncode>\n<output>\n$ adb shell \"cmd package query-content-providers --brief --user 0 2>/dev/null | grep -i -E 'track|open|dennisguse|guse'; pm list packages -f | grep de.dennisguse.opentracks; cmd activity provider list 2>/dev/null | grep -i -E 'track|open|dennisguse|guse'\"\npackage:/data/app/~~JQYZssKis-0N-KNo_bfcNQ==/de.dennisguse.opentracks-mXOzvcTk6swxCL8EtHRIKg==/base.apk=de.dennisguse.opentracks\n\n</output>",
+      "extra": {
+        "raw_output": "$ adb shell \"cmd package query-content-providers --brief --user 0 2>/dev/null | grep -i -E 'track|open|dennisguse|guse'; pm list packages -f | grep de.dennisguse.opentracks; cmd activity provider list 2>/dev/null | grep -i -E 'track|open|dennisguse|guse'\"\npackage:/data/app/~~JQYZssKis-0N-KNo_bfcNQ==/de.dennisguse.opentracks-mXOzvcTk6swxCL8EtHRIKg==/base.apk=de.dennisguse.opentracks\n\n",
+        "returncode": 0,
+        "timestamp": 1778103754.8506632,
+        "exception_info": null
+      }
+    },
+    {
+      "content": "THOUGHT: Provider discovery commands didn\u2019t reveal authority names. Next best is to probe likely OpenTracks content URIs directly and see which respond. The failure mode is wrong authority/path combinations, so I\u2019ll batch several plausible URIs and stop on any successful query.\n\n```bash\nadb shell \"for u in \\\ncontent://de.dennisguse.opentracks \\\ncontent://de.dennisguse.opentracks/track \\\ncontent://de.dennisguse.opentracks/tracks \\\ncontent://de.dennisguse.opentracks/trackpoints \\\ncontent://de.dennisguse.opentracks.content \\\ncontent://de.dennisguse.opentracks.content/track \\\ncontent://de.dennisguse.opentracks.content/tracks \\\ncontent://de.dennisguse.opentracks.content/trackpoints \\\ncontent://de.dennisguse.opentracks.provider \\\ncontent://de.dennisguse.opentracks.provider/tracks \\\ncontent://de.dennisguse.opentracks.data \\\ncontent://de.dennisguse.opentracks.data/tracks; do \\\necho \\\"URI=$u\\\"; content query --uri \\\"$u\\\" --limit 1 2>&1; echo; done\"\n```",
+      "role": "assistant",
+      "tool_calls": null,
+      "function_call": null,
+      "reasoning_content": "",
+      "reasoning_items": [
+        {
+          "type": "reasoning",
+          "id": "rs_096909692914964f0069fbb5cb79b481969d9a1d769040e681",
+          "encrypted_content": null,
+          "summary": []
+        }
+      ],
+      "provider_specific_fields": null,
+      "extra": {
+        "actions": [
+          {
+            "command": "adb shell \"for u in \\\ncontent://de.dennisguse.opentracks \\\ncontent://de.dennisguse.opentracks/track \\\ncontent://de.dennisguse.opentracks/tracks \\\ncontent://de.dennisguse.opentracks/trackpoints \\\ncontent://de.dennisguse.opentracks.content \\\ncontent://de.dennisguse.opentracks.content/track \\\ncontent://de.dennisguse.opentracks.content/tracks \\\ncontent://de.dennisguse.opentracks.content/trackpoints \\\ncontent://de.dennisguse.opentracks.provider \\\ncontent://de.dennisguse.opentracks.provider/tracks \\\ncontent://de.dennisguse.opentracks.data \\\ncontent://de.dennisguse.opentracks.data/tracks; do \\\necho \\\"URI=$u\\\"; content query --uri \\\"$u\\\" --limit 1 2>&1; echo; done\""
+          }
+        ],
+        "response": {
+          "id": "chatcmpl-500a3d9e-df86-47dd-a89b-21b48380890b",
+          "created": 1778103754,
+          "model": "gpt-5.3-codex",
+          "object": "chat.completion",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "THOUGHT: Provider discovery commands didn\u2019t reveal authority names. Next best is to probe likely OpenTracks content URIs directly and see which respond. The failure mode is wrong authority/path combinations, so I\u2019ll batch several plausible URIs and stop on any successful query.\n\n```bash\nadb shell \"for u in \\\ncontent://de.dennisguse.opentracks \\\ncontent://de.dennisguse.opentracks/track \\\ncontent://de.dennisguse.opentracks/tracks \\\ncontent://de.dennisguse.opentracks/trackpoints \\\ncontent://de.dennisguse.opentracks.content \\\ncontent://de.dennisguse.opentracks.content/track \\\ncontent://de.dennisguse.opentracks.content/tracks \\\ncontent://de.dennisguse.opentracks.content/trackpoints \\\ncontent://de.dennisguse.opentracks.provider \\\ncontent://de.dennisguse.opentracks.provider/tracks \\\ncontent://de.dennisguse.opentracks.data \\\ncontent://de.dennisguse.opentracks.data/tracks; do \\\necho \\\"URI=$u\\\"; content query --uri \\\"$u\\\" --limit 1 2>&1; echo; done\"\n```",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null,
+                "reasoning_content": "",
+                "reasoning_items": [
+                  {
+                    "type": "reasoning",
+                    "id": "rs_096909692914964f0069fbb5cb79b481969d9a1d769040e681",
+                    "encrypted_content": null,
+                    "summary": []
+                  }
+                ]
+              }
+            }
+          ],
+          "usage": {
+            "completion_tokens": 488,
+            "prompt_tokens": 3045,
+            "total_tokens": 3533,
+            "completion_tokens_details": {
+              "reasoning_tokens": 230,
+              "text_tokens": null,
+              "image_tokens": null
+            },
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 2560,
+              "text_tokens": null,
+              "image_tokens": null,
+              "video_tokens": null
+            }
+          }
+        },
+        "cost": 0.008128749999999999,
+        "timestamp": 1778103764.2461772
+      }
+    },
+    {
+      "role": "user",
+      "content": "<returncode>1</returncode>\n<output>\nERROR: each turn must contain exactly ONE command (no embedded newlines).</output>",
+      "extra": {
+        "raw_output": "ERROR: each turn must contain exactly ONE command (no embedded newlines).",
+        "returncode": 1,
+        "timestamp": 1778103764.2482002,
+        "exception_info": null
+      }
+    },
+    {
+      "content": "THOUGHT: I need to retry URI probing with exactly one single-line command (no embedded newlines). I\u2019ll keep it batched but fully on one line.\n\n```bash\nadb shell \"for u in content://de.dennisguse.opentracks content://de.dennisguse.opentracks/track content://de.dennisguse.opentracks/tracks content://de.dennisguse.opentracks/trackpoints content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/trackpoints content://de.dennisguse.opentracks.provider content://de.dennisguse.opentracks.provider/tracks content://de.dennisguse.opentracks.data content://de.dennisguse.opentracks.data/tracks; do echo URI=$u; content query --uri \\\"$u\\\" --limit 1 2>&1; echo; done\"\n```",
+      "role": "assistant",
+      "tool_calls": null,
+      "function_call": null,
+      "reasoning_content": "",
+      "reasoning_items": [
+        {
+          "type": "reasoning",
+          "id": "rs_096909692914964f0069fbb5d502dc8196904b50a28dd2d262",
+          "encrypted_content": null,
+          "summary": []
+        }
+      ],
+      "provider_specific_fields": null,
+      "extra": {
+        "actions": [
+          {
+            "command": "adb shell \"for u in content://de.dennisguse.opentracks content://de.dennisguse.opentracks/track content://de.dennisguse.opentracks/tracks content://de.dennisguse.opentracks/trackpoints content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/trackpoints content://de.dennisguse.opentracks.provider content://de.dennisguse.opentracks.provider/tracks content://de.dennisguse.opentracks.data content://de.dennisguse.opentracks.data/tracks; do echo URI=$u; content query --uri \\\"$u\\\" --limit 1 2>&1; echo; done\""
+          }
+        ],
+        "response": {
+          "id": "chatcmpl-be2e61c9-de78-4317-b24e-fc7fec7f1a7c",
+          "created": 1778103764,
+          "model": "gpt-5.3-codex",
+          "object": "chat.completion",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "THOUGHT: I need to retry URI probing with exactly one single-line command (no embedded newlines). I\u2019ll keep it batched but fully on one line.\n\n```bash\nadb shell \"for u in content://de.dennisguse.opentracks content://de.dennisguse.opentracks/track content://de.dennisguse.opentracks/tracks content://de.dennisguse.opentracks/trackpoints content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/trackpoints content://de.dennisguse.opentracks.provider content://de.dennisguse.opentracks.provider/tracks content://de.dennisguse.opentracks.data content://de.dennisguse.opentracks.data/tracks; do echo URI=$u; content query --uri \\\"$u\\\" --limit 1 2>&1; echo; done\"\n```",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null,
+                "reasoning_content": "",
+                "reasoning_items": [
+                  {
+                    "type": "reasoning",
+                    "id": "rs_096909692914964f0069fbb5d502dc8196904b50a28dd2d262",
+                    "encrypted_content": null,
+                    "summary": []
+                  }
+                ]
+              }
+            }
+          ],
+          "usage": {
+            "completion_tokens": 250,
+            "prompt_tokens": 3336,
+            "total_tokens": 3586,
+            "completion_tokens_details": {
+              "reasoning_tokens": 27,
+              "text_tokens": null,
+              "image_tokens": null
+            },
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 2944,
+              "text_tokens": null,
+              "image_tokens": null,
+              "video_tokens": null
+            }
+          }
+        },
+        "cost": 0.004701199999999999,
+        "timestamp": 1778103767.7679331
+      }
+    },
+    {
+      "role": "user",
+      "content": "<returncode>0</returncode>\n<warning>Output was too long and has been truncated.</warning>\n<output_head>\n$ adb shell \"for u in content://de.dennisguse.opentracks content://de.dennisguse.opentracks/track content://de.dennisguse.opentracks/tracks content://de.dennisguse.opentracks/trackpoints content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/trackpoints content://de.dennisguse.opentracks.provider content://de.dennisguse.opentracks.provider/tracks content://de.dennisguse.opentracks.data content://de.dennisguse.opentracks.data/tracks; do echo URI=$u; content query --uri \\\"$u\\\" --limit 1 2>&1; echo; done\"\nURI=content://de.dennisguse.opentracks\nusage: adb shell content [subcommand] [options]\n\nusage: adb shell content insert --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--extra <BINDING>...]\n  <URI> a content provider URI.\n  <BINDING> binds a typed value to a column and is formatted:\n  <COLUMN_NAME>:<TYPE>:<COLUMN_VALUE> where:\n  <TYPE> specifies data type such as:\n  b - boolean, s - string, i - integer, l - long, f - float, d - double, n - null\n  Note: Omit the value for passing an empty string, e.g column:s:\n  Example:\n  # Add \"new_setting\" secure setting with value \"new_value\".\n  adb shell content insert --uri content://settings/secure --bind name:s:new_setting --bind value:s:new_value\n\nusage: adb shell content update --uri <URI> [--user <USER_ID>] [--where <WHERE>] [--extra <BINDING>...]\n  <WHERE> is a SQL style where clause in quotes (You have to escape single quotes - see example below).\n  Example:\n  # Change \"new_setting\" secure setting to \"newer_value\".\n  adb shell content update --uri content://settings/secure --bind value:s:newer_value --where \"name='new_setting'\"\n\nusage: adb shell content delete --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--where <WHERE>] [--extra <BINDING>...]\n  Example:\n  # Remove \"new_setting\" secure setting.\n  adb shell content delete --uri content://settings/secure --where \"name='new_setting'\"\n\nusage: adb shell content query --uri <URI> [--user <USER_ID>] [--projection <PROJECTION>] [--where <WHERE>] [--sort <SORT_ORDER>] [--extra <BINDING>...]\n  <PROJECTION> is a list of colon separated column names and is formatted:\n  <COLUMN_NAME>[:<COLUMN_NAME>...]\n  <SORT_ORDER> is the order in which rows in the result should be sorted.\n  Example:\n  # Select \"name\" and \"value\" columns from secure settings where \"name\" is equal to \"new_setting\" and sort the result by name in ascending order.\n  adb shell content query --uri content://settings/secure --projection name:value --where \"name='new_setting'\" --sort \"name ASC\"\n\nusage: adb shell content call --uri <URI> --method <METHOD> [--arg <ARG>]\n       [--extra <BINDING> ...]\n  <METHOD> is the name of a provider-defined method\n  <ARG> is an optional string argument\n  <BINDING> is like --bind above, typed data of the form <KEY>:{b,s,i,l,f,d}:<VAL>\n\nusage: adb shell content read --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content read --uri content://settings/system/ringtone_cache' > host.ogg\n\nusage: adb shell content write --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content write --uri content://settings/system/ringtone_cache' < host.ogg\n\nusage: adb shell content gettype --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell content gettype --uri content://media/internal/audio/media/\n\n\n[ERROR] Unsupported argument: --limit\n\nURI=content://de.dennisguse.opentracks/track\nusage: adb shell content [subcommand] [options]\n\nusage: adb shell content insert --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--extra <BINDING>...]\n  <URI> a content provider URI.\n  <BINDING> binds a typed value to a column and is formatted:\n  <COLUMN_NAME>:<TYPE>:<COLUMN_VALUE> where:\n  <TYPE> specifies data type such as:\n  b - boolean, s - string, i - integer, l - long, f - float, d - double, n - null\n  Note: Omit the value for passing an empty string, e.g column:s:\n  Example:\n  # Add \"new_setting\" secure setting with value \"new_value\".\n  adb shell content insert --uri content://settings/secure --bind name:s:new_setting --bind value:s:new_value\n\nusage: adb shell content update --uri <URI> [--user <USER_ID>] [--where <WHERE>] [--extra <BINDING>...]\n  <WHERE> is a SQL style where clause in quotes (You have to escape single quotes - see example below).\n  Example:\n  # Change \"new_setting\" secure setting to \"newer_value\".\n  adb shell content update --uri content://settings/secure --bind value:s:newer_value --where \"name='new_setting'\"\n\nusage: adb shell content delete --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--where <WHERE>] [--extra <BINDING>...]\n  Example:\n  # Remove \"new_setting\" secure setting.\n  adb shell content delete --uri content://settings/secure --where \"name='new_setting'\"\n\nusage: adb shell content query --uri <URI> [--user <USER_ID>] [--projection <PROJECTION>] [--where <WHERE>] [--sort <SORT_ORDER>] [--extra <BINDING>...]\n  <PROJECTION> is a list of colon separated column names and is formatted:\n  <COLUMN_NAME>[:<COLUMN_NAME>...]\n  <SORT_ORDER> is the order in which rows in the result should be sorted.\n  Example:\n  # Select \"name\" and \"value\" columns from secure settings where \"name\" is equal to \"new_setting\" and sort the result by name in ascending order.\n  adb shell content query --uri content://settings/secure --projection name:value --where \"name='new_setting'\" --sort \"name ASC\"\n\nusage: adb shell content call --uri <URI> --method <METHOD> [--arg <ARG>]\n       [--extra <BINDING> ...]\n  <METHOD> is the name of a provider-defined method\n  <ARG> is an optional string argument\n  <BINDING> is like --bind above, typed data of the form <KEY>:{b,s,i,l,f,d}:<VAL>\n\nusage: adb shell content read --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content read --uri content://settings/system/ringtone_cache' > host.ogg\n\nusage: adb shell content write --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'co\n</output_head>\n<elided>4016 characters elided</elided>\n<output_tail>\n  Example:\n  # Change \"new_setting\" secure setting to \"newer_value\".\n  adb shell content update --uri content://settings/secure --bind value:s:newer_value --where \"name='new_setting'\"\n\nusage: adb shell content delete --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--where <WHERE>] [--extra <BINDING>...]\n  Example:\n  # Remove \"new_setting\" secure setting.\n  adb shell content delete --uri content://settings/secure --where \"name='new_setting'\"\n\nusage: adb shell content query --uri <URI> [--user <USER_ID>] [--projection <PROJECTION>] [--where <WHERE>] [--sort <SORT_ORDER>] [--extra <BINDING>...]\n  <PROJECTION> is a list of colon separated column names and is formatted:\n  <COLUMN_NAME>[:<COLUMN_NAME>...]\n  <SORT_ORDER> is the order in which rows in the result should be sorted.\n  Example:\n  # Select \"name\" and \"value\" columns from secure settings where \"name\" is equal to \"new_setting\" and sort the result by name in ascending order.\n  adb shell content query --uri content://settings/secure --projection name:value --where \"name='new_setting'\" --sort \"name ASC\"\n\nusage: adb shell content call --uri <URI> --method <METHOD> [--arg <ARG>]\n       [--extra <BINDING> ...]\n  <METHOD> is the name of a provider-defined method\n  <ARG> is an optional string argument\n  <BINDING> is like --bind above, typed data of the form <KEY>:{b,s,i,l,f,d}:<VAL>\n\nusage: adb shell content read --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content read --uri content://settings/system/ringtone_cache' > host.ogg\n\nusage: adb shell content write --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content write --uri content://settings/system/ringtone_cache' < host.ogg\n\nusage: adb shell content gettype --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell content gettype --uri content://media/internal/audio/media/\n\n\n[ERROR] Unsupported argument: --limit\n\nURI=content://de.dennisguse.opentracks.content\nusage: adb shell content [subcommand] [options]\n\nusage: adb shell content insert --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--extra <BINDING>...]\n  <URI> a content provider URI.\n  <BINDING> binds a typed value to a column and is formatted:\n  <COLUMN_NAME>:<TYPE>:<COLUMN_VALUE> where:\n  <TYPE> specifies data type such as:\n  b - boolean, s - string, i - integer, l - long, f - float, d - double, n - null\n  Note: Omit the value for passing an empty string, e.g column:s:\n  Example:\n  # Add \"new_setting\" secure setting with value \"new_value\".\n  adb shell content insert --uri content://settings/secure --bind name:s:new_setting --bind value:s:new_value\n\nusage: adb shell content update --uri <URI> [--user <USER_ID>] [--where <WHERE>] [--extra <BINDING>...]\n  <WHERE> is a SQL style where clause in quotes (You have to escape single quotes - see example below).\n  Example:\n  # Change \"new_setting\" secure setting to \"newer_value\".\n  adb shell content update --uri content://settings/secure --bind value:s:newer_value --where \"name='new_setting'\"\n\nusage: adb shell content delete --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--where <WHERE>] [--extra <BINDING>...]\n  Example:\n  # Remove \"new_setting\" secure setting.\n  adb shell content delete --uri content://settings/secure --where \"name='new_setting'\"\n\nusage: adb shell content query --uri <URI> [--user <USER_ID>] [--projection <PROJECTION>] [--where <WHERE>] [--sort <SORT_ORDER>] [--extra <BINDING>...]\n  <PROJECTION> is a list of colon separated column names and is formatted:\n  <COLUMN_NAME>[:<COLUMN_NAME>...]\n  <SORT_ORDER> is the order in which rows in the result should be sorted.\n  Example:\n  # Select \"name\" and \"value\" columns from secure settings where \"name\" is equal to \"new_setting\" and sort the result by name in ascending order.\n  adb shell content query --uri content://settings/secure --projection name:value --where \"name='new_setting'\" --sort \"name ASC\"\n\nusage: adb shell content call --uri <URI> --method <METHOD> [--arg <ARG>]\n       [--extra <BINDING> ...]\n  <METHOD> is the name of a provider-defined method\n  <ARG> is an optional string argument\n  <BINDING> is like --bind above, typed data of the form <KEY>:{b,s,i,l,f,d}:<VAL>\n\nusage: adb shell content read --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content read --uri content://settings/system/ringtone_cache' > host.ogg\n\nusage: adb shell content write --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content write --uri content://settings/system/ringtone_cache' < host.ogg\n\nusage: adb shell content gettype --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell content gettype --uri content://media/internal/audio/media/\n\n\n[ERROR] Unsupported argument: --limit\n\nURI=content://de.dennisguse.opentracks.content/track\nusage: adb shell content [subcommand] [options]\n\nusage: adb shell content insert --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--extra <BINDING>...]\n  <URI> a content provider URI.\n  <BINDING> binds a typed value to a column and is formatted:\n  <COLUMN_NAME>:<TYPE>:<COLUMN_VALUE> where:\n  <TYPE> specifies data type such as:\n  b - boolean, s - string, i - integer, l - long, f - float, d - double, n - null\n  Note: Omit the value for passing an empty string, e.g column:s:\n  Example:\n  # Add \"new_setting\" secure setting with value \"new_value\".\n  adb shell content insert --uri content://settings/secure --bind name:s:new_setting --bind value:s:new_value\n\nusage: adb shell content update --uri <URI> [--user <USER_ID>] [--where <WHERE>] [--extra <BINDING>...]\n  <WHERE> is a SQL style where clause in quotes (You have to escape single quotes - see example below).\n  Example:\n  # Change \"new_setting\" secure setting to \"newer_value\".\n  adb shell content update --uri content://settings/secure --bind value:s:newer_value --where \"name='new_setting'\"\n\nusage: adb shell content delete --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--where <WHERE>] [--extra <BINDING>...]\n  Example:\n  # Rem\n... (truncated)\n</output_tail>",
+      "extra": {
+        "raw_output": "$ adb shell \"for u in content://de.dennisguse.opentracks content://de.dennisguse.opentracks/track content://de.dennisguse.opentracks/tracks content://de.dennisguse.opentracks/trackpoints content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/trackpoints content://de.dennisguse.opentracks.provider content://de.dennisguse.opentracks.provider/tracks content://de.dennisguse.opentracks.data content://de.dennisguse.opentracks.data/tracks; do echo URI=$u; content query --uri \\\"$u\\\" --limit 1 2>&1; echo; done\"\nURI=content://de.dennisguse.opentracks\nusage: adb shell content [subcommand] [options]\n\nusage: adb shell content insert --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--extra <BINDING>...]\n  <URI> a content provider URI.\n  <BINDING> binds a typed value to a column and is formatted:\n  <COLUMN_NAME>:<TYPE>:<COLUMN_VALUE> where:\n  <TYPE> specifies data type such as:\n  b - boolean, s - string, i - integer, l - long, f - float, d - double, n - null\n  Note: Omit the value for passing an empty string, e.g column:s:\n  Example:\n  # Add \"new_setting\" secure setting with value \"new_value\".\n  adb shell content insert --uri content://settings/secure --bind name:s:new_setting --bind value:s:new_value\n\nusage: adb shell content update --uri <URI> [--user <USER_ID>] [--where <WHERE>] [--extra <BINDING>...]\n  <WHERE> is a SQL style where clause in quotes (You have to escape single quotes - see example below).\n  Example:\n  # Change \"new_setting\" secure setting to \"newer_value\".\n  adb shell content update --uri content://settings/secure --bind value:s:newer_value --where \"name='new_setting'\"\n\nusage: adb shell content delete --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--where <WHERE>] [--extra <BINDING>...]\n  Example:\n  # Remove \"new_setting\" secure setting.\n  adb shell content delete --uri content://settings/secure --where \"name='new_setting'\"\n\nusage: adb shell content query --uri <URI> [--user <USER_ID>] [--projection <PROJECTION>] [--where <WHERE>] [--sort <SORT_ORDER>] [--extra <BINDING>...]\n  <PROJECTION> is a list of colon separated column names and is formatted:\n  <COLUMN_NAME>[:<COLUMN_NAME>...]\n  <SORT_ORDER> is the order in which rows in the result should be sorted.\n  Example:\n  # Select \"name\" and \"value\" columns from secure settings where \"name\" is equal to \"new_setting\" and sort the result by name in ascending order.\n  adb shell content query --uri content://settings/secure --projection name:value --where \"name='new_setting'\" --sort \"name ASC\"\n\nusage: adb shell content call --uri <URI> --method <METHOD> [--arg <ARG>]\n       [--extra <BINDING> ...]\n  <METHOD> is the name of a provider-defined method\n  <ARG> is an optional string argument\n  <BINDING> is like --bind above, typed data of the form <KEY>:{b,s,i,l,f,d}:<VAL>\n\nusage: adb shell content read --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content read --uri content://settings/system/ringtone_cache' > host.ogg\n\nusage: adb shell content write --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content write --uri content://settings/system/ringtone_cache' < host.ogg\n\nusage: adb shell content gettype --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell content gettype --uri content://media/internal/audio/media/\n\n\n[ERROR] Unsupported argument: --limit\n\nURI=content://de.dennisguse.opentracks/track\nusage: adb shell content [subcommand] [options]\n\nusage: adb shell content insert --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--extra <BINDING>...]\n  <URI> a content provider URI.\n  <BINDING> binds a typed value to a column and is formatted:\n  <COLUMN_NAME>:<TYPE>:<COLUMN_VALUE> where:\n  <TYPE> specifies data type such as:\n  b - boolean, s - string, i - integer, l - long, f - float, d - double, n - null\n  Note: Omit the value for passing an empty string, e.g column:s:\n  Example:\n  # Add \"new_setting\" secure setting with value \"new_value\".\n  adb shell content insert --uri content://settings/secure --bind name:s:new_setting --bind value:s:new_value\n\nusage: adb shell content update --uri <URI> [--user <USER_ID>] [--where <WHERE>] [--extra <BINDING>...]\n  <WHERE> is a SQL style where clause in quotes (You have to escape single quotes - see example below).\n  Example:\n  # Change \"new_setting\" secure setting to \"newer_value\".\n  adb shell content update --uri content://settings/secure --bind value:s:newer_value --where \"name='new_setting'\"\n\nusage: adb shell content delete --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--where <WHERE>] [--extra <BINDING>...]\n  Example:\n  # Remove \"new_setting\" secure setting.\n  adb shell content delete --uri content://settings/secure --where \"name='new_setting'\"\n\nusage: adb shell content query --uri <URI> [--user <USER_ID>] [--projection <PROJECTION>] [--where <WHERE>] [--sort <SORT_ORDER>] [--extra <BINDING>...]\n  <PROJECTION> is a list of colon separated column names and is formatted:\n  <COLUMN_NAME>[:<COLUMN_NAME>...]\n  <SORT_ORDER> is the order in which rows in the result should be sorted.\n  Example:\n  # Select \"name\" and \"value\" columns from secure settings where \"name\" is equal to \"new_setting\" and sort the result by name in ascending order.\n  adb shell content query --uri content://settings/secure --projection name:value --where \"name='new_setting'\" --sort \"name ASC\"\n\nusage: adb shell content call --uri <URI> --method <METHOD> [--arg <ARG>]\n       [--extra <BINDING> ...]\n  <METHOD> is the name of a provider-defined method\n  <ARG> is an optional string argument\n  <BINDING> is like --bind above, typed data of the form <KEY>:{b,s,i,l,f,d}:<VAL>\n\nusage: adb shell content read --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content read --uri content://settings/system/ringtone_cache' > host.ogg\n\nusage: adb shell content write --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content write --uri content://settings/system/ringtone_cache' < host.ogg\n\nusage: adb shell content gettype --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell content gettype --uri content://media/internal/audio/media/\n\n\n[ERROR] Unsupported argument: --limit\n\nURI=content://de.dennisguse.opentracks/tracks\nusage: adb shell content [subcommand] [options]\n\nusage: adb shell content insert --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--extra <BINDING>...]\n  <URI> a content provider URI.\n  <BINDING> binds a typed value to a column and is formatted:\n  <COLUMN_NAME>:<TYPE>:<COLUMN_VALUE> where:\n  <TYPE> specifies data type such as:\n  b - boolean, s - string, i - integer, l - long, f - float, d - double, n - null\n  Note: Omit the value for passing an empty string, e.g column:s:\n  Example:\n  # Add \"new_setting\" secure setting with value \"new_value\".\n  adb shell content insert --uri content://settings/secure --bind name:s:new_setting --bind value:s:new_value\n\nusage: adb shell content update --uri <URI> [--user <USER_ID>] [--where <WHERE>] [--extra <BINDING>...]\n  <WHERE> is a SQL style where clause in quotes (You have to escape single quotes - see example below).\n  Example:\n  # Change \"new_setting\" secure setting to \"newer_value\".\n  adb shell content update --uri content://settings/secure --bind value:s:newer_value --where \"name='new_setting'\"\n\nusage: adb shell content delete --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--where <WHERE>] [--extra <BINDING>...]\n  Example:\n  # Remove \"new_setting\" secure setting.\n  adb shell content delete --uri content://settings/secure --where \"name='new_setting'\"\n\nusage: adb shell content query --uri <URI> [--user <USER_ID>] [--projection <PROJECTION>] [--where <WHERE>] [--sort <SORT_ORDER>] [--extra <BINDING>...]\n  <PROJECTION> is a list of colon separated column names and is formatted:\n  <COLUMN_NAME>[:<COLUMN_NAME>...]\n  <SORT_ORDER> is the order in which rows in the result should be sorted.\n  Example:\n  # Select \"name\" and \"value\" columns from secure settings where \"name\" is equal to \"new_setting\" and sort the result by name in ascending order.\n  adb shell content query --uri content://settings/secure --projection name:value --where \"name='new_setting'\" --sort \"name ASC\"\n\nusage: adb shell content call --uri <URI> --method <METHOD> [--arg <ARG>]\n       [--extra <BINDING> ...]\n  <METHOD> is the name of a provider-defined method\n  <ARG> is an optional string argument\n  <BINDING> is like --bind above, typed data of the form <KEY>:{b,s,i,l,f,d}:<VAL>\n\nusage: adb shell content read --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content read --uri content://settings/system/ringtone_cache' > host.ogg\n\nusage: adb shell content write --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content write --uri content://settings/system/ringtone_cache' < host.ogg\n\nusage: adb shell content gettype --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell content gettype --uri content://media/internal/audio/media/\n\n\n[ERROR] Unsupported argument: --limit\n\nURI=content://de.dennisguse.opentracks/trackpoints\nusage: adb shell content [subcommand] [options]\n\nusage: adb shell content insert --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--extra <BINDING>...]\n  <URI> a content provider URI.\n  <BINDING> binds a typed value to a column and is formatted:\n  <COLUMN_NAME>:<TYPE>:<COLUMN_VALUE> where:\n  <TYPE> specifies data type such as:\n  b - boolean, s - string, i - integer, l - long, f - float, d - double, n - null\n  Note: Omit the value for passing an empty string, e.g column:s:\n  Example:\n  # Add \"new_setting\" secure setting with value \"new_value\".\n  adb shell content insert --uri content://settings/secure --bind name:s:new_setting --bind value:s:new_value\n\nusage: adb shell content update --uri <URI> [--user <USER_ID>] [--where <WHERE>] [--extra <BINDING>...]\n  <WHERE> is a SQL style where clause in quotes (You have to escape single quotes - see example below).\n  Example:\n  # Change \"new_setting\" secure setting to \"newer_value\".\n  adb shell content update --uri content://settings/secure --bind value:s:newer_value --where \"name='new_setting'\"\n\nusage: adb shell content delete --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--where <WHERE>] [--extra <BINDING>...]\n  Example:\n  # Remove \"new_setting\" secure setting.\n  adb shell content delete --uri content://settings/secure --where \"name='new_setting'\"\n\nusage: adb shell content query --uri <URI> [--user <USER_ID>] [--projection <PROJECTION>] [--where <WHERE>] [--sort <SORT_ORDER>] [--extra <BINDING>...]\n  <PROJECTION> is a list of colon separated column names and is formatted:\n  <COLUMN_NAME>[:<COLUMN_NAME>...]\n  <SORT_ORDER> is the order in which rows in the result should be sorted.\n  Example:\n  # Select \"name\" and \"value\" columns from secure settings where \"name\" is equal to \"new_setting\" and sort the result by name in ascending order.\n  adb shell content query --uri content://settings/secure --projection name:value --where \"name='new_setting'\" --sort \"name ASC\"\n\nusage: adb shell content call --uri <URI> --method <METHOD> [--arg <ARG>]\n       [--extra <BINDING> ...]\n  <METHOD> is the name of a provider-defined method\n  <ARG> is an optional string argument\n  <BINDING> is like --bind above, typed data of the form <KEY>:{b,s,i,l,f,d}:<VAL>\n\nusage: adb shell content read --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content read --uri content://settings/system/ringtone_cache' > host.ogg\n\nusage: adb shell content write --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content write --uri content://settings/system/ringtone_cache' < host.ogg\n\nusage: adb shell content gettype --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell content gettype --uri content://media/internal/audio/media/\n\n\n[ERROR] Unsupported argument: --limit\n\nURI=content://de.dennisguse.opentracks.content\nusage: adb shell content [subcommand] [options]\n\nusage: adb shell content insert --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--extra <BINDING>...]\n  <URI> a content provider URI.\n  <BINDING> binds a typed value to a column and is formatted:\n  <COLUMN_NAME>:<TYPE>:<COLUMN_VALUE> where:\n  <TYPE> specifies data type such as:\n  b - boolean, s - string, i - integer, l - long, f - float, d - double, n - null\n  Note: Omit the value for passing an empty string, e.g column:s:\n  Example:\n  # Add \"new_setting\" secure setting with value \"new_value\".\n  adb shell content insert --uri content://settings/secure --bind name:s:new_setting --bind value:s:new_value\n\nusage: adb shell content update --uri <URI> [--user <USER_ID>] [--where <WHERE>] [--extra <BINDING>...]\n  <WHERE> is a SQL style where clause in quotes (You have to escape single quotes - see example below).\n  Example:\n  # Change \"new_setting\" secure setting to \"newer_value\".\n  adb shell content update --uri content://settings/secure --bind value:s:newer_value --where \"name='new_setting'\"\n\nusage: adb shell content delete --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--where <WHERE>] [--extra <BINDING>...]\n  Example:\n  # Remove \"new_setting\" secure setting.\n  adb shell content delete --uri content://settings/secure --where \"name='new_setting'\"\n\nusage: adb shell content query --uri <URI> [--user <USER_ID>] [--projection <PROJECTION>] [--where <WHERE>] [--sort <SORT_ORDER>] [--extra <BINDING>...]\n  <PROJECTION> is a list of colon separated column names and is formatted:\n  <COLUMN_NAME>[:<COLUMN_NAME>...]\n  <SORT_ORDER> is the order in which rows in the result should be sorted.\n  Example:\n  # Select \"name\" and \"value\" columns from secure settings where \"name\" is equal to \"new_setting\" and sort the result by name in ascending order.\n  adb shell content query --uri content://settings/secure --projection name:value --where \"name='new_setting'\" --sort \"name ASC\"\n\nusage: adb shell content call --uri <URI> --method <METHOD> [--arg <ARG>]\n       [--extra <BINDING> ...]\n  <METHOD> is the name of a provider-defined method\n  <ARG> is an optional string argument\n  <BINDING> is like --bind above, typed data of the form <KEY>:{b,s,i,l,f,d}:<VAL>\n\nusage: adb shell content read --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content read --uri content://settings/system/ringtone_cache' > host.ogg\n\nusage: adb shell content write --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell 'content write --uri content://settings/system/ringtone_cache' < host.ogg\n\nusage: adb shell content gettype --uri <URI> [--user <USER_ID>]\n  Example:\n  adb shell content gettype --uri content://media/internal/audio/media/\n\n\n[ERROR] Unsupported argument: --limit\n\nURI=content://de.dennisguse.opentracks.content/track\nusage: adb shell content [subcommand] [options]\n\nusage: adb shell content insert --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--extra <BINDING>...]\n  <URI> a content provider URI.\n  <BINDING> binds a typed value to a column and is formatted:\n  <COLUMN_NAME>:<TYPE>:<COLUMN_VALUE> where:\n  <TYPE> specifies data type such as:\n  b - boolean, s - string, i - integer, l - long, f - float, d - double, n - null\n  Note: Omit the value for passing an empty string, e.g column:s:\n  Example:\n  # Add \"new_setting\" secure setting with value \"new_value\".\n  adb shell content insert --uri content://settings/secure --bind name:s:new_setting --bind value:s:new_value\n\nusage: adb shell content update --uri <URI> [--user <USER_ID>] [--where <WHERE>] [--extra <BINDING>...]\n  <WHERE> is a SQL style where clause in quotes (You have to escape single quotes - see example below).\n  Example:\n  # Change \"new_setting\" secure setting to \"newer_value\".\n  adb shell content update --uri content://settings/secure --bind value:s:newer_value --where \"name='new_setting'\"\n\nusage: adb shell content delete --uri <URI> [--user <USER_ID>] --bind <BINDING> [--bind <BINDING>...] [--where <WHERE>] [--extra <BINDING>...]\n  Example:\n  # Rem\n... (truncated)",
+        "returncode": 0,
+        "timestamp": 1778103779.2800019,
+        "exception_info": null
+      }
+    },
+    {
+      "content": "THOUGHT: The previous probe failed because this Android `content` tool doesn\u2019t support `--limit`, so it printed usage instead of testing URIs. I still need a valid read surface; the most efficient next step is to discover the correct `cmd package query-content-providers` syntax and then query by package directly.\n\n```bash\nadb shell \"cmd package help | sed -n '1,220p'\"\n```",
+      "role": "assistant",
+      "tool_calls": null,
+      "function_call": null,
+      "reasoning_content": "",
+      "reasoning_items": [
+        {
+          "type": "reasoning",
+          "id": "rs_096909692914964f0069fbb5e415bc8196882bcd257096994c",
+          "encrypted_content": null,
+          "summary": []
+        }
+      ],
+      "provider_specific_fields": null,
+      "extra": {
+        "actions": [
+          {
+            "command": "adb shell \"cmd package help | sed -n '1,220p'\""
+          }
+        ],
+        "response": {
+          "id": "chatcmpl-9fe1c4c6-e5e8-4c9d-afd8-e9955174856f",
+          "created": 1778103779,
+          "model": "gpt-5.3-codex",
+          "object": "chat.completion",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "THOUGHT: The previous probe failed because this Android `content` tool doesn\u2019t support `--limit`, so it printed usage instead of testing URIs. I still need a valid read surface; the most efficient next step is to discover the correct `cmd package query-content-providers` syntax and then query by package directly.\n\n```bash\nadb shell \"cmd package help | sed -n '1,220p'\"\n```",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null,
+                "reasoning_content": "",
+                "reasoning_items": [
+                  {
+                    "type": "reasoning",
+                    "id": "rs_096909692914964f0069fbb5e415bc8196882bcd257096994c",
+                    "encrypted_content": null,
+                    "summary": []
+                  }
+                ]
+              }
+            }
+          ],
+          "usage": {
+            "completion_tokens": 426,
+            "prompt_tokens": 6971,
+            "total_tokens": 7397,
+            "completion_tokens_details": {
+              "reasoning_tokens": 334,
+              "text_tokens": null,
+              "image_tokens": null
+            },
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 0,
+              "text_tokens": null,
+              "image_tokens": null,
+              "video_tokens": null
+            }
+          }
+        },
+        "cost": 0.01816325,
+        "timestamp": 1778103786.7346144
+      }
+    },
+    {
+      "role": "user",
+      "content": "<returncode>0</returncode>\n<output>\n$ adb shell \"cmd package help | sed -n '1,220p'\"\nPackage manager (package) commands:\n  help\n    Print this help text.\n\n  path [--user USER_ID] PACKAGE\n    Print the path to the .apk of the given PACKAGE.\n\n  dump PACKAGE\n    Print various system state associated with the given PACKAGE.\n\n  has-feature FEATURE_NAME [version]\n    Prints true and returns exit status 0 when system has a FEATURE_NAME,\n    otherwise prints false and returns exit status 1\n\n  list features\n    Prints all features of the system.\n\n  list instrumentation [-f] [TARGET-PACKAGE]\n    Prints all test packages; optionally only those targeting TARGET-PACKAGE\n    Options:\n      -f: dump the name of the .apk file containing the test package\n\n  list libraries\n    Prints all system libraries.\n\n  list packages [-f] [-d] [-e] [-s] [-3] [-i] [-l] [-u] [-U] \n      [--show-versioncode] [--apex-only] [--uid UID] [--user USER_ID] [FILTER]\n    Prints all packages; optionally only those whose name contains\n    the text in FILTER.  Options are:\n      -f: see their associated file\n      -a: all known packages (but excluding APEXes)\n      -d: filter to only show disabled packages\n      -e: filter to only show enabled packages\n      -s: filter to only show system packages\n      -3: filter to only show third party packages\n      -i: see the installer for the packages\n      -l: ignored (used for compatibility with older releases)\n      -U: also show the package UID\n      -u: also include uninstalled packages\n      --show-versioncode: also show the version code\n      --apex-only: only show APEX packages\n      --uid UID: filter to only show packages with the given UID\n      --user USER_ID: only list packages belonging to the given user\n\n  list permission-groups\n    Prints all known permission groups.\n\n  list permissions [-g] [-f] [-d] [-u] [GROUP]\n    Prints all known permissions; optionally only those in GROUP.  Options are:\n      -g: organize by group\n      -f: print all information\n      -s: short summary\n      -d: only list dangerous permissions\n      -u: list only the permissions users will see\n\n  list staged-sessions [--only-ready] [--only-sessionid] [--only-parent]\n    Prints all staged sessions.\n      --only-ready: show only staged sessions that are ready\n      --only-sessionid: show only sessionId of each session\n      --only-parent: hide all children sessions\n\n  list users\n    Prints all users.\n\n  resolve-activity [--brief] [--components] [--query-flags FLAGS]\n       [--user USER_ID] INTENT\n    Prints the activity that resolves to the given INTENT.\n\n  query-activities [--brief] [--components] [--query-flags FLAGS]\n       [--user USER_ID] INTENT\n    Prints all activities that can handle the given INTENT.\n\n  query-services [--brief] [--components] [--query-flags FLAGS]\n       [--user USER_ID] INTENT\n    Prints all services that can handle the given INTENT.\n\n  query-receivers [--brief] [--components] [--query-flags FLAGS]\n       [--user USER_ID] INTENT\n    Prints all broadcast receivers that can handle the given INTENT.\n\n  install [-rtfdg] [-i PACKAGE] [--user USER_ID|all|current]\n       [-p INHERIT_PACKAGE] [--install-location 0/1/2]\n       [--install-reason 0/1/2/3/4] [--originating-uri URI]\n       [--referrer URI] [--abi ABI_NAME] [--force-sdk]\n       [--preload] [--instant] [--full] [--dont-kill]\n       [--enable-rollback]\n       [--force-uuid internal|UUID] [--pkg PACKAGE] [-S BYTES]\n       [--apex] [--staged-ready-timeout TIMEOUT]\n       [PATH [SPLIT...]|-]\n    Install an application.  Must provide the apk data to install, either as\n    file path(s) or '-' to read from stdin.  Options are:\n      -R: disallow replacement of existing application\n      -t: allow test packages\n      -i: specify package name of installer owning the app\n      -f: install application on internal flash\n      -d: allow version code downgrade (debuggable packages only)\n      -p: partial application install (new split on top of existing pkg)\n      -g: grant all runtime permissions\n      -S: size in bytes of package, required for stdin\n      --user: install under the given user.\n      --dont-kill: installing a new feature split, don't kill running app\n      --restrict-permissions: don't whitelist restricted permissions at install\n      --originating-uri: set URI where app was downloaded from\n      --referrer: set URI that instigated the install of the app\n      --pkg: specify expected package name of app being installed\n      --abi: override the default ABI of the platform\n      --instant: cause the app to be installed as an ephemeral install app\n      --full: cause the app to be installed as a non-ephemeral full app\n      --install-location: force the install location:\n          0=auto, 1=internal only, 2=prefer external\n      --install-reason: indicates why the app is being installed:\n          0=unknown, 1=admin policy, 2=device restore,\n          3=device setup, 4=user request\n      --force-uuid: force install on to disk volume with given UUID\n      --apex: install an .apex file, not an .apk\n      --staged-ready-timeout: By default, staged sessions wait 60000\n          milliseconds for pre-reboot verification to complete when\n          performing staged install. This flag is used to alter the waiting\n          time. You can skip the waiting time by specifying a TIMEOUT of '0'\n\n  install-existing [--user USER_ID|all|current]\n       [--instant] [--full] [--wait] [--restrict-permissions] PACKAGE\n    Installs an existing application for a new user.  Options are:\n      --user: install for the given user.\n      --instant: install as an instant app\n      --full: install as a full app\n      --wait: wait until the package is installed\n      --restrict-permissions: don't whitelist restricted permissions\n\n  install-create [-lrtsfdg] [-i PACKAGE] [--user USER_ID|all|current]\n       [-p INHERIT_PACKAGE] [--install-location 0/1/2]\n       [--install-reason 0/1/2/3/4] [--originating-uri URI]\n       [--referrer URI] [--abi ABI_NAME] [--force-sdk]\n       [--preload] [--instant] [--full] [--dont-kill]\n       [--force-uuid internal|UUID] [--pkg PACKAGE] [--apex] [-S BYTES]\n       [--multi-package] [--staged]\n    Like \"install\", but starts an install session.  Use \"install-write\"\n    to push data into the session, and \"install-commit\" to finish.\n\n  install-write [-S BYTES] SESSION_ID SPLIT_NAME [PATH|-]\n    Write an apk into the given install session.  If the path is '-', data\n    will be read from stdin.  Options are:\n      -S: size in bytes of package, required for stdin\n\n  install-remove SESSION_ID SPLIT...\n    Mark SPLIT(s) as removed in the given install session.\n\n  install-add-session MULTI_PACKAGE_SESSION_ID CHILD_SESSION_IDs\n    Add one or more session IDs to a multi-package session.\n\n  install-commit SESSION_ID\n    Commit the given active install session, installing the app.\n\n  install-abandon SESSION_ID\n    Delete the given active install session.\n\n  set-install-location LOCATION\n    Changes the default install location.  NOTE this is only intended for debugging;\n    using this can cause applications to break and other undersireable behavior.\n    LOCATION is one of:\n    0 [auto]: Let system decide the best location\n    1 [internal]: Install on internal device storage\n    2 [external]: Install on external media\n\n  get-install-location\n    Returns the current install location: 0, 1 or 2 as per set-install-location.\n\n  move-package PACKAGE [internal|UUID]\n\n  move-primary-storage [internal|UUID]\n\n  uninstall [-k] [--user USER_ID] [--versionCode VERSION_CODE]\n       PACKAGE [SPLIT...]\n    Remove the given package name from the system.  May remove an entire app\n    if no SPLIT names specified, otherwise will remove only the splits of the\n    given app.  Options are:\n      -k: keep the data and cache directories around after package removal.\n      --user: remove the app from the given user.\n      --versionCode: only uninstall if the app has the given version code.\n\n  clear [--user USER_ID] [--cache-only] PACKAGE\n    Deletes data associated with a package. Options are:\n    --user: specifies the user for which we need to clear data\n    --cache-only: a flag which tells if we only need to clear cache data\n\n  enable [--user USER_ID] PACKAGE_OR_COMPONENT\n  disable [--user USER_ID] PACKAGE_OR_COMPONENT\n  disable-user [--user USER_ID] PACKAGE_OR_COMPONENT\n  disable-until-used [--user USER_ID] PACKAGE_OR_COMPONENT\n  default-state [--user USER_ID] PACKAGE_OR_COMPONENT\n    These commands change the enabled state of a given package or\n    component (written as \"package/class\").\n\n  hide [--user USER_ID] PACKAGE_OR_COMPONENT\n  unhide [--user USER_ID] PACKAGE_OR_COMPONENT\n\n  suspend [--user USER_ID] PACKAGE [PACKAGE...]\n    Suspends the specified package(s) (as user).\n\n  unsuspend [--user USER_ID] PACKAGE [PACKAGE...]\n    Unsuspends the specified package(s) (as user).\n\n  set-distracting-restriction [--user USER_ID] [--flag FLAG ...]\n      PACKAGE [PACKAGE...]\n    Sets the specified restriction flags to given package(s) (for user).\n    Flags are:\n      hide-notifications: Hides notifications from this package\n      hide-from-suggestions: Hides this package from suggestions\n        (by the launcher, etc.)\n    Any existing flags are overwritten, which also means that if no flags are\n    specified then all existing flags will be cleared.\n\n  grant [--user USER_ID] PACKAGE PERMISSION\n  revoke [--user USER_ID] PACKAGE PERMISSION\n    These commands either grant or revoke permissions to apps.  The permissions\n    must be declared as used in the app's manifest, be runtime permissions\n    (protection level dangerous), and the app targeting SDK greater than Lollipop MR1.\n\n  set-permission-flags [--user USER_ID] PACKAGE PERMISSION [FLAGS..]\n  clear-permission-flags [--user USER_ID] PACKAGE PERMISSION [FLAGS..]\n\n</output>",
+      "extra": {
+        "raw_output": "$ adb shell \"cmd package help | sed -n '1,220p'\"\nPackage manager (package) commands:\n  help\n    Print this help text.\n\n  path [--user USER_ID] PACKAGE\n    Print the path to the .apk of the given PACKAGE.\n\n  dump PACKAGE\n    Print various system state associated with the given PACKAGE.\n\n  has-feature FEATURE_NAME [version]\n    Prints true and returns exit status 0 when system has a FEATURE_NAME,\n    otherwise prints false and returns exit status 1\n\n  list features\n    Prints all features of the system.\n\n  list instrumentation [-f] [TARGET-PACKAGE]\n    Prints all test packages; optionally only those targeting TARGET-PACKAGE\n    Options:\n      -f: dump the name of the .apk file containing the test package\n\n  list libraries\n    Prints all system libraries.\n\n  list packages [-f] [-d] [-e] [-s] [-3] [-i] [-l] [-u] [-U] \n      [--show-versioncode] [--apex-only] [--uid UID] [--user USER_ID] [FILTER]\n    Prints all packages; optionally only those whose name contains\n    the text in FILTER.  Options are:\n      -f: see their associated file\n      -a: all known packages (but excluding APEXes)\n      -d: filter to only show disabled packages\n      -e: filter to only show enabled packages\n      -s: filter to only show system packages\n      -3: filter to only show third party packages\n      -i: see the installer for the packages\n      -l: ignored (used for compatibility with older releases)\n      -U: also show the package UID\n      -u: also include uninstalled packages\n      --show-versioncode: also show the version code\n      --apex-only: only show APEX packages\n      --uid UID: filter to only show packages with the given UID\n      --user USER_ID: only list packages belonging to the given user\n\n  list permission-groups\n    Prints all known permission groups.\n\n  list permissions [-g] [-f] [-d] [-u] [GROUP]\n    Prints all known permissions; optionally only those in GROUP.  Options are:\n      -g: organize by group\n      -f: print all information\n      -s: short summary\n      -d: only list dangerous permissions\n      -u: list only the permissions users will see\n\n  list staged-sessions [--only-ready] [--only-sessionid] [--only-parent]\n    Prints all staged sessions.\n      --only-ready: show only staged sessions that are ready\n      --only-sessionid: show only sessionId of each session\n      --only-parent: hide all children sessions\n\n  list users\n    Prints all users.\n\n  resolve-activity [--brief] [--components] [--query-flags FLAGS]\n       [--user USER_ID] INTENT\n    Prints the activity that resolves to the given INTENT.\n\n  query-activities [--brief] [--components] [--query-flags FLAGS]\n       [--user USER_ID] INTENT\n    Prints all activities that can handle the given INTENT.\n\n  query-services [--brief] [--components] [--query-flags FLAGS]\n       [--user USER_ID] INTENT\n    Prints all services that can handle the given INTENT.\n\n  query-receivers [--brief] [--components] [--query-flags FLAGS]\n       [--user USER_ID] INTENT\n    Prints all broadcast receivers that can handle the given INTENT.\n\n  install [-rtfdg] [-i PACKAGE] [--user USER_ID|all|current]\n       [-p INHERIT_PACKAGE] [--install-location 0/1/2]\n       [--install-reason 0/1/2/3/4] [--originating-uri URI]\n       [--referrer URI] [--abi ABI_NAME] [--force-sdk]\n       [--preload] [--instant] [--full] [--dont-kill]\n       [--enable-rollback]\n       [--force-uuid internal|UUID] [--pkg PACKAGE] [-S BYTES]\n       [--apex] [--staged-ready-timeout TIMEOUT]\n       [PATH [SPLIT...]|-]\n    Install an application.  Must provide the apk data to install, either as\n    file path(s) or '-' to read from stdin.  Options are:\n      -R: disallow replacement of existing application\n      -t: allow test packages\n      -i: specify package name of installer owning the app\n      -f: install application on internal flash\n      -d: allow version code downgrade (debuggable packages only)\n      -p: partial application install (new split on top of existing pkg)\n      -g: grant all runtime permissions\n      -S: size in bytes of package, required for stdin\n      --user: install under the given user.\n      --dont-kill: installing a new feature split, don't kill running app\n      --restrict-permissions: don't whitelist restricted permissions at install\n      --originating-uri: set URI where app was downloaded from\n      --referrer: set URI that instigated the install of the app\n      --pkg: specify expected package name of app being installed\n      --abi: override the default ABI of the platform\n      --instant: cause the app to be installed as an ephemeral install app\n      --full: cause the app to be installed as a non-ephemeral full app\n      --install-location: force the install location:\n          0=auto, 1=internal only, 2=prefer external\n      --install-reason: indicates why the app is being installed:\n          0=unknown, 1=admin policy, 2=device restore,\n          3=device setup, 4=user request\n      --force-uuid: force install on to disk volume with given UUID\n      --apex: install an .apex file, not an .apk\n      --staged-ready-timeout: By default, staged sessions wait 60000\n          milliseconds for pre-reboot verification to complete when\n          performing staged install. This flag is used to alter the waiting\n          time. You can skip the waiting time by specifying a TIMEOUT of '0'\n\n  install-existing [--user USER_ID|all|current]\n       [--instant] [--full] [--wait] [--restrict-permissions] PACKAGE\n    Installs an existing application for a new user.  Options are:\n      --user: install for the given user.\n      --instant: install as an instant app\n      --full: install as a full app\n      --wait: wait until the package is installed\n      --restrict-permissions: don't whitelist restricted permissions\n\n  install-create [-lrtsfdg] [-i PACKAGE] [--user USER_ID|all|current]\n       [-p INHERIT_PACKAGE] [--install-location 0/1/2]\n       [--install-reason 0/1/2/3/4] [--originating-uri URI]\n       [--referrer URI] [--abi ABI_NAME] [--force-sdk]\n       [--preload] [--instant] [--full] [--dont-kill]\n       [--force-uuid internal|UUID] [--pkg PACKAGE] [--apex] [-S BYTES]\n       [--multi-package] [--staged]\n    Like \"install\", but starts an install session.  Use \"install-write\"\n    to push data into the session, and \"install-commit\" to finish.\n\n  install-write [-S BYTES] SESSION_ID SPLIT_NAME [PATH|-]\n    Write an apk into the given install session.  If the path is '-', data\n    will be read from stdin.  Options are:\n      -S: size in bytes of package, required for stdin\n\n  install-remove SESSION_ID SPLIT...\n    Mark SPLIT(s) as removed in the given install session.\n\n  install-add-session MULTI_PACKAGE_SESSION_ID CHILD_SESSION_IDs\n    Add one or more session IDs to a multi-package session.\n\n  install-commit SESSION_ID\n    Commit the given active install session, installing the app.\n\n  install-abandon SESSION_ID\n    Delete the given active install session.\n\n  set-install-location LOCATION\n    Changes the default install location.  NOTE this is only intended for debugging;\n    using this can cause applications to break and other undersireable behavior.\n    LOCATION is one of:\n    0 [auto]: Let system decide the best location\n    1 [internal]: Install on internal device storage\n    2 [external]: Install on external media\n\n  get-install-location\n    Returns the current install location: 0, 1 or 2 as per set-install-location.\n\n  move-package PACKAGE [internal|UUID]\n\n  move-primary-storage [internal|UUID]\n\n  uninstall [-k] [--user USER_ID] [--versionCode VERSION_CODE]\n       PACKAGE [SPLIT...]\n    Remove the given package name from the system.  May remove an entire app\n    if no SPLIT names specified, otherwise will remove only the splits of the\n    given app.  Options are:\n      -k: keep the data and cache directories around after package removal.\n      --user: remove the app from the given user.\n      --versionCode: only uninstall if the app has the given version code.\n\n  clear [--user USER_ID] [--cache-only] PACKAGE\n    Deletes data associated with a package. Options are:\n    --user: specifies the user for which we need to clear data\n    --cache-only: a flag which tells if we only need to clear cache data\n\n  enable [--user USER_ID] PACKAGE_OR_COMPONENT\n  disable [--user USER_ID] PACKAGE_OR_COMPONENT\n  disable-user [--user USER_ID] PACKAGE_OR_COMPONENT\n  disable-until-used [--user USER_ID] PACKAGE_OR_COMPONENT\n  default-state [--user USER_ID] PACKAGE_OR_COMPONENT\n    These commands change the enabled state of a given package or\n    component (written as \"package/class\").\n\n  hide [--user USER_ID] PACKAGE_OR_COMPONENT\n  unhide [--user USER_ID] PACKAGE_OR_COMPONENT\n\n  suspend [--user USER_ID] PACKAGE [PACKAGE...]\n    Suspends the specified package(s) (as user).\n\n  unsuspend [--user USER_ID] PACKAGE [PACKAGE...]\n    Unsuspends the specified package(s) (as user).\n\n  set-distracting-restriction [--user USER_ID] [--flag FLAG ...]\n      PACKAGE [PACKAGE...]\n    Sets the specified restriction flags to given package(s) (for user).\n    Flags are:\n      hide-notifications: Hides notifications from this package\n      hide-from-suggestions: Hides this package from suggestions\n        (by the launcher, etc.)\n    Any existing flags are overwritten, which also means that if no flags are\n    specified then all existing flags will be cleared.\n\n  grant [--user USER_ID] PACKAGE PERMISSION\n  revoke [--user USER_ID] PACKAGE PERMISSION\n    These commands either grant or revoke permissions to apps.  The permissions\n    must be declared as used in the app's manifest, be runtime permissions\n    (protection level dangerous), and the app targeting SDK greater than Lollipop MR1.\n\n  set-permission-flags [--user USER_ID] PACKAGE PERMISSION [FLAGS..]\n  clear-permission-flags [--user USER_ID] PACKAGE PERMISSION [FLAGS..]\n\n",
+        "returncode": 0,
+        "timestamp": 1778103786.8283172,
+        "exception_info": null
+      }
+    },
+    {
+      "content": "THOUGHT: I now know the prior URI probe was inconclusive due invalid `--limit`. I should test authorities with a lightweight verb (`content gettype`) that will quickly distinguish valid vs invalid providers without large row output. Main failure mode is guessing wrong paths, so I\u2019ll batch multiple likely authorities/paths.\n\n```bash\nadb shell \"for u in content://de.dennisguse.opentracks content://de.dennisguse.opentracks/track content://de.dennisguse.opentracks/tracks content://de.dennisguse.opentracks/trackpoints content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/trackpoints content://de.dennisguse.opentracks.provider content://de.dennisguse.opentracks.provider/track content://de.dennisguse.opentracks.provider/tracks content://de.dennisguse.opentracks.data content://de.dennisguse.opentracks.data/track content://de.dennisguse.opentracks.data/tracks; do echo URI=$u; content gettype --uri \\\"$u\\\" 2>&1; echo; done\"\n```",
+      "role": "assistant",
+      "tool_calls": null,
+      "function_call": null,
+      "reasoning_content": "",
+      "reasoning_items": [
+        {
+          "type": "reasoning",
+          "id": "rs_096909692914964f0069fbb5eb916c819693476b9d6f196587",
+          "encrypted_content": null,
+          "summary": []
+        }
+      ],
+      "provider_specific_fields": null,
+      "extra": {
+        "actions": [
+          {
+            "command": "adb shell \"for u in content://de.dennisguse.opentracks content://de.dennisguse.opentracks/track content://de.dennisguse.opentracks/tracks content://de.dennisguse.opentracks/trackpoints content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/trackpoints content://de.dennisguse.opentracks.provider content://de.dennisguse.opentracks.provider/track content://de.dennisguse.opentracks.provider/tracks content://de.dennisguse.opentracks.data content://de.dennisguse.opentracks.data/track content://de.dennisguse.opentracks.data/tracks; do echo URI=$u; content gettype --uri \\\"$u\\\" 2>&1; echo; done\""
+          }
+        ],
+        "response": {
+          "id": "chatcmpl-e6e1476e-91a5-43b3-b173-9b24e01b769f",
+          "created": 1778103786,
+          "model": "gpt-5.3-codex",
+          "object": "chat.completion",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "THOUGHT: I now know the prior URI probe was inconclusive due invalid `--limit`. I should test authorities with a lightweight verb (`content gettype`) that will quickly distinguish valid vs invalid providers without large row output. Main failure mode is guessing wrong paths, so I\u2019ll batch multiple likely authorities/paths.\n\n```bash\nadb shell \"for u in content://de.dennisguse.opentracks content://de.dennisguse.opentracks/track content://de.dennisguse.opentracks/tracks content://de.dennisguse.opentracks/trackpoints content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/trackpoints content://de.dennisguse.opentracks.provider content://de.dennisguse.opentracks.provider/track content://de.dennisguse.opentracks.provider/tracks content://de.dennisguse.opentracks.data content://de.dennisguse.opentracks.data/track content://de.dennisguse.opentracks.data/tracks; do echo URI=$u; content gettype --uri \\\"$u\\\" 2>&1; echo; done\"\n```",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null,
+                "reasoning_content": "",
+                "reasoning_items": [
+                  {
+                    "type": "reasoning",
+                    "id": "rs_096909692914964f0069fbb5eb916c819693476b9d6f196587",
+                    "encrypted_content": null,
+                    "summary": []
+                  }
+                ]
+              }
+            }
+          ],
+          "usage": {
+            "completion_tokens": 565,
+            "prompt_tokens": 9501,
+            "total_tokens": 10066,
+            "completion_tokens_details": {
+              "reasoning_tokens": 289,
+              "text_tokens": null,
+              "image_tokens": null
+            },
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 6784,
+              "text_tokens": null,
+              "image_tokens": null,
+              "video_tokens": null
+            }
+          }
+        },
+        "cost": 0.013851950000000002,
+        "timestamp": 1778103794.8371818
+      }
+    },
+    {
+      "role": "user",
+      "content": "<returncode>0</returncode>\n<output>\n$ adb shell \"for u in content://de.dennisguse.opentracks content://de.dennisguse.opentracks/track content://de.dennisguse.opentracks/tracks content://de.dennisguse.opentracks/trackpoints content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/trackpoints content://de.dennisguse.opentracks.provider content://de.dennisguse.opentracks.provider/track content://de.dennisguse.opentracks.provider/tracks content://de.dennisguse.opentracks.data content://de.dennisguse.opentracks.data/track content://de.dennisguse.opentracks.data/tracks; do echo URI=$u; content gettype --uri \\\"$u\\\" 2>&1; echo; done\"\nURI=content://de.dennisguse.opentracks\nError while accessing provider:de.dennisguse.opentracks\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks/track\nError while accessing provider:de.dennisguse.opentracks\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks/tracks\nError while accessing provider:de.dennisguse.opentracks\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks/trackpoints\nError while accessing provider:de.dennisguse.opentracks\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.content\nResult: null\n\nURI=content://de.dennisguse.opentracks.content/track\nResult: null\n\nURI=content://de.dennisguse.opentracks.content/tracks\nResult: null\n\nURI=content://de.dennisguse.opentracks.content/trackpoints\nResult: null\n\nURI=content://de.dennisguse.opentracks.provider\nError while accessing provider:de.dennisguse.opentracks.provider\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks.provider\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.provider/track\nError while accessing provider:de.dennisguse.opentracks.provider\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks.provider\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.provider/tracks\nError while accessing provider:de.dennisguse.opentracks.provider\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks.provider\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.data\nError while accessing provider:de.dennisguse.opentracks.data\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks.data\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.data/track\nError while accessing provider:de.dennisguse.opentracks.data\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks.data\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.data/tracks\nError while accessing provider:de.dennisguse.opentracks.data\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks.data\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\n\n</output>",
+      "extra": {
+        "raw_output": "$ adb shell \"for u in content://de.dennisguse.opentracks content://de.dennisguse.opentracks/track content://de.dennisguse.opentracks/tracks content://de.dennisguse.opentracks/trackpoints content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/trackpoints content://de.dennisguse.opentracks.provider content://de.dennisguse.opentracks.provider/track content://de.dennisguse.opentracks.provider/tracks content://de.dennisguse.opentracks.data content://de.dennisguse.opentracks.data/track content://de.dennisguse.opentracks.data/tracks; do echo URI=$u; content gettype --uri \\\"$u\\\" 2>&1; echo; done\"\nURI=content://de.dennisguse.opentracks\nError while accessing provider:de.dennisguse.opentracks\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks/track\nError while accessing provider:de.dennisguse.opentracks\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks/tracks\nError while accessing provider:de.dennisguse.opentracks\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks/trackpoints\nError while accessing provider:de.dennisguse.opentracks\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.content\nResult: null\n\nURI=content://de.dennisguse.opentracks.content/track\nResult: null\n\nURI=content://de.dennisguse.opentracks.content/tracks\nResult: null\n\nURI=content://de.dennisguse.opentracks.content/trackpoints\nResult: null\n\nURI=content://de.dennisguse.opentracks.provider\nError while accessing provider:de.dennisguse.opentracks.provider\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks.provider\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.provider/track\nError while accessing provider:de.dennisguse.opentracks.provider\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks.provider\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.provider/tracks\nError while accessing provider:de.dennisguse.opentracks.provider\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks.provider\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.data\nError while accessing provider:de.dennisguse.opentracks.data\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks.data\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.data/track\nError while accessing provider:de.dennisguse.opentracks.data\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks.data\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.data/tracks\nError while accessing provider:de.dennisguse.opentracks.data\njava.lang.IllegalStateException: Could not find provider: de.dennisguse.opentracks.data\n\tat com.android.commands.content.Content$Command.execute(Content.java:519)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\n\n",
+        "returncode": 0,
+        "timestamp": 1778103808.3989897,
+        "exception_info": null
+      }
+    },
+    {
+      "content": "THOUGHT: Great\u2014`de.dennisguse.opentracks.content` is a real provider authority. Now I need to discover valid collection paths and row schema via `content query` on likely endpoints (tracks/track) and inspect returned columns. The main failure mode is unknown URI paths, so I\u2019ll batch multiple plausible ones and truncate each result snippet.\n\n```bash\nadb shell \"for u in content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/activity content://de.dennisguse.opentracks.content/activities content://de.dennisguse.opentracks.content/segment content://de.dennisguse.opentracks.content/segments; do echo URI=$u; content query --uri \\\"$u\\\" --sort \\\"_id DESC\\\" 2>&1 | sed -n '1,80p'; echo; done\"\n```",
+      "role": "assistant",
+      "tool_calls": null,
+      "function_call": null,
+      "reasoning_content": "",
+      "reasoning_items": [
+        {
+          "type": "reasoning",
+          "id": "rs_096909692914964f0069fbb601055c81969c3c40d286eac92d",
+          "encrypted_content": null,
+          "summary": []
+        }
+      ],
+      "provider_specific_fields": null,
+      "extra": {
+        "actions": [
+          {
+            "command": "adb shell \"for u in content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/activity content://de.dennisguse.opentracks.content/activities content://de.dennisguse.opentracks.content/segment content://de.dennisguse.opentracks.content/segments; do echo URI=$u; content query --uri \\\"$u\\\" --sort \\\"_id DESC\\\" 2>&1 | sed -n '1,80p'; echo; done\""
+          }
+        ],
+        "response": {
+          "id": "chatcmpl-a07309bd-8169-4fd5-9f1d-3f2c9ab84f10",
+          "created": 1778103808,
+          "model": "gpt-5.3-codex",
+          "object": "chat.completion",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "THOUGHT: Great\u2014`de.dennisguse.opentracks.content` is a real provider authority. Now I need to discover valid collection paths and row schema via `content query` on likely endpoints (tracks/track) and inspect returned columns. The main failure mode is unknown URI paths, so I\u2019ll batch multiple plausible ones and truncate each result snippet.\n\n```bash\nadb shell \"for u in content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/activity content://de.dennisguse.opentracks.content/activities content://de.dennisguse.opentracks.content/segment content://de.dennisguse.opentracks.content/segments; do echo URI=$u; content query --uri \\\"$u\\\" --sort \\\"_id DESC\\\" 2>&1 | sed -n '1,80p'; echo; done\"\n```",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null,
+                "reasoning_content": "",
+                "reasoning_items": [
+                  {
+                    "type": "reasoning",
+                    "id": "rs_096909692914964f0069fbb601055c81969c3c40d286eac92d",
+                    "encrypted_content": null,
+                    "summary": []
+                  }
+                ]
+              }
+            }
+          ],
+          "usage": {
+            "completion_tokens": 497,
+            "prompt_tokens": 11121,
+            "total_tokens": 11618,
+            "completion_tokens_details": {
+              "reasoning_tokens": 280,
+              "text_tokens": null,
+              "image_tokens": null
+            },
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 9344,
+              "text_tokens": null,
+              "image_tokens": null,
+              "video_tokens": null
+            }
+          }
+        },
+        "cost": 0.01170295,
+        "timestamp": 1778103817.601165
+      }
+    },
+    {
+      "role": "user",
+      "content": "<returncode>0</returncode>\n<warning>Output was too long and has been truncated.</warning>\n<output_head>\n$ adb shell \"for u in content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/activity content://de.dennisguse.opentracks.content/activities content://de.dennisguse.opentracks.content/segment content://de.dennisguse.opentracks.content/segments; do echo URI=$u; content query --uri \\\"$u\\\" --sort \\\"_id DESC\\\" 2>&1 | sed -n '1,80p'; echo; done\"\nURI=content://de.dennisguse.opentracks.content\nError while accessing provider:de.dennisguse.opentracks.content\njava.lang.IllegalArgumentException: Unknown URL content://de.dennisguse.opentracks.content\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:172)\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:142)\n\tat android.content.ContentProviderProxy.query(ContentProviderNative.java:481)\n\tat com.android.commands.content.Content$QueryCommand.onExecute(Content.java:661)\n\tat com.android.commands.content.Content$Command.execute(Content.java:522)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.content/track\nError while accessing provider:de.dennisguse.opentracks.content\njava.lang.IllegalArgumentException: Unknown URL content://de.dennisguse.opentracks.content/track\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:172)\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:142)\n\tat android.content.ContentProviderProxy.query(ContentProviderNative.java:481)\n\tat com.android.commands.content.Content$QueryCommand.onExecute(Content.java:661)\n\tat com.android.commands.content.Content$Command.execute(Content.java:522)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.content/tracks\nRow: 0 _id=21, name=Skateboard Challenge, description=, category=skateboarding, starttime=1696838280000, stoptime=1696840380000, numpoints=0, totaldistance=660.0, totaltime=2100000, movingtime=2100000, avgspeed=3.1428573E-7, avgmovingspeed=3.1428573E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=479.0, icon=NULL, uuid=BLOB, elevationloss=335.0, starttime_offset=0, activity_type=skateboarding\nRow: 1 _id=20, name=More tired than usual today, description=Gained new knowledge and skills., category=mountain biking, starttime=1697180400000, stoptime=1697181300000, numpoints=0, totaldistance=12006.0, totaltime=900000, movingtime=900000, avgspeed=1.334E-5, avgmovingspeed=1.334E-5, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=1200.0, icon=NULL, uuid=BLOB, elevationloss=550.0, starttime_offset=0, activity_type=mountain biking\nRow: 2 _id=19, name=Bike Tour, description=, category=cycling, starttime=1697380500000, stoptime=1697395740000, numpoints=0, totaldistance=10139.0, totaltime=15240000, movingtime=15240000, avgspeed=6.652887E-7, avgmovingspeed=6.652887E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=66.0, icon=NULL, uuid=BLOB, elevationloss=424.0, starttime_offset=0, activity_type=cycling\nRow: 3 _id=18, name=River Paddle, description=, category=kayaking, starttime=1697112120000, stoptime=1697123520000, numpoints=0, totaldistance=14146.0, totaltime=11400000, movingtime=11400000, avgspeed=1.2408772E-6, avgmovingspeed=1.2408772E-6, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=460.0, icon=NULL, uuid=BLOB, elevationloss=378.0, starttime_offset=0, activity_type=kayaking\nRow: 4 _id=17, name=Trail Running Challenge, description=, category=trail running, starttime=1696784580000, stoptime=1696800540000, numpoints=0, totaldistance=4538.0, totaltime=15960000, movingtime=15960000, avgspeed=2.8433584E-7, avgmovingspeed=2.8433584E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=369.0, icon=NULL, uuid=BLOB, elevationloss=81.0, starttime_offset=0, activity_type=trail running\nRow: 5 _id=16, name=Off-road Run, description=, category=trail running, starttime=1696907640000, stoptime=1696915800000, numpoints=0, totaldistance=14355.0, totaltime=8160000, movingtime=8160000, avgspeed=1.7591912E-6, avgmovingspeed=1.7591912E-6, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=421.0, icon=NULL, uuid=BLOB, elevationloss=264.0, starttime_offset=0, activity_type=trail running\nRow: 6 _id=15, name=Evening Stroll, description=, category=walking, starttime=1697081820000, stoptime=1697082060000, numpoints=0, totaldistance=17123.0, totaltime=240000, movingtime=240000, avgspeed=7.1345836E-5, avgmovingspeed=7.1345836E-5, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=477.0, icon=NULL, uuid=BLOB, elevationloss=124.0, starttime_offset=0, activity_type=walking\nRow: 7 _id=14, name=Climbing Session, description=, category=climbing, starttime=1696247100000, stoptime=1696260720000, numpoints=0, totaldistance=225.0, totaltime=13620000, movingtime=13620000, avgspeed=1.6519824E-8, avgmovingspeed=1.6519824E-8, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=73.0, icon=NULL, uuid=BLOB, elevationloss=421.0, starttime_offset=0, activity_type=climbing\nRow: 8 _id=13, name=Bike Expedition, description=, category=biking, starttime=1696587300000, stoptime=1696595220000, numpoints=0, totaldistance=1593.0, totaltime=7920000, movingtime=7920000, avgspeed=2.0113636E-7, avgmovingspeed=2.0113636E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=203.0, icon=NULL, uuid=BLOB, elevationloss=192.0, starttime_offset=0, activity_type=biking\nRow: 9 _id=12, name=Skateboard Challenge, description=, category=skateboarding, starttime=1696238700000, stoptime=1696256580000, numpoints=0, totaldista\n</output_head>\n<elided>1985 characters elided</elided>\n<output_tail>\n0000, numpoints=0, totaldistance=9881.0, totaltime=11760000, movingtime=11760000, avgspeed=8.402211E-7, avgmovingspeed=8.402211E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=408.0, icon=NULL, uuid=BLOB, elevationloss=415.0, starttime_offset=0, activity_type=sailing\nRow: 15 _id=6, name=Water Exercise, description=, category=swimming, starttime=1697129220000, stoptime=1697137260000, numpoints=0, totaldistance=15691.0, totaltime=8040000, movingtime=8040000, avgspeed=1.951617E-6, avgmovingspeed=1.951617E-6, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=129.0, icon=NULL, uuid=BLOB, elevationloss=297.0, starttime_offset=0, activity_type=swimming\nRow: 16 _id=5, name=Yacht Sailing, description=, category=sailing, starttime=1696669920000, stoptime=1696685520000, numpoints=0, totaldistance=2639.0, totaltime=15600000, movingtime=15600000, avgspeed=1.6916667E-7, avgmovingspeed=1.6916667E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=70.0, icon=NULL, uuid=BLOB, elevationloss=124.0, starttime_offset=0, activity_type=sailing\nRow: 17 _id=4, name=Morning Walk, description=, category=walking, starttime=1696940580000, stoptime=1696956840000, numpoints=0, totaldistance=2398.0, totaltime=16260000, movingtime=16260000, avgspeed=1.4747847E-7, avgmovingspeed=1.4747847E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=383.0, icon=NULL, uuid=BLOB, elevationloss=468.0, starttime_offset=0, activity_type=walking\nRow: 18 _id=3, name=Lake Rowing, description=, category=rowing, starttime=1696538580000, stoptime=1696544340000, numpoints=0, totaldistance=16785.0, totaltime=5760000, movingtime=5760000, avgspeed=2.9140624E-6, avgmovingspeed=2.9140624E-6, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=145.0, icon=NULL, uuid=BLOB, elevationloss=215.0, starttime_offset=0, activity_type=rowing\nRow: 19 _id=2, name=Urban Skate, description=, category=skateboarding, starttime=1696230900000, stoptime=1696243500000, numpoints=0, totaldistance=16576.0, totaltime=12600000, movingtime=12600000, avgspeed=1.3155556E-6, avgmovingspeed=1.3155556E-6, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=154.0, icon=NULL, uuid=BLOB, elevationloss=91.0, starttime_offset=0, activity_type=skateboarding\nRow: 20 _id=1, name=Sea Paddling, description=, category=paddling, starttime=1697017500000, stoptime=1697034900000, numpoints=0, totaldistance=3122.0, totaltime=17400000, movingtime=17400000, avgspeed=1.7942529E-7, avgmovingspeed=1.7942529E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=345.0, icon=NULL, uuid=BLOB, elevationloss=142.0, starttime_offset=0, activity_type=paddling\n\nURI=content://de.dennisguse.opentracks.content/activity\nError while accessing provider:de.dennisguse.opentracks.content\njava.lang.IllegalArgumentException: Unknown URL content://de.dennisguse.opentracks.content/activity\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:172)\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:142)\n\tat android.content.ContentProviderProxy.query(ContentProviderNative.java:481)\n\tat com.android.commands.content.Content$QueryCommand.onExecute(Content.java:661)\n\tat com.android.commands.content.Content$Command.execute(Content.java:522)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.content/activities\nError while accessing provider:de.dennisguse.opentracks.content\njava.lang.IllegalArgumentException: Unknown URL content://de.dennisguse.opentracks.content/activities\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:172)\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:142)\n\tat android.content.ContentProviderProxy.query(ContentProviderNative.java:481)\n\tat com.android.commands.content.Content$QueryCommand.onExecute(Content.java:661)\n\tat com.android.commands.content.Content$Command.execute(Content.java:522)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.content/segment\nError while accessing provider:de.dennisguse.opentracks.content\njava.lang.IllegalArgumentException: Unknown URL content://de.dennisguse.opentracks.content/segment\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:172)\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:142)\n\tat android.content.ContentProviderProxy.query(ContentProviderNative.java:481)\n\tat com.android.commands.content.Content$QueryCommand.onExecute(Content.java:661)\n\tat com.android.commands.content.Content$Command.execute(Content.java:522)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.content/segments\nError while accessing provider:de.dennisguse.opentracks.content\njava.lang.IllegalArgumentException: Unknown URL content://de.dennisguse.opentracks.content/segments\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:172)\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:142)\n\tat android.content.ContentProviderProxy.query(ContentProviderNative.java:481)\n\tat com.android.commands.content.Content$QueryCommand.onExecute(Content.java:661)\n\tat com.android.commands.content.Content$Command.execute(Content.java:522)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\n\n\n</output_tail>",
+      "extra": {
+        "raw_output": "$ adb shell \"for u in content://de.dennisguse.opentracks.content content://de.dennisguse.opentracks.content/track content://de.dennisguse.opentracks.content/tracks content://de.dennisguse.opentracks.content/activity content://de.dennisguse.opentracks.content/activities content://de.dennisguse.opentracks.content/segment content://de.dennisguse.opentracks.content/segments; do echo URI=$u; content query --uri \\\"$u\\\" --sort \\\"_id DESC\\\" 2>&1 | sed -n '1,80p'; echo; done\"\nURI=content://de.dennisguse.opentracks.content\nError while accessing provider:de.dennisguse.opentracks.content\njava.lang.IllegalArgumentException: Unknown URL content://de.dennisguse.opentracks.content\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:172)\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:142)\n\tat android.content.ContentProviderProxy.query(ContentProviderNative.java:481)\n\tat com.android.commands.content.Content$QueryCommand.onExecute(Content.java:661)\n\tat com.android.commands.content.Content$Command.execute(Content.java:522)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.content/track\nError while accessing provider:de.dennisguse.opentracks.content\njava.lang.IllegalArgumentException: Unknown URL content://de.dennisguse.opentracks.content/track\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:172)\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:142)\n\tat android.content.ContentProviderProxy.query(ContentProviderNative.java:481)\n\tat com.android.commands.content.Content$QueryCommand.onExecute(Content.java:661)\n\tat com.android.commands.content.Content$Command.execute(Content.java:522)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.content/tracks\nRow: 0 _id=21, name=Skateboard Challenge, description=, category=skateboarding, starttime=1696838280000, stoptime=1696840380000, numpoints=0, totaldistance=660.0, totaltime=2100000, movingtime=2100000, avgspeed=3.1428573E-7, avgmovingspeed=3.1428573E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=479.0, icon=NULL, uuid=BLOB, elevationloss=335.0, starttime_offset=0, activity_type=skateboarding\nRow: 1 _id=20, name=More tired than usual today, description=Gained new knowledge and skills., category=mountain biking, starttime=1697180400000, stoptime=1697181300000, numpoints=0, totaldistance=12006.0, totaltime=900000, movingtime=900000, avgspeed=1.334E-5, avgmovingspeed=1.334E-5, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=1200.0, icon=NULL, uuid=BLOB, elevationloss=550.0, starttime_offset=0, activity_type=mountain biking\nRow: 2 _id=19, name=Bike Tour, description=, category=cycling, starttime=1697380500000, stoptime=1697395740000, numpoints=0, totaldistance=10139.0, totaltime=15240000, movingtime=15240000, avgspeed=6.652887E-7, avgmovingspeed=6.652887E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=66.0, icon=NULL, uuid=BLOB, elevationloss=424.0, starttime_offset=0, activity_type=cycling\nRow: 3 _id=18, name=River Paddle, description=, category=kayaking, starttime=1697112120000, stoptime=1697123520000, numpoints=0, totaldistance=14146.0, totaltime=11400000, movingtime=11400000, avgspeed=1.2408772E-6, avgmovingspeed=1.2408772E-6, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=460.0, icon=NULL, uuid=BLOB, elevationloss=378.0, starttime_offset=0, activity_type=kayaking\nRow: 4 _id=17, name=Trail Running Challenge, description=, category=trail running, starttime=1696784580000, stoptime=1696800540000, numpoints=0, totaldistance=4538.0, totaltime=15960000, movingtime=15960000, avgspeed=2.8433584E-7, avgmovingspeed=2.8433584E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=369.0, icon=NULL, uuid=BLOB, elevationloss=81.0, starttime_offset=0, activity_type=trail running\nRow: 5 _id=16, name=Off-road Run, description=, category=trail running, starttime=1696907640000, stoptime=1696915800000, numpoints=0, totaldistance=14355.0, totaltime=8160000, movingtime=8160000, avgspeed=1.7591912E-6, avgmovingspeed=1.7591912E-6, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=421.0, icon=NULL, uuid=BLOB, elevationloss=264.0, starttime_offset=0, activity_type=trail running\nRow: 6 _id=15, name=Evening Stroll, description=, category=walking, starttime=1697081820000, stoptime=1697082060000, numpoints=0, totaldistance=17123.0, totaltime=240000, movingtime=240000, avgspeed=7.1345836E-5, avgmovingspeed=7.1345836E-5, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=477.0, icon=NULL, uuid=BLOB, elevationloss=124.0, starttime_offset=0, activity_type=walking\nRow: 7 _id=14, name=Climbing Session, description=, category=climbing, starttime=1696247100000, stoptime=1696260720000, numpoints=0, totaldistance=225.0, totaltime=13620000, movingtime=13620000, avgspeed=1.6519824E-8, avgmovingspeed=1.6519824E-8, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=73.0, icon=NULL, uuid=BLOB, elevationloss=421.0, starttime_offset=0, activity_type=climbing\nRow: 8 _id=13, name=Bike Expedition, description=, category=biking, starttime=1696587300000, stoptime=1696595220000, numpoints=0, totaldistance=1593.0, totaltime=7920000, movingtime=7920000, avgspeed=2.0113636E-7, avgmovingspeed=2.0113636E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=203.0, icon=NULL, uuid=BLOB, elevationloss=192.0, starttime_offset=0, activity_type=biking\nRow: 9 _id=12, name=Skateboard Challenge, description=, category=skateboarding, starttime=1696238700000, stoptime=1696256580000, numpoints=0, totaldistance=18121.0, totaltime=17880000, movingtime=17880000, avgspeed=1.0134787E-6, avgmovingspeed=1.0134787E-6, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=471.0, icon=NULL, uuid=BLOB, elevationloss=129.0, starttime_offset=0, activity_type=skateboarding\nRow: 10 _id=11, name=Bike Tour, description=, category=biking, starttime=1696488780000, stoptime=1696505100000, numpoints=0, totaldistance=13164.0, totaltime=16320000, movingtime=16320000, avgspeed=8.0661766E-7, avgmovingspeed=8.0661766E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=497.0, icon=NULL, uuid=BLOB, elevationloss=425.0, starttime_offset=0, activity_type=biking\nRow: 11 _id=10, name=Surfing Expedition, description=, category=surfing, starttime=1696307400000, stoptime=1696319760000, numpoints=0, totaldistance=772.0, totaltime=12360000, movingtime=12360000, avgspeed=6.245955E-8, avgmovingspeed=6.245955E-8, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=127.0, icon=NULL, uuid=BLOB, elevationloss=412.0, starttime_offset=0, activity_type=surfing\nRow: 12 _id=9, name=Nature Hike, description=, category=trail hiking, starttime=1697102460000, stoptime=1697112660000, numpoints=0, totaldistance=16818.0, totaltime=10200000, movingtime=10200000, avgspeed=1.6488235E-6, avgmovingspeed=1.6488235E-6, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=231.0, icon=NULL, uuid=BLOB, elevationloss=441.0, starttime_offset=0, activity_type=trail hiking\nRow: 13 _id=8, name=Windward Sailing, description=, category=sailing, starttime=1696805100000, stoptime=1696805760000, numpoints=0, totaldistance=6180.0, totaltime=660000, movingtime=660000, avgspeed=9.363636E-6, avgmovingspeed=9.363636E-6, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=61.0, icon=NULL, uuid=BLOB, elevationloss=395.0, starttime_offset=0, activity_type=sailing\nRow: 14 _id=7, name=Windward Sailing, description=, category=sailing, starttime=1696921860000, stoptime=1696933620000, numpoints=0, totaldistance=9881.0, totaltime=11760000, movingtime=11760000, avgspeed=8.402211E-7, avgmovingspeed=8.402211E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=408.0, icon=NULL, uuid=BLOB, elevationloss=415.0, starttime_offset=0, activity_type=sailing\nRow: 15 _id=6, name=Water Exercise, description=, category=swimming, starttime=1697129220000, stoptime=1697137260000, numpoints=0, totaldistance=15691.0, totaltime=8040000, movingtime=8040000, avgspeed=1.951617E-6, avgmovingspeed=1.951617E-6, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=129.0, icon=NULL, uuid=BLOB, elevationloss=297.0, starttime_offset=0, activity_type=swimming\nRow: 16 _id=5, name=Yacht Sailing, description=, category=sailing, starttime=1696669920000, stoptime=1696685520000, numpoints=0, totaldistance=2639.0, totaltime=15600000, movingtime=15600000, avgspeed=1.6916667E-7, avgmovingspeed=1.6916667E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=70.0, icon=NULL, uuid=BLOB, elevationloss=124.0, starttime_offset=0, activity_type=sailing\nRow: 17 _id=4, name=Morning Walk, description=, category=walking, starttime=1696940580000, stoptime=1696956840000, numpoints=0, totaldistance=2398.0, totaltime=16260000, movingtime=16260000, avgspeed=1.4747847E-7, avgmovingspeed=1.4747847E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=383.0, icon=NULL, uuid=BLOB, elevationloss=468.0, starttime_offset=0, activity_type=walking\nRow: 18 _id=3, name=Lake Rowing, description=, category=rowing, starttime=1696538580000, stoptime=1696544340000, numpoints=0, totaldistance=16785.0, totaltime=5760000, movingtime=5760000, avgspeed=2.9140624E-6, avgmovingspeed=2.9140624E-6, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=145.0, icon=NULL, uuid=BLOB, elevationloss=215.0, starttime_offset=0, activity_type=rowing\nRow: 19 _id=2, name=Urban Skate, description=, category=skateboarding, starttime=1696230900000, stoptime=1696243500000, numpoints=0, totaldistance=16576.0, totaltime=12600000, movingtime=12600000, avgspeed=1.3155556E-6, avgmovingspeed=1.3155556E-6, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=154.0, icon=NULL, uuid=BLOB, elevationloss=91.0, starttime_offset=0, activity_type=skateboarding\nRow: 20 _id=1, name=Sea Paddling, description=, category=paddling, starttime=1697017500000, stoptime=1697034900000, numpoints=0, totaldistance=3122.0, totaltime=17400000, movingtime=17400000, avgspeed=1.7942529E-7, avgmovingspeed=1.7942529E-7, maxspeed=0.0, minelevation=0.0, maxelevation=0.0, elevationgain=345.0, icon=NULL, uuid=BLOB, elevationloss=142.0, starttime_offset=0, activity_type=paddling\n\nURI=content://de.dennisguse.opentracks.content/activity\nError while accessing provider:de.dennisguse.opentracks.content\njava.lang.IllegalArgumentException: Unknown URL content://de.dennisguse.opentracks.content/activity\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:172)\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:142)\n\tat android.content.ContentProviderProxy.query(ContentProviderNative.java:481)\n\tat com.android.commands.content.Content$QueryCommand.onExecute(Content.java:661)\n\tat com.android.commands.content.Content$Command.execute(Content.java:522)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.content/activities\nError while accessing provider:de.dennisguse.opentracks.content\njava.lang.IllegalArgumentException: Unknown URL content://de.dennisguse.opentracks.content/activities\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:172)\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:142)\n\tat android.content.ContentProviderProxy.query(ContentProviderNative.java:481)\n\tat com.android.commands.content.Content$QueryCommand.onExecute(Content.java:661)\n\tat com.android.commands.content.Content$Command.execute(Content.java:522)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.content/segment\nError while accessing provider:de.dennisguse.opentracks.content\njava.lang.IllegalArgumentException: Unknown URL content://de.dennisguse.opentracks.content/segment\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:172)\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:142)\n\tat android.content.ContentProviderProxy.query(ContentProviderNative.java:481)\n\tat com.android.commands.content.Content$QueryCommand.onExecute(Content.java:661)\n\tat com.android.commands.content.Content$Command.execute(Content.java:522)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\nURI=content://de.dennisguse.opentracks.content/segments\nError while accessing provider:de.dennisguse.opentracks.content\njava.lang.IllegalArgumentException: Unknown URL content://de.dennisguse.opentracks.content/segments\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:172)\n\tat android.database.DatabaseUtils.readExceptionFromParcel(DatabaseUtils.java:142)\n\tat android.content.ContentProviderProxy.query(ContentProviderNative.java:481)\n\tat com.android.commands.content.Content$QueryCommand.onExecute(Content.java:661)\n\tat com.android.commands.content.Content$Command.execute(Content.java:522)\n\tat com.android.commands.content.Content.main(Content.java:735)\n\tat com.android.internal.os.RuntimeInit.nativeFinishInit(Native Method)\n\tat com.android.internal.os.RuntimeInit.main(RuntimeInit.java:355)\n\n\n",
+        "returncode": 0,
+        "timestamp": 1778103824.4373114,
+        "exception_info": null
+      }
+    },
+    {
+      "content": "THOUGHT: I found the OpenTracks `tracks` data and identified the `mountain biking` row with `totaltime=900000` ms, which is 15 minutes. I\u2019ll briefly verify that its start timestamp falls on Friday on this device timezone (UTC), then return the integer.\n\n```bash\nadb shell \"date -u -d @1697180400 '+%Y-%m-%d %A %H:%M:%S UTC'\"\n```",
+      "role": "assistant",
+      "tool_calls": null,
+      "function_call": null,
+      "reasoning_content": "",
+      "reasoning_items": [
+        {
+          "type": "reasoning",
+          "id": "rs_096909692914964f0069fbb6111f4c81968fc38fd48b844c28",
+          "encrypted_content": null,
+          "summary": []
+        }
+      ],
+      "provider_specific_fields": null,
+      "extra": {
+        "actions": [
+          {
+            "command": "adb shell \"date -u -d @1697180400 '+%Y-%m-%d %A %H:%M:%S UTC'\""
+          }
+        ],
+        "response": {
+          "id": "chatcmpl-b77c4c51-e9dd-4611-b0ef-3e3777d5261c",
+          "created": 1778103824,
+          "model": "gpt-5.3-codex",
+          "object": "chat.completion",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "THOUGHT: I found the OpenTracks `tracks` data and identified the `mountain biking` row with `totaltime=900000` ms, which is 15 minutes. I\u2019ll briefly verify that its start timestamp falls on Friday on this device timezone (UTC), then return the integer.\n\n```bash\nadb shell \"date -u -d @1697180400 '+%Y-%m-%d %A %H:%M:%S UTC'\"\n```",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null,
+                "reasoning_content": "",
+                "reasoning_items": [
+                  {
+                    "type": "reasoning",
+                    "id": "rs_096909692914964f0069fbb6111f4c81968fc38fd48b844c28",
+                    "encrypted_content": null,
+                    "summary": []
+                  }
+                ]
+              }
+            }
+          ],
+          "usage": {
+            "completion_tokens": 190,
+            "prompt_tokens": 14937,
+            "total_tokens": 15127,
+            "completion_tokens_details": {
+              "reasoning_tokens": 89,
+              "text_tokens": null,
+              "image_tokens": null
+            },
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 11008,
+              "text_tokens": null,
+              "image_tokens": null,
+              "video_tokens": null
+            }
+          }
+        },
+        "cost": 0.01146215,
+        "timestamp": 1778103828.1988592
+      }
+    },
+    {
+      "role": "user",
+      "content": "<returncode>0</returncode>\n<output>\n$ adb shell \"date -u -d @1697180400 '+%Y-%m-%d %A %H:%M:%S UTC'\"\n2023-10-13 Friday 07:00:00 UTC\n\n</output>",
+      "extra": {
+        "raw_output": "$ adb shell \"date -u -d @1697180400 '+%Y-%m-%d %A %H:%M:%S UTC'\"\n2023-10-13 Friday 07:00:00 UTC\n\n",
+        "returncode": 0,
+        "timestamp": 1778103828.3090572,
+        "exception_info": null
+      }
+    },
+    {
+      "content": "THOUGHT: Verified: the mountain biking activity is on Friday and totaltime 900000 ms = 15 minutes. I should finish with just the integer.\n\n```bash\nfinish --status complete --description \"15\"\n```",
+      "role": "assistant",
+      "tool_calls": null,
+      "function_call": null,
+      "provider_specific_fields": null,
+      "extra": {
+        "actions": [
+          {
+            "command": "finish --status complete --description \"15\""
+          }
+        ],
+        "response": {
+          "id": "chatcmpl-92b87810-6e05-4c5b-a030-438fe67e28cd",
+          "created": 1778103828,
+          "model": "gpt-5.3-codex",
+          "object": "chat.completion",
+          "system_fingerprint": null,
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "THOUGHT: Verified: the mountain biking activity is on Friday and totaltime 900000 ms = 15 minutes. I should finish with just the integer.\n\n```bash\nfinish --status complete --description \"15\"\n```",
+                "role": "assistant",
+                "tool_calls": null,
+                "function_call": null
+              }
+            }
+          ],
+          "usage": {
+            "completion_tokens": 50,
+            "prompt_tokens": 15103,
+            "total_tokens": 15153,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0,
+              "text_tokens": null,
+              "image_tokens": null
+            },
+            "prompt_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 14720,
+              "text_tokens": null,
+              "image_tokens": null,
+              "video_tokens": null
+            }
+          }
+        },
+        "cost": 0.003946249999999999,
+        "timestamp": 1778103830.4145205
+      }
+    },
+    {
+      "role": "user",
+      "content": "<returncode>0</returncode>\n<output>\nTask marked as 'complete'. Reward: 1.\n</output>",
+      "extra": {
+        "raw_output": "Task marked as 'complete'. Reward: 1.\n",
+        "returncode": 0,
+        "timestamp": 1778103833.32465,
+        "exception_info": null
+      }
+    },
+    {
+      "role": "exit",
+      "content": "android_env.py finish() called",
+      "extra": {
+        "exit_status": "complete",
+        "submission": "15"
+      }
+    }
+  ],
+  "trajectory_format": "mini-swe-agent-1.1"
+}

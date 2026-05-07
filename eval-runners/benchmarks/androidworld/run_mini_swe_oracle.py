@@ -74,6 +74,7 @@ def run_one_task_with_retries(
     config: dict,
     task_timeout: int,
     max_attempts: int,
+    traj_dir: str | None = None,
 ) -> dict:
     """Run a task with up to *max_attempts*, feeding eval reward as signal."""
     task_id = task_def["task_id"]
@@ -88,15 +89,17 @@ def run_one_task_with_retries(
             model=model,
             config=config,
             task_timeout=task_timeout,
+            traj_dir=traj_dir,
+            traj_suffix=f"_attempt_{attempt}",
         )
 
         # Force-evaluate if agent didn't finish
-        if not result.get("finished", False) and result.get("reward", 0.0) == 0.0:
-            print(f"  [Task {task_id}] Agent didn't finish — forcing evaluation...")
-            forced_reward = force_eval(container_url)
-            if forced_reward > 0:
-                result["reward"] = forced_reward
-                print(f"  [Task {task_id}] Forced eval reward: {forced_reward}")
+        # if not result.get("finished", False) and result.get("reward", 0.0) == 0.0:
+        #     print(f"  [Task {task_id}] Agent didn't finish — forcing evaluation...")
+        #     forced_reward = force_eval(container_url)
+        #     if forced_reward > 0:
+        #         result["reward"] = forced_reward
+        #         print(f"  [Task {task_id}] Forced eval reward: {forced_reward}")
 
         result["attempt"] = attempt
         all_attempts.append(result)
@@ -169,8 +172,9 @@ def build_parser():
                         help="Number of parallel workers")
     parser.add_argument("--task-timeout", type=int, default=900,
                         help="Per-task timeout in seconds")
-    parser.add_argument("--max-turns", type=int, default=30,
-                        help="(unused, kept for CLI compatibility)")
+    parser.add_argument("--max-turns", type=int, default=None,
+                        help="Override agent.step_limit per attempt (default: "
+                             "use the value in androidworld.yaml, 30)")
 
     # For output path generation compatibility
     parser.add_argument("--prompt", default="mini_swe_oracle",
@@ -201,8 +205,12 @@ def main():
         print(f"ERROR: Config not found at {config_path}")
         return 1
     config = load_config(config_path)
+    if args.max_turns is not None:
+        config.setdefault("agent", {})["step_limit"] = args.max_turns
+    args.max_turns = config.get("agent", {}).get("step_limit", 30)
 
-    output_path = resolve_output_path(args)
+    output_path = resolve_output_path(args, agent_name="MiniSweAgentOracle")
+    traj_dir = os.path.join(os.path.dirname(output_path), "trajectories")
 
     task_runner = partial(
         run_one_task_with_retries,
@@ -210,6 +218,7 @@ def main():
         config=config,
         task_timeout=args.task_timeout,
         max_attempts=args.max_attempts,
+        traj_dir=traj_dir,
     )
 
     system_prompt = (
@@ -255,6 +264,7 @@ def main():
     finalize_results(
         results, output_path, args.model, system_prompt, args,
         extra_summary=extra_summary,
+        agent_name="MiniSweAgentOracle",
     )
     return 0
 

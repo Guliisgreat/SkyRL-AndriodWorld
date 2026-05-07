@@ -120,12 +120,12 @@ def run_one_task_with_retries(
         )
 
         # Force-evaluate if agent didn't finish
-        if not result.get("finished", False) and result.get("reward", 0.0) == 0.0:
-            print(f"  [Task {task_id}] Agent didn't finish — forcing evaluation...")
-            forced_reward = force_eval(container_url)
-            if forced_reward > 0:
-                result["reward"] = forced_reward
-                print(f"  [Task {task_id}] Forced eval reward: {forced_reward}")
+        # if not result.get("finished", False) and result.get("reward", 0.0) == 0.0:
+        #     print(f"  [Task {task_id}] Agent didn't finish — forcing evaluation...")
+        #     forced_reward = force_eval(container_url)
+        #     if forced_reward > 0:
+        #         result["reward"] = forced_reward
+        #         print(f"  [Task {task_id}] Forced eval reward: {forced_reward}")
 
         result["attempt"] = attempt
         all_attempts.append(result)
