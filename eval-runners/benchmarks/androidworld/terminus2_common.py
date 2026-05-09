@@ -25,6 +25,15 @@ if _THIS_DIR not in sys.path:
 _EXAMPLES_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from claude_cli_common import force_eval, reset_container  # noqa: E402
+from atif_utils import (  # noqa: E402
+    make_agent_step,
+    make_system_note_step,
+    make_system_step,
+    make_user_step,
+    truncate_observation,
+    unwrap_command,
+    wrap_trajectory,
+)
 
 # Import terminus2 subpackage directly (avoids skyrl_agent.__init__ pulling
 # in torch/transformers which may not be available on lightweight hosts).
@@ -264,3 +273,156 @@ def run_terminus2_task_sync(task_def: dict, container_url: str, **kwargs) -> dic
     (``claude_cli_common.run_parallel`` uses threads).
     """
     return asyncio.run(run_terminus2_task(task_def, container_url, **kwargs))
+
+
+def load_system_prompt(
+    parser: str = "json",
+    template_override: str | None = None,
+) -> str:
+    """Return the rendered system-prompt body for ATIF's step 1.
+
+    Reads the same template that ``AndroidTerminus2Agent.run`` will send
+    to the LLM, and strips the per-turn substitution slots
+    (``%INSTRUCTION%`` / ``{instruction}`` for the task — captured in
+    ATIF step 2 as a user message; ``%COMMAND_OUTPUT%`` /
+    ``{terminal_state}`` for the running terminal — captured per-step
+    in observations) so the system step shows just the standing
+    instructions, comparable to what the other two harnesses store.
+    """
+    if template_override:
+        from pathlib import Path
+        template = Path(template_override).read_text()
+    else:
+        template = _agent_mod._load_harbor_template(parser)
+    # Strip the runtime-substituted slots so the system step shows just
+    # the standing instructions.
+    for slot in ("%INSTRUCTION%", "%COMMAND_OUTPUT%",
+                 "{instruction}", "{terminal_state}"):
+        template = template.replace(slot, "")
+    return template.strip()
+
+
+# ---------------------------------------------------------------------------
+# ATIF trajectory export — Terminus_2 specific
+# ---------------------------------------------------------------------------
+
+
+def _format_terminus2_observation(entry: dict) -> str:
+    """Combine stdout / stderr / blocked-status into a single observation string.
+
+    ``agent_commands_log`` entries come in two shapes:
+
+    1. Successful exec (``_execute_commands``):
+       ``{command, stdout, stderr, return_code, assistant_message}``
+    2. Blocked / rejected (parse-error, parse-warning, no-command,
+       multi-command, REJECT-prefix, forbidden adb, llm-error):
+       ``{command, stdout, stderr, return_code, blocked: True,
+       assistant_message}``
+
+    Either way we expose what the agent saw as feedback, prefixed with
+    a ``[blocked]`` marker for clarity when no real device call occurred.
+    """
+    stdout = (entry.get("stdout") or "").rstrip()
+    stderr = (entry.get("stderr") or "").rstrip()
+    blocked = bool(entry.get("blocked"))
+    rc = entry.get("return_code")
+
+    parts: list[str] = []
+    if blocked:
+        parts.append("[blocked]")
+    if stdout:
+        parts.append(stdout)
+    if stderr:
+        parts.append(stderr)
+    if not parts and rc is not None:
+        parts.append(f"[return_code={rc}]")
+    obs = "\n".join(parts) if parts else "(no output)"
+    return truncate_observation(obs)
+
+
+def result_to_atif(result, model, system_prompt, *, output_dir=None):
+    """Convert a Terminus_2 task result to an ATIF-v1.6 trajectory.
+
+    Reads ``result["agent_commands_log"]`` as the single source of truth
+    so EVERY turn the agent took lands in the trajectory:
+      * successful adb / passthrough-verb commands,
+      * the final ``finish`` invocation (which is logged by
+        ``_execute_commands`` like any other command, not skipped),
+      * REJECT-prefix verb rejections,
+      * forbidden-adb deny-list blocks,
+      * parse-error / parse-warning turns (LLM emitted unparsable text),
+      * no-command turns (LLM provided no actionable command),
+      * multi-command rejections (LLM emitted >1 command in one turn),
+      * llm-error turns (provider call failed mid-loop).
+
+    Each entry becomes ONE agent step with all four required fields
+    (``message`` from ``assistant_message``, ``model_name``,
+    ``tool_calls`` carrying the bare verb form via ``unwrap_command``,
+    ``observation`` carrying the device or framework reply).
+
+    ``output_dir`` is accepted for signature parity with the other
+    converters but ignored here — Terminus2 has no native trajectory
+    file on disk.
+    """
+    del output_dir
+    steps: list = []
+    step_id = 1
+
+    steps.append(make_system_step(step_id, system_prompt))
+    step_id += 1
+
+    steps.append(make_user_step(step_id, result.get("task", "")))
+    step_id += 1
+
+    log = result.get("agent_commands_log") or []
+    for entry in log:
+        raw_cmd = entry.get("command", "") or ""
+        # Un-wrap the host-side ``python <android_env.py> <verb> ...``
+        # form so the recorded action matches what the model emitted —
+        # the same shape mini-swe and claude-cli store.
+        bare_cmd = unwrap_command(raw_cmd)
+        # Sentinel commands like ``<parse-error>`` never reach the host
+        # shell, so they're not wrapped — pass them through as-is.
+        if bare_cmd.startswith("<") and bare_cmd.endswith(">"):
+            bare_cmd = bare_cmd
+        message = (
+            entry.get("assistant_message")
+            or entry.get("thought")
+            or f"Execute: {bare_cmd}"
+        )
+        observation = _format_terminus2_observation(entry)
+        steps.append(make_agent_step(
+            step_id,
+            message=message,
+            command=bare_cmd,
+            observation=observation,
+            model_name=model,
+        ))
+        step_id += 1
+
+    # Surface runtime failures the runner reported instead of an action.
+    err = result.get("error") or result.get("last_error")
+    if err:
+        steps.append(make_system_note_step(
+            step_id, f"ENVIRONMENT_ERROR: {err}",
+        ))
+        step_id += 1
+
+    # Degenerate case: agent never produced a single shell call (timeout
+    # before turn 1, container reset failure, etc.). Emit an explicit
+    # marker so the trajectory isn't a 2-step stub.
+    if len(steps) == 2:
+        note = (
+            f"agent never executed (step_count={result.get('step_count', 0)}, "
+            f"num_turns={result.get('num_turns', 0)}); no commands recorded "
+            f"in agent_commands_log"
+        )
+        steps.append(make_system_note_step(step_id, note))
+        step_id += 1
+
+    return wrap_trajectory(
+        agent_name="Terminus2",
+        model=model,
+        result=result,
+        steps=steps,
+    )

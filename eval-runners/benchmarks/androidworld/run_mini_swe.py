@@ -32,7 +32,11 @@ from claude_cli_common import (
     ANDROID_ENV_SCRIPT,
 )
 
-from mini_swe_common import run_mini_swe_task, load_config
+from mini_swe_common import (
+    load_config,
+    result_to_atif as mini_swe_result_to_atif,
+    run_mini_swe_task,
+)
 
 
 def build_parser():
@@ -162,7 +166,8 @@ def main():
         )
 
     finalize_results(results, output_path, args.model, system_prompt, args,
-                     agent_name="MiniSweAgent")
+                     agent_name="MiniSweAgent",
+                     result_to_atif_fn=mini_swe_result_to_atif)
     return 0
 
 

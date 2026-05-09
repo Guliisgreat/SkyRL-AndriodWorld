@@ -460,6 +460,17 @@ class AndroidTerminus2Agent:
             except Exception as e:
                 logger.error("LLM call failed on turn %d: %s", turn, e)
                 last_error = str(e)
+                # Document the failed turn so the ATIF converter doesn't
+                # silently drop it. assistant_message stays empty since
+                # the LLM never produced a response.
+                commands_log.append({
+                    "command": "<llm-error>",
+                    "stdout": "",
+                    "stderr": f"LLM call failed: {e}",
+                    "return_code": -1,
+                    "blocked": True,
+                    "assistant_message": "",
+                })
                 break
 
             # ----- 2. Parse response -----
@@ -474,6 +485,17 @@ class AndroidTerminus2Agent:
                     f"{'JSON' if self.parser_name == 'json' else 'XML'} "
                     "in the required format."
                 )
+                # Document the silent failure so the ATIF converter can
+                # surface the LLM's natural-language reasoning post-hoc
+                # even though no command was emitted.
+                commands_log.append({
+                    "command": "<parse-error>",
+                    "stdout": "",
+                    "stderr": terminal_output,
+                    "return_code": -1,
+                    "blocked": True,
+                    "assistant_message": response_text,
+                })
                 continue
 
             if parsed.error:
@@ -481,6 +503,14 @@ class AndroidTerminus2Agent:
                     f"Parse warning: {parsed.error}\n"
                     "Please fix the format and try again."
                 )
+                commands_log.append({
+                    "command": "<parse-warning>",
+                    "stdout": "",
+                    "stderr": terminal_output,
+                    "return_code": -1,
+                    "blocked": True,
+                    "assistant_message": response_text,
+                })
                 continue
 
             non_empty = [
@@ -492,6 +522,14 @@ class AndroidTerminus2Agent:
                 terminal_output = (
                     "No commands provided. "
                 )
+                commands_log.append({
+                    "command": "<no-command>",
+                    "stdout": "",
+                    "stderr": terminal_output,
+                    "return_code": -1,
+                    "blocked": True,
+                    "assistant_message": response_text,
+                })
                 continue
 
             if len(non_empty) > 1:
@@ -507,12 +545,14 @@ class AndroidTerminus2Agent:
                     "stderr": terminal_output,
                     "return_code": -1,
                     "blocked": True,
+                    "assistant_message": response_text,
                 })
                 continue
 
             # Exactly one command — execute it.
             terminal_output = await self._execute_commands(
                 non_empty, commands_log,
+                assistant_message=response_text,
             )
 
             if parsed.is_task_complete:
@@ -540,6 +580,8 @@ class AndroidTerminus2Agent:
         self,
         commands: list,
         commands_log: list[dict],
+        *,
+        assistant_message: str = "",
     ) -> str:
         """Execute at most one command and return its observation.
 
@@ -549,6 +591,13 @@ class AndroidTerminus2Agent:
         a list with 0 or 1 non-empty entry. Rejected/forbidden commands
         emit feedback but do NOT consume a device step — there is no
         synthetic step-burn and no `--no-step` injection.
+
+        ``assistant_message`` is the raw LLM response that produced this
+        command. It is attached to every appended log entry so downstream
+        ATIF export can recover the agent's natural-language rationale
+        (which is otherwise discarded after parsing) and the trajectory
+        documents what the LLM emitted on every turn — including blocked
+        and forbidden ones.
         """
         non_empty = [c for c in commands
                      if c.keystrokes.rstrip("\n").strip()]
@@ -570,6 +619,7 @@ class AndroidTerminus2Agent:
                 "stderr": error_msg,
                 "return_code": -1,
                 "blocked": True,
+                "assistant_message": assistant_message,
             })
             return _limit_output(f"$ {bad}\n{error_msg}")
 
@@ -583,6 +633,7 @@ class AndroidTerminus2Agent:
                 "stderr": error_msg,
                 "return_code": -1,
                 "blocked": True,
+                "assistant_message": assistant_message,
             })
             return _limit_output(f"$ {raw}\n{error_msg}")
 
@@ -601,6 +652,7 @@ class AndroidTerminus2Agent:
             "stdout": stdout[:4000],
             "stderr": stderr[:2000],
             "return_code": result.return_code,
+            "assistant_message": assistant_message,
         })
 
         return f"$ {raw}\n{output}"
