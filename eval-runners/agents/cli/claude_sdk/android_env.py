@@ -279,9 +279,22 @@ def cmd_finish(status: str, description: str) -> int:
     state["reward"] = reward
     state["finish_status"] = goal_status
     state["finish_description"] = description
+
+    # Record the finish call as a step so downstream ATIF export captures
+    # the agent's final action — without this entry the trajectory would
+    # silently drop the most important turn (the answer / completion
+    # signal).
+    finish_output = f"Task marked as '{goal_status}'. Reward: {reward}."
+    state["step_records"].append({
+        "step_idx": state["step_count"],
+        "thought": description,
+        "action_type": "finish",
+        "action_params": {"status": goal_status, "description": description},
+        "command_output": finish_output,
+    })
     _save_state(state)
 
-    print(f"Task marked as '{goal_status}'. Reward: {reward}.")
+    print(finish_output)
     return 0
 
 

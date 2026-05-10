@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re as _re
 import sys
 import tempfile
 import time
@@ -28,6 +29,13 @@ from claude_cli_common import (  # noqa: E402
     ANDROID_ENV_SCRIPT,
     force_eval,
     reset_container,
+)
+from atif_utils import (  # noqa: E402
+    make_agent_step,
+    make_system_note_step,
+    make_system_step,
+    make_user_step,
+    wrap_trajectory,
 )
 
 # Load AndroidWorldEnvironment by direct file path. The agent module lives at
@@ -349,3 +357,222 @@ def run_mini_swe_task(
         "claude_output": "",
         "finish_description": state.get("finish_description", ""),
     }
+
+
+# ---------------------------------------------------------------------------
+# ATIF trajectory export — MiniSweAgent specific
+# ---------------------------------------------------------------------------
+
+# Mini-swe-agent's action-extraction regex (mirrored from its config). It
+# matches the bash command inside a fenced ```bash ... ``` block in the
+# assistant message — the same surface mini-swe-agent itself parses to
+# determine what to execute. Kept inline so this module doesn't have to
+# import the (heavyweight) minisweagent package just to read trajectories.
+_NATIVE_ACTION_RE = _re.compile(
+    r"```(?:bash|mswea_bash_command)?\s*\n(.*?)\n```", _re.DOTALL,
+)
+
+
+def _extract_native_command(assistant_msg: dict) -> str:
+    """Pull the bash command from a mini-swe-agent assistant message.
+
+    Prefers the structured ``extra.actions[0].command`` field that the
+    agent populates after parsing; falls back to a regex on the raw
+    ``content`` for older trajectories that don't have it. Returns the
+    bare verb form (``adb shell ...``, ``finish ...``) — same shape the
+    other harnesses' converters store in tool_calls.arguments.command.
+    """
+    extra_actions = (assistant_msg.get("extra") or {}).get("actions") or []
+    if extra_actions:
+        return extra_actions[0].get("command", "") or ""
+    m = _NATIVE_ACTION_RE.search(assistant_msg.get("content", "") or "")
+    return m.group(1).strip() if m else ""
+
+
+def _native_trajectory_path(output_dir: str | None, task_id: int) -> str | None:
+    """Resolve where ``run_mini_swe_task`` saved the native trajectory JSON.
+
+    ``run_mini_swe.py`` sets ``traj_dir = os.path.join(output_dir,
+    "trajectories")`` and tells DefaultAgent to write
+    ``trajectories/task_{task_id:03d}.json``. We mirror that contract
+    here. Returns ``None`` if the file is missing or ``output_dir`` was
+    not threaded through.
+    """
+    if not output_dir:
+        return None
+    path = os.path.join(output_dir, "trajectories", f"task_{task_id:03d}.json")
+    return path if os.path.exists(path) else None
+
+
+def result_to_atif(result, model, system_prompt, *, output_dir=None):
+    """Convert a MiniSweAgent task result to an ATIF-v1.6 trajectory.
+
+    Reads the native ``trajectories/task_{task_id:03d}.json`` file that
+    DefaultAgent.save() wrote on every step. Walks its ``messages``
+    list, pairing each ``role=assistant`` turn with its following
+    ``role=user`` observation, and emits one ATIF agent step per pair
+    with all four required fields (message, model_name, tool_calls,
+    observation).
+
+    Every ``message`` / ``observation`` field stores the verbatim
+    content the model saw or emitted: the rendered ``system_template``
+    for step 1, the rendered ``instance_template`` (which wraps the
+    task with ``<task_description>...</task_description>`` and a long
+    ``<instructions>...</instructions>`` block) for step 2, the raw
+    assistant ``content`` (THOUGHT + bash fence) for each agent step,
+    and the rendered ``observation_template`` (``<returncode>…
+    </returncode><output>…</output>``) for each observation. The
+    ``system_prompt`` parameter is a fallback used only when the native
+    file is missing.
+
+    Step coverage rules (no turn is dropped):
+      * trailing assistant with no follow-up user observation (e.g. the
+        final ``finish`` call) becomes an agent step whose observation
+        is synthesized from ``info.exit_status`` + ``result["reward"]``;
+      * two assistants in a row (rare) → flush the prior one with empty
+        observation so it's not lost;
+      * if the native file is missing entirely, emit a single
+        ``ENVIRONMENT_ERROR`` system note describing the degenerate
+        state — instead of returning a misleading 3-step stub.
+    """
+    task_id = result.get("task_id", 0)
+
+    nat_path = _native_trajectory_path(output_dir, task_id)
+    native: dict = {}
+    if nat_path:
+        try:
+            with open(nat_path) as f:
+                native = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            native = {}
+
+    messages = native.get("messages") if isinstance(native, dict) else None
+
+    # Locate the rendered system_template (messages[0] if role=system)
+    # and the rendered instance_template (the first user message,
+    # which wraps the task in <task_description>/<instructions>). Both
+    # are what mini-swe actually sent to the model; capture them
+    # verbatim so the trajectory is faithful to the wire format.
+    rendered_system = ""
+    rendered_instance = ""
+    if messages:
+        for msg in messages:
+            role = msg.get("role")
+            if role == "system" and not rendered_system:
+                rendered_system = msg.get("content", "") or ""
+            elif role == "user" and not rendered_instance:
+                rendered_instance = msg.get("content", "") or ""
+            if rendered_system and rendered_instance:
+                break
+
+    steps: list = []
+    step_id = 1
+
+    # ----- Step 1: system header (rendered system_template) -----
+    steps.append(make_system_step(step_id, rendered_system or system_prompt))
+    step_id += 1
+
+    # ----- Step 2: initial user message (rendered instance_template,
+    # which wraps the bare task with mini-swe's instructions block) -----
+    steps.append(make_user_step(
+        step_id, rendered_instance or result.get("task", ""),
+    ))
+    step_id += 1
+
+    # ----- Steps 3..N: agent turns -----
+    if not messages:
+        # No native log on disk → can't reconstruct turns. Surface this
+        # honestly instead of emitting a misleading 3-step stub.
+        err = result.get("error")
+        note = err or (
+            f"native trajectory missing at "
+            f"{nat_path or '<output_dir/trajectories/task_NNN.json>'}; "
+            f"step_count={result.get('step_count', 0)}, "
+            f"num_turns={result.get('num_turns', 0)}"
+        )
+        steps.append(make_system_note_step(
+            step_id, f"ENVIRONMENT_ERROR: {note}",
+        ))
+        step_id += 1
+    else:
+        pending = None  # held assistant message awaiting its observation
+        for msg in messages:
+            role = msg.get("role")
+            if role == "system":
+                continue
+            if role == "user":
+                if pending is None:
+                    # Initial user message — already captured as step 2.
+                    continue
+                # Use the rendered observation_template (the user
+                # `content` field). That's the wrapped form the model
+                # actually saw, not the bare device output. The bare
+                # output remains available in `extra.raw_output` for
+                # consumers that want it.
+                obs = msg.get("content", "") or ""
+                steps.append(make_agent_step(
+                    step_id,
+                    message=pending.get("content", "") or "",
+                    command=_extract_native_command(pending),
+                    observation=obs,
+                    model_name=model,
+                ))
+                step_id += 1
+                pending = None
+            elif role == "assistant":
+                if pending is not None:
+                    # Two assistants in a row (rare): flush the prior one
+                    # with an empty observation so we don't drop it.
+                    steps.append(make_agent_step(
+                        step_id,
+                        message=pending.get("content", "") or "",
+                        command=_extract_native_command(pending),
+                        observation="",
+                        model_name=model,
+                    ))
+                    step_id += 1
+                pending = msg
+
+        # Trailing assistant turn with no follow-up user observation —
+        # this happens for the final ``finish`` call because mini-swe's
+        # ``_TerminatedAwareAgent.execute_actions`` raises ``Submitted``
+        # before the device output is appended as a user message, so
+        # the native log loses the finish observation.
+        #
+        # Synthesize what cmd_finish printed (``Task marked as
+        # '<status>'. Reward: <r>.``) from ``info.exit_status`` and the
+        # runner-level ``result['reward']`` so the trailing agent step
+        # carries the same observation the other two harnesses record
+        # for an identical action.
+        info = native.get("info") or {}
+        submission = info.get("submission") or ""
+        exit_status = info.get("exit_status") or ""
+
+        if pending is not None:
+            cmd = _extract_native_command(pending)
+            if cmd.split(None, 1)[0:1] == ["finish"]:
+                status_token = (
+                    "complete" if exit_status in ("submitted", "complete")
+                    else exit_status or "complete"
+                )
+                obs = (
+                    f"Task marked as '{status_token}'. "
+                    f"Reward: {result.get('reward', 0.0)}."
+                )
+            else:
+                obs = ""
+            steps.append(make_agent_step(
+                step_id,
+                message=pending.get("content", "") or "",
+                command=cmd,
+                observation=obs,
+                model_name=model,
+            ))
+            step_id += 1
+
+    return wrap_trajectory(
+        agent_name="MiniSweAgent",
+        model=model,
+        result=result,
+        steps=steps,
+    )
