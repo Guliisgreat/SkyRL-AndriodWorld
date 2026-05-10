@@ -78,8 +78,9 @@ def _build_feedback_suffix(attempt_num, prev_result):
 
 def run_one_task_with_retries(task_def, container_url, model, max_turns,
                               system_prompt, effort=None,
-                              allowed_tools="Bash(command:*)",
-                              disable_tree=True, max_attempts=3):
+                              allowed_tools=None, disallowed_tools=None,
+                              disable_tree=True, max_attempts=3,
+                              stable_endpoint=True):
     """Run a task with up to max_attempts, feeding eval reward back as signal.
 
     On each failed attempt:
@@ -106,17 +107,19 @@ def run_one_task_with_retries(task_def, container_url, model, max_turns,
             system_prompt=system_prompt,
             effort=effort,
             allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
             disable_tree=disable_tree,
             prompt_suffix=prompt_suffix,
+            stable_endpoint=stable_endpoint,
         )
 
         # If agent didn't call finish (no reward set), force-evaluate
-        if not result.get("finished", False) and result.get("reward", 0.0) == 0.0:
-            print(f"  [Task {task_id}] Agent didn't finish — forcing evaluation...")
-            forced_reward = force_eval(container_url)
-            if forced_reward > 0:
-                result["reward"] = forced_reward
-                print(f"  [Task {task_id}] Forced eval reward: {forced_reward}")
+        # if not result.get("finished", False) and result.get("reward", 0.0) == 0.0:
+        #     print(f"  [Task {task_id}] Agent didn't finish — forcing evaluation...")
+        #     forced_reward = force_eval(container_url)
+        #     if forced_reward > 0:
+        #         result["reward"] = forced_reward
+        #         print(f"  [Task {task_id}] Forced eval reward: {forced_reward}")
 
         # Track attempt
         result["attempt"] = attempt
@@ -171,8 +174,8 @@ def main():
     args = parser.parse_args()
 
     # Load prompt config
-    system_prompt = load_system_prompt(args.prompt)
-    allowed_tools = get_allowed_tools(args.prompt)
+    system_prompt = load_system_prompt(args.prompt, stable=args.stable_endpoint)
+    allowed_tools = get_allowed_tools(args.prompt, stable=args.stable_endpoint)
     disable_tree = "Read" not in allowed_tools
 
     if not preflight_checks(args, system_prompt, allowed_tools, disable_tree):
@@ -193,8 +196,10 @@ def main():
         system_prompt=system_prompt,
         effort=args.effort,
         allowed_tools=allowed_tools,
+        disallowed_tools=None if args.deny_list else "",
         disable_tree=disable_tree,
         max_attempts=args.max_attempts,
+        stable_endpoint=args.stable_endpoint,
     )
 
     mode = "parallel" if args.broker_url else "sequential"

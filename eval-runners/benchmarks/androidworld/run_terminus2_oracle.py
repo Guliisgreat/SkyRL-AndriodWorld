@@ -45,7 +45,11 @@ from claude_cli_common import (
     ANDROID_ENV_SCRIPT,
 )
 
-from terminus2_common import run_terminus2_task_sync
+from terminus2_common import (
+    load_system_prompt as terminus2_load_system_prompt,
+    result_to_atif as terminus2_result_to_atif,
+    run_terminus2_task_sync,
+)
 
 
 def _build_feedback_suffix(attempt_num: int, prev_result: dict) -> str:
@@ -120,12 +124,12 @@ def run_one_task_with_retries(
         )
 
         # Force-evaluate if agent didn't finish
-        if not result.get("finished", False) and result.get("reward", 0.0) == 0.0:
-            print(f"  [Task {task_id}] Agent didn't finish — forcing evaluation...")
-            forced_reward = force_eval(container_url)
-            if forced_reward > 0:
-                result["reward"] = forced_reward
-                print(f"  [Task {task_id}] Forced eval reward: {forced_reward}")
+        # if not result.get("finished", False) and result.get("reward", 0.0) == 0.0:
+        #     print(f"  [Task {task_id}] Agent didn't finish — forcing evaluation...")
+        #     forced_reward = force_eval(container_url)
+        #     if forced_reward > 0:
+        #         result["reward"] = forced_reward
+        #         print(f"  [Task {task_id}] Forced eval reward: {forced_reward}")
 
         result["attempt"] = attempt
         all_attempts.append(result)
@@ -273,9 +277,9 @@ def main():
         max_tokens=args.max_tokens,
     )
 
-    system_prompt = (
-        f"[Terminus_2 oracle, model={args.model}, parser={args.parser}, "
-        f"temp={args.temperature}, max_attempts={args.max_attempts}]"
+    system_prompt = terminus2_load_system_prompt(
+        parser=args.parser,
+        template_override=template_override,
     )
 
     mode = "parallel" if args.broker_url else "sequential"
@@ -320,6 +324,8 @@ def main():
     finalize_results(
         results, output_path, args.model, system_prompt, args,
         extra_summary=extra_summary,
+        agent_name="Terminus2Oracle",
+        result_to_atif_fn=terminus2_result_to_atif,
     )
     return 0
 

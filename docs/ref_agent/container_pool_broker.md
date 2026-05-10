@@ -1,34 +1,42 @@
 # Container Pool Broker
 
-This document describes the two modes for managing Android emulator containers in SkyRL-AndroidWorld and how to configure each.
+How Android emulator containers are managed for evaluation and training, and
+how to start / talk to / debug the pool broker.
 
-## Overview
+> Last sync: post-`237ab9e0` (broker code lives in `eval-runners/common/runtime/`).
 
-Each evaluation or training run needs a pool of Docker containers running Android emulators. There are two ways to manage them:
+---
 
-- **Mode A (Local)** — `ContainerManager` creates and destroys containers within the experiment process. Simple, self-contained, but slow to start and limited to one experiment at a time.
-- **Mode B (Broker)** — `pool_broker.py` runs as a persistent HTTP server that owns a shared container pool. Experiments acquire and return containers on demand. Faster startup, shared across runs, survives experiment restarts.
+## 1. Modes at a glance
 
-## Architecture
+| Mode | Who owns containers | When to use |
+|---|---|---|
+| **A — Local** (`ContainerManager`) | Experiment process | One-off training or eval; no other process needs the pool |
+| **B — Broker** (`pool_broker.py` + `BrokerContainerManager`) | A long-lived FastAPI server | Multi-experiment, GUI-vs-CLI sweeps, anything where you don't want to pay container startup cost on every run |
+
+Both modes expose the **same** `allocate_container / release_container /
+get_pool_status` Python interface, so the dispatcher and runner code is
+identical. Mode B is selected by setting `env.broker_url` in the YAML or by
+passing `--broker-url` to an `eval-runners/benchmarks/*/run_*.py` script.
 
 ```
 MODE A — Local Container Management
 ====================================
 
   ┌──────────────────────────────────────────────┐
-  │  Experiment Process                          │
+  │  Experiment process                          │
   │                                              │
   │  AndroidTask.initialize_runtime()            │
   │       │                                      │
   │       ▼                                      │
-  │  ContainerManager                            │
-  │   ├── create_pool_parallel()  (slow: ~5 min) │
+  │  ContainerManager  (eval-runners/common/     │
+  │   ├── create_pool_parallel()  (slow ~5 min)  │
   │   ├── HealthMonitor (background)             │
   │   ├── allocate_container()                   │
   │   └── release_container()                    │
   │       │                                      │
   │       ▼                                      │
-  │  Docker containers (created + destroyed      │
+  │  Docker containers (created+destroyed        │
   │  with each experiment)                       │
   └──────────────────────────────────────────────┘
 
@@ -38,352 +46,213 @@ MODE B — Broker-Managed Container Pool
 
   ┌──────────────────┐    HTTP     ┌──────────────────────────┐
   │ Experiment 1     │◄──────────►│  pool_broker.py          │
-  │  BrokerContainer │            │                          │
-  │  Manager         │            │  ContainerPoolBroker     │
-  └──────────────────┘            │   ├── health loop        │
-                                  │   ├── GC loop            │
-  ┌──────────────────┐            │   ├── reconcile loop     │
-  │ Experiment 2     │◄──────────►│   └── container pool     │
-  │  BrokerContainer │            │       ├── container 0    │
-  │  Manager         │            │       ├── container 1    │
-  └──────────────────┘            │       ├── ...            │
-                                  │       └── container N    │
-  ┌──────────────────┐            │                          │
+  │ BrokerContainer- │            │                          │
+  │ Manager          │            │  ContainerPoolBroker     │
+  └──────────────────┘            │   ├── /acquire           │
+                                  │   ├── /return → /reset   │
+  ┌──────────────────┐            │   ├── health loop        │
+  │ Experiment 2     │◄──────────►│   ├── GC loop            │
+  └──────────────────┘            │   ├── reconcile loop     │
+                                  │   └── container pool     │
+  ┌──────────────────┐            │       ├── env0 .. envN   │
   │ Experiment N     │◄──────────►│  Containers persist      │
-  │  ...             │            │  across experiments      │
-  └──────────────────┘            └──────────────────────────┘
+  └──────────────────┘            │  across experiments      │
+                                  └──────────────────────────┘
 ```
 
-## Quick Start (Mode B)
+---
 
-**1. Start the broker** (in a tmux/screen session):
+## 2. Brokers shipped today
 
-```bash
-cd skyrl-agent
-python -m skyrl_agent.runtime.android.pool_broker \
-  --pool-size 16 \
-  --port 9200 \
-  --docker-image androidworld:full_adb_agent \
-  --parallel 4
-```
+There are three broker entry points, all under `eval-runners/common/runtime/`,
+all speaking the same HTTP API:
 
-Wait for the log line indicating all containers are ready.
-
-**2. Run inference** using the broker config:
-
-```bash
-# In your launch script, point to the broker yaml:
-python skyrl_agent/integrations/verl/verl_main_inference.py \
-  --config examples/run_verl/verl_android_inference_broker.yaml \
-  ...
-```
-
-The key difference in the yaml is the `broker_url` field under `env:`:
-
-```yaml
-env:
-  broker_url: "http://localhost:9200"
-  pool_size: 16
-  # ... other fields (managed by broker, kept for reference)
-```
-
-**3. Check pool status** anytime:
-
-```bash
-curl http://localhost:9200/status | python -m json.tool
-```
-
-**4. Stop the broker** when done (Ctrl-C or kill the process). Containers are cleaned up on shutdown.
-
-## Mode A — Local Container Management
-
-### How It Works
-
-When `broker_url` is **absent** from the yaml `env:` section, `AndroidTask.initialize_runtime()` creates a `ContainerManager` that:
-
-1. Pre-allocates ports atomically (avoids conflicts with other processes)
-2. Creates `pool_size` containers in parallel (bounded by `max_concurrent=4`)
-3. Optionally creates `buffer_size` hot-standby containers for instant failover
-4. Starts a background `HealthMonitor` that checks containers every 30s
-5. On experiment end, destroys all containers
-
-### YAML Config
-
-Use `verl_android_inference.yaml` (inference) or `verl_android.yaml` (training):
-
-```yaml
-env:
-  pool_size: 16          # Number of containers
-  buffer_size: 2         # Hot standby containers (0 for training)
-  docker_image: androidworld:full_adb_agent
-  use_host_network: true
-  snapshot: clean
-  sample_mode: sequential
-  train_task_family: android_world
-  val_task_family: android_world
-  temp_path: /tmp/androidworld
-  base_env_id: 0
-```
-
-### When to Use
-
-- Single-user, single-experiment setups
-- When you don't want a long-running broker process
-- CI/test environments where containers should be cleaned up automatically
-
-## Mode B — Broker-Managed Container Pool
-
-### How It Works
-
-When `broker_url` is **present** in the yaml `env:` section, `AndroidTask.initialize_runtime()` creates a `BrokerContainerManager` backed by a `PoolClient` that:
-
-1. Connects to the broker and verifies it is healthy
-2. Queries the broker's pool size via `GET /status`
-3. Uses the experiment's `pool_size` yaml field (or the broker's total) for local scheduling
-4. Acquires containers on demand via `POST /acquire` (per task)
-5. Returns containers via `POST /return` after each task
-6. Does **not** create or destroy any containers — the broker handles that
-
-The broker itself (`ContainerPoolBroker`) runs three background loops:
-
-| Loop | Default Interval | Purpose |
-|------|-----------------|---------|
-| Health | 30s | Check idle containers, replace unhealthy ones |
-| GC | 60s | Reclaim containers from dead/expired processes |
-| Reconcile | 180s | Ensure pool is at target size, create replacements |
-
-### Starting the Broker
-
-```bash
-python -m skyrl_agent.runtime.android.pool_broker \
-  --pool-size 16 \
-  --port 9200 \
-  --docker-image androidworld:full_adb_agent \
-  --snapshot clean \
-  --parallel 4
-```
-
-To adopt already-running containers (e.g., after a broker restart):
-
-```bash
-python -m skyrl_agent.runtime.android.pool_broker \
-  --pool-size 16 \
-  --port 9200 \
-  --adopt
-```
-
-### YAML Config
-
-Use `verl_android_inference_broker.yaml`:
-
-```yaml
-env:
-  broker_url: "http://localhost:9200"   # Activates Mode B
-  pool_size: 16       # Containers to acquire (can be <= broker pool size)
-  buffer_size: 2      # Ignored in Mode B (broker manages buffer)
-  docker_image: androidworld:full_adb_agent
-  use_host_network: true
-  snapshot: clean
-  # ...
-```
-
-The `pool_size` in the yaml controls how many containers the experiment will try to use concurrently. It can be less than or equal to the broker's `--pool-size`. The broker's pool is shared — multiple experiments can acquire from it.
-
-### When to Use
-
-- Iterating on experiments (skip 5+ min container startup each time)
-- Running multiple experiments that share a container pool
-- Long-running evaluation servers
-- Training loops where containers should survive between epochs
-
-## Comparison
-
-| | Mode A (Local) | Mode B (Broker) |
+| Broker | Backs | Behaviour |
 |---|---|---|
-| **Container lifecycle** | Created/destroyed per experiment | Persistent, shared across experiments |
-| **Startup time** | ~5 min (pool creation) | ~1s (HTTP connect) |
-| **Multi-experiment** | No (one experiment owns containers) | Yes (broker multiplexes) |
-| **Health monitoring** | Local `HealthMonitor` | Broker background loops |
-| **Failover** | Hot standby (`buffer_size`) | Broker auto-replaces unhealthy containers |
-| **Leak protection** | N/A (containers destroyed on exit) | GC reclaims from dead PIDs / expired leases |
-| **Config field** | No `broker_url` in yaml | `broker_url` in yaml |
-| **Extra process** | None | Broker server (must be running) |
-| **Container class** | `ContainerInstance` | `RemoteContainerInfo` (duck-typed) |
+| `pool_broker.py` | AndroidWorld (`androidworld:2026*` images) | **Creates** containers from a Docker image at startup; runs health/GC/reconcile loops; calls `/reset` on `/return` |
+| `mw_pool_broker.py` | MobileWorld (pre-existing containers) | **Adopts** already-running containers by host:port; same `/acquire`/`/return` API; calls `/reset` on `/return` |
+| `androidlab_broker.py` | AndroidLab | AndroidLab-specific lifecycle |
 
-## Broker CLI Reference
+All three implement:
 
-```
-python -m skyrl_agent.runtime.android.pool_broker [OPTIONS]
-```
+| Endpoint | Body / Response |
+|---|---|
+| `POST /acquire` | `{pid, timeout}` → `{env_id, server_url, server_port, emulator_port, grpc_port, host, container_id}` |
+| `POST /return`  | `{env_id, healthy}` → `{status: "returned"}` (broker invokes `/reset` on the container) |
+| `GET  /status`  | `{total, idle, leased, pool_initializing, ...}` |
+| `GET  /health`  | `{status, uptime, pool_ready, pool_target, pool_initializing}` |
 
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--pool-size` | int | 24 | Number of containers in the pool |
-| `--docker-image` | str | `androidworld:v8` | Docker image to use |
-| `--port` | int | 9100 | HTTP port for the broker API |
-| `--snapshot` | str | `clean` | Emulator snapshot name to load |
-| `--sample-mode` | str | `sequential` | Task sampling mode |
-| `--base-env-id` | int | 0 | Starting environment ID |
-| `--host` | str | `0.0.0.0` | Host to bind to |
-| `--temp-path` | str | `/tmp` | Path for temporary files |
-| `--health-interval` | float | 30.0 | Seconds between health checks on idle containers |
-| `--gc-interval` | float | 60.0 | Seconds between garbage collection sweeps |
-| `--reconcile-interval` | float | 180.0 | Seconds between pool size reconciliation |
-| `--skip-screenshot` | flag | false | Skip saving screenshots |
-| `--parallel` | int | 4 | Max concurrent container creations |
-| `--adopt` | flag | false | Adopt existing containers instead of creating new ones |
+---
 
-## Broker API Reference
+## 3. Quick start (Mode B — preferred for evaluation)
 
-All endpoints are served at `http://<host>:<port>`.
-
-### POST /acquire
-
-Acquire a container from the pool.
-
-**Request:**
-```json
-{
-  "pid": 12345,
-  "timeout": 300.0
-}
-```
-
-- `pid` (int, required) — PID of the requesting process (used for leak detection)
-- `timeout` (float, default 300) — Max seconds to wait for an available container
-
-**Response (200):**
-```json
-{
-  "env_id": 3,
-  "server_port": 5006,
-  "emulator_port": 5580,
-  "grpc_port": 8580,
-  "host": "localhost",
-  "container_id": "abc123..."
-}
-```
-
-**Response (503):** No container available within the timeout.
-
-### POST /return
-
-Return a container to the pool.
-
-**Request:**
-```json
-{
-  "env_id": 3,
-  "healthy": true
-}
-```
-
-- `env_id` (int, required) — The environment ID to return
-- `healthy` (bool, default true) — If `false`, the broker replaces the container
-
-**Response (200):**
-```json
-{"status": "returned"}
-```
-
-### GET /status
-
-Get current pool status.
-
-**Response (200):**
-```json
-{
-  "total": 16,
-  "idle": 12,
-  "leased": 4,
-  "replacing": 0,
-  "containers": [
-    {
-      "env_id": 0,
-      "state": "IDLE",
-      "pid": null,
-      "server_port": 5000,
-      "healthy": true
-    }
-  ]
-}
-```
-
-### GET /health
-
-Broker health check.
-
-**Response (200):**
-```json
-{
-  "status": "ok",
-  "uptime": 3600.5,
-  "pool_size": 16
-}
-```
-
-## Troubleshooting
-
-### Broker won't start — port conflict
-
-```
-ERROR: Address already in use (0.0.0.0:9100)
-```
-
-Another broker or process is using the port. Either stop it or use a different `--port`.
-
-### Experiment hangs on acquire (503 timeout)
-
-All containers are leased. Check `GET /status` — if `leased` equals `total`, either:
-- Another experiment is holding containers. Wait or stop it.
-- Increase `--pool-size` and restart the broker.
-- Containers are stuck in `REPLACING`. Wait for the reconcile loop to create replacements.
-
-### Containers leak after experiment crash
-
-The broker's GC loop detects dead PIDs and reclaims their containers every `--gc-interval` seconds (default 60s). No action needed — check `GET /status` to confirm containers return to `IDLE`.
-
-The max lease duration is 600 seconds. Containers leased longer than that are reclaimed automatically.
-
-### Broker restart without destroying containers
-
-Use `--adopt` to take over existing containers:
+### 3.1 Start the AndroidWorld broker
 
 ```bash
-python -m skyrl_agent.runtime.android.pool_broker --adopt --pool-size 16 --port 9200
+cd /path/to/SkyRL-AndroidWorld
+
+PYTHONPATH=eval-runners/common/runtime:. \
+python eval-runners/common/runtime/pool_broker.py \
+    --pool-size 16 \
+    --docker-image androidworld:2026plusswipe \
+    --port 9400 \
+    --base-env-id 700 \
+    --parallel 4
 ```
 
-The broker will discover running containers matching the expected env_id range and add them to the pool.
+Watch the log until you see `pool_initializing=False` in `GET /health` —
+container creation is parallelised by `--parallel` but each emulator still
+needs ~30–60 s to boot.
 
-### Health check failures
+The flags that matter most:
 
-If containers repeatedly fail health checks and get replaced, check:
-- Docker daemon health: `docker ps`
-- Emulator status inside the container: `docker logs <container_id>`
-- Network connectivity: containers use host networking, so port conflicts can cause issues
-- Disk space: emulator snapshots require significant disk I/O
+| Flag | Default | Notes |
+|---|---|---|
+| `--pool-size` | 24 | Total containers the broker manages |
+| `--docker-image` | `androidworld:v8` | Use `androidworld:2026plusswipe` for current evals; `androidworld:2026plusswipe_tier4` for tier4 |
+| `--port` | 9100 | HTTP port for `/acquire` etc. (the README uses 9300/9400) |
+| `--base-env-id` | 0 | First env_id; bump if other brokers already use 0..N |
+| `--parallel` | 4 | Max concurrent container creations |
+| `--snapshot` | `clean` | Emulator snapshot name to restore on `/reset` |
+| `--health-interval` | 30.0 | Health-check period (seconds) |
+| `--gc-interval` | 60.0 | GC period — reclaims leases whose owner pid died |
+| `--reconcile-interval` | 180.0 | Pool size reconciliation |
+| `--adopt` | off | Adopt already-running containers instead of creating new ones |
 
-### Mode selection not working
+### 3.2 Start the MobileWorld broker (no creation, just adoption)
 
-Mode selection happens in `AndroidTask.initialize_runtime()` (`skyrl_agent/tasks/android/android_task.py`). The logic is:
-
-```python
-if env_config.get("broker_url"):
-    # Mode B: BrokerContainerManager
-else:
-    # Mode A: ContainerManager
+```bash
+PYTHONPATH=eval-runners/common/runtime:. \
+python eval-runners/common/runtime/mw_pool_broker.py \
+    --scan-range 6804-6819 --port 9400
 ```
 
-If broker mode isn't activating, verify `broker_url` is set under the `env:` key in your yaml (not at the top level).
+`--scan-range` discovers any container exposing the MobileWorld API in the
+given port range; `--containers` lets you pin specific URLs.
 
-## Source Files
+### 3.3 Run an experiment against the broker
 
-| File | Description |
-|------|-------------|
-| `skyrl_agent/runtime/android/pool_broker.py` | Broker server (`ContainerPoolBroker` + FastAPI app) |
-| `skyrl_agent/runtime/android/pool_client.py` | HTTP client (`PoolClient`) and adapter (`BrokerContainerManager`) |
-| `skyrl_agent/runtime/android/container_manager.py` | Local manager (`ContainerManager`, `HealthMonitor`, `PortAllocator`) |
-| `skyrl_agent/tasks/android/android_task.py` | Mode selection logic in `initialize_runtime()` |
-| `examples/run_verl/verl_android_inference_broker.yaml` | Inference config with broker (Mode B) |
-| `examples/run_verl/verl_android_inference.yaml` | Inference config without broker (Mode A) |
-| `examples/run_verl/verl_android.yaml` | Training config (Mode A) |
+The broker is benchmark-agnostic, so any of the runners under
+`eval-runners/benchmarks/*/run_*.py` work the same way:
+
+```bash
+# AndroidWorld + Claude Code CLI
+python eval-runners/benchmarks/androidworld/run_claude_cli.py \
+    --data data/androidworld_original/val_data_seed7.jsonl \
+    --broker-url http://localhost:9400 \
+    --pool-size 16 \
+    --model claude-opus-4-7 --max-turns 50
+
+# AndroidWorld + Terminus2
+python eval-runners/benchmarks/androidworld/run_terminus2.py \
+    --data data/androidworld_original/val_data_seed7.jsonl \
+    --broker-url http://localhost:9400 --pool-size 16 \
+    --model openrouter/minimax/minimax-m2.7 --max-turns 50
+
+# MobileWorld + GUI agent (Qwen3-VL)
+python eval-runners/benchmarks/mobileworld/run_gui_agent_broker.py \
+    --data eval-runners/data/mobileworld/gui_only_tasks.jsonl \
+    --agent-type qwen3vl --broker-url http://localhost:9400 \
+    --pool-size 16 --max-steps 50
+```
+
+### 3.4 Run training against the broker
+
+In the verl YAML:
+
+```yaml
+env:
+  broker_url: "http://localhost:9400"
+  pool_size: 16
+  docker_image: androidworld:2026plusswipe   # ignored in Mode B but kept for record
+```
+
+Training entry point: `skyrl-agent/examples/run_verl/verl_android_inference_broker.yaml`.
+On first call, `AndroidTask.initialize_runtime()` instantiates a `PoolClient`
+and a `BrokerContainerManager` and skips local container creation entirely.
+
+> **Known issue (post-refactor):** `skyrl-agent/skyrl_agent/tasks/android/android_task.py`
+> still imports `from skyrl_agent.runtime.android.pool_client import PoolClient,
+> BrokerContainerManager`. Those modules now live under
+> `eval-runners/common/runtime/`, so Mode B from training requires either
+> patching that import or keeping `eval-runners/common/runtime` on `PYTHONPATH`.
+> Track a fix when revisiting Mode B for training.
+
+---
+
+## 4. Quick start (Mode A — local)
+
+Skip the broker; pass `pool_size`, `docker_image`, etc. directly in the YAML
+and omit `broker_url`. `AndroidTask.initialize_runtime()` will:
+
+1. Build a `ContainerManager` (`eval-runners/common/runtime/container_manager.py`).
+2. Call `create_pool_parallel(pool_size, base_env_id, max_concurrent, ...)`.
+3. Start a background `HealthMonitor`.
+4. Hand `RuntimeClient`s to the dispatcher.
+
+This is fine for one-off runs but spends ~5 min per experiment on container
+boot.
+
+---
+
+## 5. Health, GC, reconcile loops
+
+`ContainerPoolBroker` runs three asyncio tasks:
+
+| Loop | Period | Job |
+|---|---|---|
+| Health | `--health-interval` | Probe every container's `/health`; mark unhealthy and queue replacement |
+| GC | `--gc-interval` | Detect leases whose pid is dead (`psutil.pid_exists` + create-time check) and reclaim them |
+| Reconcile | `--reconcile-interval` | Recreate destroyed/replaced containers up to `--pool-size` |
+
+A `/return` with `healthy=false` triggers immediate replacement. A `/return`
+with `healthy=true` triggers `/reset` on the container before re-listing it as
+`IDLE`; that `/reset` is what restores the snapshot for the next acquirer.
+
+---
+
+## 6. Choosing pool ports
+
+Convention used in the eval-runners README:
+
+| Benchmark | Default broker port | Default container image |
+|---|---|---|
+| AndroidWorld | 9300 | `androidworld:2026` |
+| MobileWorld | 9400 | `mobile_world:reset` |
+| Tier4 | 9400 (often co-hosted) | `androidworld:2026plusswipe_tier4` |
+
+Pick a free port whenever you spin up a parallel broker; `--base-env-id` keeps
+container env IDs from colliding across brokers.
+
+---
+
+## 7. Debugging
+
+| Symptom | Where to look |
+|---|---|
+| Broker stuck `pool_initializing=true` | Broker log — usually KVM contention; lower `--parallel` |
+| Only env0 healthy | See [`../host_network_debugging.md`](../host_network_debugging.md) |
+| `Broker unavailable at http://...` from runner | `curl <url>/health`; if 503, broker is up but pool not ready |
+| Container leak after experiment crash | GC loop reclaims after one cycle; otherwise `docker ps --filter ancestor=androidworld:full_adb_agent` and clean up |
+| `/return` 500 with snapshot restore error | Snapshot name mismatch between `--snapshot` and the image's saved snapshots |
+
+For deeper failure modes consult [`../error_recovery.md`](../error_recovery.md)
+(four-layer error model) and the integration tests under
+`skyrl-agent/tests/integration/runtime/androidworld/`.
+
+---
+
+## 8. Code map
+
+| File | Role |
+|---|---|
+| `eval-runners/common/runtime/pool_broker.py` | AndroidWorld broker (FastAPI, creates containers) |
+| `eval-runners/common/runtime/mw_pool_broker.py` | MobileWorld broker (adopts containers) |
+| `eval-runners/common/runtime/androidlab_broker.py` | AndroidLab broker |
+| `eval-runners/common/runtime/pool_client.py` | `PoolClient` + `BrokerContainerManager` (used by Mode B clients) |
+| `eval-runners/common/runtime/container_manager.py` | `ContainerManager`, `ContainerFactory`, `PortAllocator`, `HealthMonitor` (Mode A) |
+| `eval-runners/common/runtime/runtime_client.py` | Async HTTP client for `/reset`, `/step`, `/step_adb` |
+| `eval-runners/common/runtime/runtime_client_adb.py` | ADB-only fast-path client |
+| `eval-runners/common/runtime/exceptions.py` | `ContainerDeadError`, etc. |
+| `skyrl-agent/skyrl_agent/tasks/android/android_task.py` | Selects Mode A vs Mode B, owns lifecycle |
+| `skyrl-agent/skyrl_agent/dispatcher/dispatchers.py` | `async_fix_pool_android` dispatcher; calls the manager interface |

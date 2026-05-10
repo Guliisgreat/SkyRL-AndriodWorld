@@ -39,6 +39,12 @@ MW_TOOLS_SCRIPT = os.path.join(
 )
 MW_TOOLS_SCRIPT = os.path.abspath(MW_TOOLS_SCRIPT)
 
+MW_TOOLS_V2_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "mw_tools_v2.py",
+)
+MW_TOOLS_V2_SCRIPT = os.path.abspath(MW_TOOLS_V2_SCRIPT)
+
 # ---------------------------------------------------------------------------
 # Prompt modules
 # ---------------------------------------------------------------------------
@@ -49,6 +55,12 @@ PROMPT_MODULES = {
     "mw_adb_oracle": "agents.cli.claude_sdk.prompts.mw_adb_oracle",
     "mw_terminal_expert": "agents.cli.claude_sdk.prompts.mw_terminal_expert",
     "mw_terminal_expert_v2": "agents.cli.claude_sdk.prompts.mw_terminal_expert_v2",
+    "mw_terminal_expert_tools_v2": "agents.cli.claude_sdk.prompts.mw_terminal_expert_tools_v2",
+    "mw_terminal_expert_tier1": "agents.cli.claude_sdk.prompts.mw_terminal_expert_tier1",
+    "mw_terminal_expert_tier1a": "agents.cli.claude_sdk.prompts.mw_terminal_expert_tier1a",
+    "mw_terminal_expert_tier1b": "agents.cli.claude_sdk.prompts.mw_terminal_expert_tier1b",
+    "mw_terminal_expert_tier1a_bash": "agents.cli.claude_sdk.prompts.mw_terminal_expert_tier1a_bash",
+    "mw_terminal_expert_tier1a_pure": "agents.cli.claude_sdk.prompts.mw_terminal_expert_tier1a_pure",
 }
 DEFAULT_PROMPT = "mw_adb_baseline"
 
@@ -84,7 +96,9 @@ def load_system_prompt(prompt_name: str) -> str:
     """
     mod = load_prompt_module(prompt_name)
     env_script_attr = getattr(mod, "ENV_SCRIPT", None)
-    if env_script_attr == "mw_tools":
+    if env_script_attr == "mw_tools_v2":
+        script = MW_TOOLS_V2_SCRIPT
+    elif env_script_attr == "mw_tools":
         script = MW_TOOLS_SCRIPT
     else:
         script = MW_ENV_SCRIPT
@@ -1047,7 +1061,12 @@ def preflight_checks(args, system_prompt, allowed_tools, disable_tree):
     # Check that the env script exists (mw_tools.py or mw_env.py)
     mod = load_prompt_module(args.prompt)
     env_script_attr = getattr(mod, "ENV_SCRIPT", None)
-    required_script = MW_TOOLS_SCRIPT if env_script_attr == "mw_tools" else MW_ENV_SCRIPT
+    if env_script_attr == "mw_tools_v2":
+        required_script = MW_TOOLS_V2_SCRIPT
+    elif env_script_attr == "mw_tools":
+        required_script = MW_TOOLS_SCRIPT
+    else:
+        required_script = MW_ENV_SCRIPT
     if not os.path.exists(required_script):
         print(f"ERROR: env script not found at {required_script}")
         return False

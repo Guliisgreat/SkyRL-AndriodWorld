@@ -187,6 +187,8 @@ class Tier4BulkRenameScreenshots(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     res = adb_utils.issue_generic_request(
         ["shell", "find", _PICTURES_DIR, "-name", "Screenshot_*.png"],
         env.controller,
@@ -256,6 +258,8 @@ class Tier4BulkMoveLargeFiles(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._large_names:
+      return 0.0
     for name in self._large_names:
       res = adb_utils.issue_generic_request(
           ["shell", "find", _ARCHIVE_DIR, "-name", name], env.controller
@@ -322,6 +326,8 @@ class Tier4FilterRecentLogFiles(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = getattr(env, "interaction_cache", "") or ""
     for name in self._ground_truth:
       if name not in cache:
@@ -377,6 +383,8 @@ class Tier4AggregationDownloadSizeTop3(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth_top3:
+      return 0.0
     cache = (getattr(env, "interaction_cache", "") or "")
     numbers = re.findall(r"\b\d+\b", cache)
     total_ok = any(
@@ -437,6 +445,8 @@ class Tier4TopKLargestDownloadFiles(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._ground_truth:
+      return 0.0
     cache = (getattr(env, "interaction_cache", "") or "")
     for name in self._ground_truth:
       if name not in cache:

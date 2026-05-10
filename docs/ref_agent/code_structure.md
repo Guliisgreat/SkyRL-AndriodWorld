@@ -1,438 +1,257 @@
 # SkyRL-AndroidWorld Code Structure Reference
 
-This document describes the recommended code structure for integrating AndroidWorld into the SkyRL framework.
+Up-to-date map of the repository for Claude Code. Read this **before** making
+changes to agents, runners, brokers, or benchmark glue. Update this file in
+the same PR whenever you move or rename a major component.
 
-## Overview
-
-SkyRL-AndroidWorld is a monorepo with multiple packages:
-
-| Package | Purpose |
-|---------|---------|
-| `skyrl-agent` | Agent framework (agents, tasks, tools, runtime environments, training integrations) |
-| `skyrl-train` | RL training framework (trainer, workers, generators, inference engines) |
-| `skyrl-tx` | Tinker-like REST API (experimental) |
-
-AndroidWorld adds a new environment integration for training RL agents on Android device tasks.
+> Last sync: post-`237ab9e0` (`refactor: move runtime/brokers and utils to eval-runners/common/`).
 
 ---
 
-## Repository Structure
+## 1. Top-level layout
 
 ```
 SkyRL-AndroidWorld/
+├── skyrl-agent/        Training-time agent framework (verl / SkyRL-Train / Tinker)
+├── skyrl-train/        RL trainer (FSDP + vLLM async)
+├── skyrl-tx/           Tinker-style REST backend (experimental)
+├── eval-runners/       Inference-time evaluation harness — broker + per-benchmark runners
+├── docker/             Dockerfiles + emulator server image
+├── tier4/              ADB-exclusive task definitions injected into androidworld:2026plusswipe_tier4
+├── data/               Training/test JSONL datasets
+├── docs/               Architecture, design, and reference docs (this file lives here)
+└── verify_tier4_on_emulator.py   one-off tier4 verifier check
+```
+
+There are **two execution paths**:
+
+| Path | Entry point | When to use |
+|---|---|---|
+| **Training** | `skyrl-agent/examples/run_verl/verl_android*.sh` | RL training (PPO/GRPO) of Android agents |
+| **Eval / Inference** | `eval-runners/benchmarks/*/run_*.py` | Benchmark evaluation, ground-truth replay, model comparison |
+
+They share the broker (`eval-runners/common/runtime/pool_broker.py`) and the
+Docker image (`androidworld:2026plusswipe` family).
+
+---
+
+## 2. `skyrl-agent/skyrl_agent/` (training-time package)
+
+```
+skyrl_agent/
+├── auto.py                      AutoAgentRunner factory
+├── config/
+│   └── configuration_utils.py   TrajectoryConfig, OmegaConf helpers
 │
-├── skyrl-agent/                          # Agent framework package
-│   ├── pyproject.toml
-│   ├── README.md
-│   ├── examples/
-│   │   ├── run_verl/                     # Existing VeRL examples
-│   │   ├── run_skyrl/                    # Existing SkyRL examples
-│   │   └── run_android/                  # NEW: Android examples
-│   │       └── container_manager_demo.py
-│   │
-│   └── skyrl_agent/
-│       ├── __init__.py
-│       │
-│       ├── agents/                       # Agent implementations
-│       │   ├── __init__.py
-│       │   ├── base.py                   # Base Agent class
-│       │   ├── react/                    # ReAct agent
-│       │   ├── oh_codeact/               # CodeAct agent
-│       │   └── android/                  # NEW: Android agent
-│       │       ├── __init__.py
-│       │       ├── android_agent.py
-│       │       └── android_runner.py
-│       │
-│       ├── tasks/                        # Task definitions
-│       │   ├── __init__.py
-│       │   ├── base.py                   # Base Task class
-│       │   ├── swebench/                 # SWE-Bench tasks
-│       │   ├── web_research_task.py
-│       │   └── android/                  # NEW: Android tasks
-│       │       ├── __init__.py
-│       │       └── android_task.py
-│       │
-│       ├── tools/                        # Tool implementations
-│       │   ├── __init__.py
-│       │   ├── base.py
-│       │   ├── search.py
-│       │   ├── web_browser.py
-│       │   └── android/                  # NEW: Android tools (if needed)
-│       │       └── __init__.py
-│       │
-│       ├── runtime/                      # NEW: Environment runtimes
-│       │   ├── __init__.py
-│       │   └── android/                  # Android runtime
-│       │       ├── __init__.py
-│       │       ├── container_manager.py  # Docker container pool management
-│       │       ├── runtime_client.py     # HTTP client for FastAPI server
-│       │       ├── environment.py        # AndroidWorld environment wrapper
-│       │       └── config.py             # Configuration classes
-│       │
-│       ├── integrations/                 # Training backend integrations
-│       │   ├── __init__.py
-│       │   ├── base.py
-│       │   ├── verl/                     # VeRL integration
-│       │   ├── skyrl_train/              # SkyRL-train integration
-│       │   └── tinker/                   # Tinker integration
-│       │
-│       ├── dispatcher/                   # Async dispatching
-│       ├── functional/                   # Utilities
-│       └── config/                       # Configuration utilities
+├── agents/
+│   ├── base.py                  AgentRunner base class
+│   ├── mapping.py               Agent class registry
+│   ├── memory.py                Conversation memory primitives
+│   ├── records.py               Trajectory record dataclasses
+│   ├── vlm_training.py          VLM-specific trainer hooks
+│   ├── react/                   ReAct agent (general-purpose)
+│   ├── oh_codeact/              OpenHands CodeAct agent
+│   └── android/                 ── Android agent family ──
+│       ├── base.py                  AndroidAgent base + TrajectoryState
+│       ├── runner.py                AndroidAgentRunner (uses async_fix_pool dispatcher)
+│       ├── m3a_agent.py             M3A: multimodal screenshot+a11y agent
+│       ├── t3a_agent.py             T3A: text-only a11y agent (index actions)
+│       ├── t3a_adb_agent.py         T3A variant emitting raw ADB shell commands
+│       ├── tree_adb_agent.py        a11y-tree + ADB hybrid
+│       ├── screen_agent.py          screenshot-only GUI agent
+│       ├── screen_adb_agent.py      screenshot + ADB shell agent (the "ADB agent")
+│       ├── combo_agent.py           orchestrator combining multiple agents
+│       ├── mobileuse/               MobileUse-style agent (subdir)
+│       ├── prompts.py               shared prompt templates
+│       └── utils.py                 parsing, image, action helpers
 │
-├── skyrl-train/                          # Training framework package
-│   ├── pyproject.toml
-│   ├── README.md
-│   │
-│   └── skyrl_train/                      # Core training code
-│       ├── trainer.py
-│       ├── workers/
-│       ├── generators/
-│       └── inference_engines/
+├── tasks/
+│   ├── base.py                  BaseTask
+│   ├── android/android_task.py  AndroidTask — owns ContainerManager / runtime client
+│   ├── general_react/           ReAct-task glue
+│   ├── swebench/                SWE-Bench tasks
+│   ├── web_research_task.py     web research
+│   └── verifiers/               correctness graders (math, QA, coder1, etc.)
 │
-├── skyrl-tx/                             # Tinker-like API (unchanged)
-│   └── ...
+├── tools/
+│   ├── base.py                  BaseTool, ToolRegistry
+│   ├── android_env.py           AndroidEnvTool (wraps AndroidEnv actions)
+│   ├── search.py / search_engine.py / local_search.py / web_browser.py
+│   ├── sandbox_fusion.py        SandboxFusion code-exec tool
+│   ├── finish.py / em_finish.py / next_memagent.py
+│   └── prompt.py / cache.py
 │
-├── docker/                               # Docker configurations
-│   ├── Dockerfile                        # Training infrastructure
-│   ├── Dockerfile.megatron
-│   ├── Dockerfile.ray244
-│   └── android/                          # NEW: Android container
-│       ├── Dockerfile                    # AndroidWorld image build
-│       ├── entrypoint.sh                 # Container startup script
-│       ├── requirements.txt              # Python dependencies
-│       └── server/                       # FastAPI server (runs in container)
-│           ├── __init__.py
-│           ├── server.py                 # FastAPI endpoints
-│           ├── env.py                    # AndroidWorldEnv class
-│           └── logger_config.py          # Logging configuration
-│
-├── configs/                              # NEW: Configuration files
+├── runtime/
 │   └── android/
-│       ├── default.yaml                  # Default Android settings
-│       └── avd/
-│           └── AWAvd.ini                 # AVD configuration
+│       └── androidlab_docker/   AndroidLab compat shim (skyrl_compat_server.py)
+│       (NOTE: container_manager / pool_broker / runtime_client moved to
+│        eval-runners/common/runtime/ in commit 237ab9e0.)
 │
-└── docs/
-    ├── R2E_GYM_VERL_TRAINING_SETUP.md
-    └── code structure reference.md       # This document
+├── dispatcher/
+│   ├── async_utils.py
+│   └── dispatchers.py           DISPATCHER_REGISTRY (incl. async_fix_pool_android)
+│
+├── functional/                  chat templates, function-calling, history utils
+│
+└── integrations/
+    ├── base.py                  GeneratorInput / GeneratorOutput, AsyncInferBackend
+    ├── openai.py                OpenAI-compatible inference (LiteLLM)
+    ├── verl/                    primary RL backend
+    │   ├── verl_main_ppo.py / verl_main_inference.py
+    │   ├── verl_async_manager.py / verl_backend.py / verl_trainer.py
+    │   ├── verl_compat_patch.py
+    │   ├── android_dataset.py    AndroidWorld JSONL → verl batches
+    │   └── upload_utils.py
+    ├── skyrl_train/             SkyRL-Train backend
+    └── tinker/                  Tinker backend
 ```
+
+### Key contracts
+
+- `AndroidAgentRunner` (`agents/android/runner.py`) drives a batch of trajectories
+  through `DISPATCHER_REGISTRY["async_fix_pool_android"]`
+  (`dispatcher/dispatchers.py`), which acquires/releases containers via a
+  `container_manager` object. In production that object is the
+  `BrokerContainerManager` from `eval-runners/common/runtime/pool_client.py` —
+  duck-typed to match the legacy `ContainerManager` interface.
+- `AndroidTask` (`tasks/android/android_task.py`) owns the container lifecycle
+  per trajectory and exposes the Gym-like reset/step API to the agent.
+- All agents implement the same `step(observation) → action` protocol; pick the
+  variant by class name in the verl YAML (`agent.cls: AndroidT3AADBAgent` etc.).
 
 ---
 
-## Component Descriptions
+## 3. `eval-runners/` (evaluation harness)
 
-### 1. Agent Layer (`skyrl-agent/skyrl_agent/agents/android/`)
-
-The Android agent handles interaction with Android devices.
-
-```python
-# android_agent.py
-class AndroidAgent(BaseAgent):
-    """Agent for AndroidWorld tasks."""
-    
-    def act(self, observation: Dict) -> Dict:
-        """Generate action from observation (screenshot + task)."""
-        # Process image and task description
-        # Generate action using LLM
-        pass
+```
+eval-runners/
+├── README.md                    runbook (start here for any eval workflow)
+├── results/                     auto-named per-run output dirs (ATIF trajectories)
+├── data/
+│   ├── tier4/all_tasks_seed7.jsonl    tier4 source pool (50 + 27 extras = 77 tasks)
+│   └── mobileworld/gui_only_tasks.jsonl
+│
+├── common/
+│   ├── runtime/                 ── shared broker + container layer ──
+│   │   ├── pool_broker.py           AndroidWorld broker (FastAPI; creates containers)
+│   │   ├── mw_pool_broker.py        MobileWorld broker (adopts running containers)
+│   │   ├── androidlab_broker.py     AndroidLab broker
+│   │   ├── pool_client.py           PoolClient + BrokerContainerManager
+│   │   ├── container_manager.py     Local-mode container pool (PortAllocator,
+│   │   │                            ContainerFactory, HealthMonitor, ContainerManager)
+│   │   ├── runtime_client.py        async HTTP client for /reset, /step, /step_adb
+│   │   ├── runtime_client_adb.py    ADB-only fast-path client
+│   │   └── exceptions.py            ContainerDeadError + friends
+│   └── utils/
+│       ├── trajectory.py            TrajectoryRecord
+│       └── trajectory_saver.py      ATIF-v1.6 export (Harbor-compatible)
+│
+├── agents/
+│   ├── cli/                     ── ADB-shell / no-screenshot agents ──
+│   │   ├── claude_sdk/              Claude Code CLI agent
+│   │   │   ├── runner.py / android_env.py / tools.py / mcp_server.py
+│   │   │   ├── prompts/                 (adb_baseline, mw_adb_oracle, …)
+│   │   │   ├── trajectory.py / wrappers/
+│   │   ├── terminus2/               Terminus2 agent
+│   │   │   ├── agent.py / environment.py / prompts.py / templates/
+│   │   └── mini_swe/                Mini-SWE agent
+│   │       └── environment.py / templates/
+│   └── gui/                     ── screenshot + tap/swipe/type agents ──
+│       ├── gui_agent_broker.py      shared runner with retry/throttling
+│       ├── general_e2e_common.py    Gemini / generic E2E
+│       ├── gui_owl_ref_common.py    GUI-Owl-1.5
+│       ├── mai_common.py            MAI-UI-8B
+│       ├── qwen3vl_common.py        Qwen3-VL
+│       ├── qwen35_dashscope_common.py
+│       └── venus_common.py          UI-Venus-1.5-30B-A3B
+│
+├── benchmarks/
+│   ├── androidworld/
+│   │   ├── run_claude_cli.py / run_claude_cli_oracle.py
+│   │   ├── run_terminus2.py / run_terminus2_oracle.py
+│   │   ├── run_mini_swe.py / run_mini_swe_oracle.py
+│   │   ├── run_general_e2e.py / test_vllm_oh_demo.py
+│   │   ├── claude_cli_common.py / mini_swe_common.py / terminus2_common.py
+│   │   └── ground_truth/
+│   │       ├── run_ground_truth.py        ATIF v1 GT replay
+│   │       └── verify_v2_edits.py         v2 edit verifier
+│   ├── mobileworld/
+│   │   ├── run_claude_cli.py / run_terminus2.py / run_mini_swe.py
+│   │   ├── run_qwen3vl.py / run_qwen35_dashscope.py
+│   │   ├── run_mai.py / run_venus.py
+│   │   ├── run_gui_agent_broker.py / run_gui_owl_ref.py
+│   │   ├── mw_cli_common.py / mw_tools.py
+│   │   ├── mobileworld_tier1a.yaml
+│   │   └── ground_truth/                   GT generators + replay
+│   └── androidlab/
+│       ├── run_claude_cli.py / run_claude_cli_oracle.py
+│       ├── run_terminus2.py / run_mini_swe.py / run_gui_agent.py
+│       ├── run_original_eval_with_broker.py
+│       ├── posthoc_original_xml_eval.py / posthoc_refactored_xml_eval.py
+│       ├── cross_validate_dual.py / cross_validate_verifiers.py
+│       ├── convert_tasks.py / convert_traces_to_androidlab.py
+│       ├── start_broker.sh / run_bash_only.sh
+│       ├── androidlab_common.py / androidlab_tasks*.jsonl
+│       ├── ground_truth/
+│       └── verifiers/
+│
+└── skyrl_agent/                 (legacy stub kept on PYTHONPATH for back-compat)
 ```
 
-### 2. Task Layer (`skyrl-agent/skyrl_agent/tasks/android/`)
+### Broker protocol (one API across all three benchmarks)
 
-Android task definitions from the AndroidWorld benchmark.
+| Endpoint | Body / Response |
+|---|---|
+| `POST /acquire` | `{pid, timeout}` → `{env_id, server_url}` |
+| `POST /return`  | `{env_id, healthy}` (broker calls `/reset` internally) |
+| `GET  /status`  | `{total, idle, leased, pool_initializing}` |
+| `GET  /health`  | `{status, uptime, pool_ready, pool_target}` |
 
-```python
-# android_task.py
-class AndroidTask(BaseTask):
-    """Task definition for AndroidWorld."""
-    
-    def get_goal(self) -> str:
-        """Return the task goal description."""
-        pass
-    
-    def evaluate(self, trajectory) -> float:
-        """Evaluate if the task was completed successfully."""
-        pass
-```
-
-### 3. Runtime Layer (`skyrl-agent/skyrl_agent/runtime/android/`)
-
-Docker container management and runtime communication. This layer provides the environment for agents to interact with.
-
-#### Container Manager
-
-```python
-# container_manager.py
-class ContainerManager:
-    """Manages pool of Docker containers running Android emulators."""
-    
-    async def create_pool(self, size: int, **kwargs) -> List[ContainerInstance]:
-        """Create a pool of containers with Android emulators."""
-        pass
-    
-    async def allocate_container(self) -> ContainerInstance:
-        """Get an available container from the pool."""
-        pass
-    
-    async def release_container(self, container: ContainerInstance):
-        """Return container to the pool after use."""
-        pass
-    
-    async def cleanup(self):
-        """Stop and remove all containers."""
-        pass
-```
-
-#### Runtime Client
-
-```python
-# runtime_client.py
-class RuntimeClient:
-    """HTTP client for communicating with FastAPI server in container."""
-    
-    async def reset(self, options: Dict) -> Tuple[Observation, Info]:
-        """Reset environment and start new task."""
-        pass
-    
-    async def step(self, action: Dict) -> Tuple[Obs, Reward, Done, Truncated, Info]:
-        """Execute action and get result."""
-        pass
-    
-    async def health_check(self) -> bool:
-        """Check if container is healthy."""
-        pass
-```
-
-### 4. Docker Container (`docker/android/`)
-
-The Docker container runs inside it:
-- Android emulator (QEMU-based)
-- FastAPI server exposing HTTP endpoints
-- AndroidWorldEnv that controls the emulator
-
-#### FastAPI Server (`server/server.py`)
-
-```python
-@app.post("/reset")
-async def reset(env: Env, data: ResetInput):
-    """Reset environment to new task."""
-    observation, info = env.reset(seed=data.seed, options=data.options)
-    return {"observation": observation, "info": info}
-
-@app.post("/step")
-async def step(env: Env, data: StepInput):
-    """Execute action in environment."""
-    obs, reward, terminated, truncated, info = env.step(action=data.action)
-    return {"observation": obs, "reward": reward, "done": terminated or truncated}
-
-@app.get("/health")
-async def health(env: Env):
-    """Health check endpoint."""
-    return {"status": "success"}
-```
-
-#### AndroidWorldEnv (`server/env.py`)
-
-The environment class that controls the Android emulator. **Configurable via environment variables:**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `USE_SNAPSHOT` | `true` | Use snapshot or cold boot |
-| `GPU_MODE` | `auto` | GPU emulation mode |
-| `EMULATOR_BOOT_WAIT` | `30` | Seconds to wait for boot |
-
-```python
-def _start_emulator(self):
-    # Read config from environment
-    use_snapshot = os.getenv("USE_SNAPSHOT", "true") == "true"
-    gpu_mode = os.getenv("GPU_MODE", "auto")
-    boot_wait = int(os.getenv("EMULATOR_BOOT_WAIT", "30"))
-    
-    # Build command based on config
-    if use_snapshot:
-        snapshot_arg = f"-snapshot {self.snapshot}"
-    else:
-        snapshot_arg = "-no-snapshot"
-    
-    command = f"emulator -avd {self.avd_name} {snapshot_arg} -gpu {gpu_mode} ..."
-```
+`BrokerContainerManager` wraps these endpoints behind the same
+`allocate_container / release_container / get_pool_status` interface used by
+the dispatcher, so training and eval code paths are interchangeable.
 
 ---
 
-## Architecture Diagram
+## 4. `docker/`
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        HOST MACHINE                                 │
-│                                                                     │
-│   skyrl-agent/skyrl_agent/                                          │
-│   ┌─────────────────────────────────────────────────────────────┐  │
-│   │  agents/android/              runtime/android/              │  │
-│   │  • AndroidAgent               • ContainerManager            │  │
-│   │  • AndroidRunner        ────► • RuntimeClient               │  │
-│   │                               • Environment                 │  │
-│   │  tasks/android/               │                             │  │
-│   │  • AndroidTask                │                             │  │
-│   └───────────────────────────────┼─────────────────────────────┘  │
-│                                   │ HTTP                           │
-│                                   │                                │
-├───────────────────────────────────┼────────────────────────────────┤
-│                      DOCKER CONTAINER                              │
-│   ┌───────────────────────────────▼──────────────────────────────┐ │
-│   │  docker/android/server/                                      │ │
-│   │  ┌─────────────────┐         ┌─────────────────────────────┐│ │
-│   │  │   FastAPI       │────────►│   AndroidWorldEnv           ││ │
-│   │  │   server.py     │         │   (env.py)                  ││ │
-│   │  │                 │         │   • Configurable via env    ││ │
-│   │  │   /reset        │         │   • Controls emulator       ││ │
-│   │  │   /step         │         └─────────────┬───────────────┘│ │
-│   │  │   /health       │                       │ gRPC            │ │
-│   │  └─────────────────┘         ┌─────────────▼───────────────┐│ │
-│   │                              │   Android Emulator (QEMU)   ││ │
-│   │                              │   AVD: AWAvd                ││ │
-│   │                              └─────────────────────────────┘│ │
-│   └──────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────┘
+docker/
+├── android/                                 emulator server image (ADB + grpc + FastAPI)
+│   ├── Dockerfile / Dockerfile.2026 / Dockerfile.adb / Dockerfile.full_adb_agent
+│   ├── Dockerfile.tier4 / Dockerfile.v9
+│   ├── entrypoint*.sh
+│   ├── server/                              FastAPI server (env.py, etc.)
+│   └── skyrl_server/
+├── androidworld_2026plusswipe/              upgraded 2026 task suite + swipe gesture
+├── androidworld_2026plusswipe_tier4/        + 50 ADB-exclusive tier4 tasks (env.py, test_integration.py)
+├── Dockerfile / Dockerfile.megatron / Dockerfile.ray244   training images
 ```
+
+Build the eval image with `docker/android/`. Build the tier4 task image with
+`docker/androidworld_2026plusswipe_tier4/`.
 
 ---
 
-## Configuration
+## 5. Where to put new code
 
-### Default Configuration (`configs/android/default.yaml`)
-
-```yaml
-docker:
-  image: androidworld:full_adb_agent
-
-emulator:
-  avd_name: AWAvd
-  use_snapshot: false           # Cold boot for stability
-  gpu_mode: swiftshader_indirect
-  boot_wait_seconds: 90
-
-container:
-  pool_size: 4
-  health_check_interval: 30
-  server_timeout: 600
-  retry_interval: 10
-```
-
-### Using Configuration in ContainerManager
-
-```python
-from skyrl_agent.runtime.android import ContainerManager
-
-config = load_config("configs/android/default.yaml")
-
-manager = ContainerManager(
-    docker_image=config.docker.image,
-    pool_size=config.container.pool_size,
-)
-
-# Config passed as environment variables to container
-await manager.create_pool(
-    environment={
-        "USE_SNAPSHOT": str(config.emulator.use_snapshot).lower(),
-        "GPU_MODE": config.emulator.gpu_mode,
-        "EMULATOR_BOOT_WAIT": str(config.emulator.boot_wait_seconds),
-    }
-)
-```
+| Adding… | Goes in |
+|---|---|
+| New CLI agent (Claude/Terminus-style) | `eval-runners/agents/cli/<agent_name>/` |
+| New GUI agent (vision model) | `eval-runners/agents/gui/<agent_name>_common.py` |
+| New benchmark wiring | `eval-runners/benchmarks/<bench>/run_<agent>.py` |
+| New training agent (used by verl) | `skyrl-agent/skyrl_agent/agents/android/<name>.py` + register in `__init__.py` |
+| New broker / pool feature | `eval-runners/common/runtime/pool_broker.py` |
+| New container lifecycle change | `eval-runners/common/runtime/container_manager.py` |
+| New tier4 task | `tier4/<category>.py` and rebuild `androidworld:2026plusswipe_tier4` |
+| New ground-truth ref | edit `docs/final/AndroidWorld2026/androidworld_ground_truth_reference_v2.md` |
 
 ---
 
-## Migration from aw_g Repository
+## 6. Cross-references
 
-| Source (`aw_g/`) | Destination | Action |
-|------------------|-------------|--------|
-| `skyrl_agent/agents/android/` | `skyrl-agent/skyrl_agent/agents/android/` | Move |
-| `skyrl_agent/tasks/android/` | `skyrl-agent/skyrl_agent/tasks/android/` | Move |
-| `skyrl_agent/runtime/androidworld/container_manager.py` | `skyrl-agent/skyrl_agent/runtime/android/container_manager.py` | Move |
-| `skyrl_agent/runtime/androidworld/runtime_client.py` | `skyrl-agent/skyrl_agent/runtime/android/runtime_client.py` | Move |
-| `docker_env/RL4AndroidWorld/server/` | `docker/android/server/` | Move |
-| `docker_env/AndroidWorldEnv.dockerfile` | `docker/android/Dockerfile` | Rename & Move |
-| `examples/container_manager_demo.py` | `skyrl-agent/examples/run_android/` | Move |
-| `docker_patches/` | - | Delete (use env vars) |
-| `docker_env/.android/` | - | Delete (mount at runtime) |
-| `verl/` | - | Delete (use integrations/verl/) |
-| `docker/` (VeRL Dockerfiles) | - | Delete (already in SkyRL) |
-
----
-
-## Key Design Principles
-
-1. **Separation of Concerns**
-   - `skyrl-agent`: WHAT (agents, tasks, tools) + WHERE (runtime environments)
-   - `skyrl-train`: HOW (RL training backend - trainer, workers, PPO, etc.)
-   - `docker/`: BUILD (container images)
-
-2. **Configuration over Code Changes**
-   - No file patching; use environment variables
-   - YAML configs for settings
-   - Runtime mount for SDK if needed
-
-3. **Follow Existing Patterns**
-   - Android agent in `agents/android/` like `agents/react/`
-   - Android runtime in `runtime/android/` for environment access
-   - Docker in `docker/android/` like `docker/Dockerfile`
-
-4. **Single Source of Truth**
-   - One `env.py` (configurable), not patches
-   - One Docker folder structure
-   - Configs in `configs/` directory
-
----
-
-## Component Placement Summary
-
-| Layer | Location | Contains |
-|-------|----------|----------|
-| **WHAT** (Agent logic) | `skyrl-agent/skyrl_agent/agents/android/` | Android agent implementation |
-| **WHAT** (Task logic) | `skyrl-agent/skyrl_agent/tasks/android/` | Android task definitions |
-| **WHERE** (Runtime) | `skyrl-agent/skyrl_agent/runtime/android/` | Container manager, runtime client |
-| **HOW** (Training) | `skyrl-agent/skyrl_agent/integrations/verl/` | VeRL integration (already exists) |
-| **HOW** (Training) | `skyrl-train/skyrl_train/` | Trainer, workers, generators |
-| **BUILD** (Docker) | `docker/android/` | Dockerfile, FastAPI server |
-
----
-
-## Quick Start Example
-
-```python
-import asyncio
-from skyrl_agent.runtime.android import ContainerManager, RuntimeClient
-
-async def main():
-    # 1. Create container manager
-    manager = ContainerManager(docker_image="androidworld:full_adb_agent")
-    
-    # 2. Create pool of containers
-    await manager.create_pool(
-        pool_size=2,
-        environment={
-            "USE_SNAPSHOT": "false",
-            "GPU_MODE": "swiftshader_indirect",
-            "EMULATOR_BOOT_WAIT": "90",
-        }
-    )
-    
-    # 3. Allocate container for trajectory
-    container = await manager.allocate_container()
-    client = RuntimeClient(container)
-    
-    # 4. Run trajectory
-    obs, info = await client.reset({"task_id": 0})
-    while True:
-        action = agent.act(obs)  # Your agent here
-        obs, reward, done, _, info = await client.step(action)
-        if done:
-            break
-    
-    # 5. Cleanup
-    await manager.release_container(container)
-    await manager.cleanup()
-
-asyncio.run(main())
-```
+- Broker mode A (local) vs mode B (broker): [`container_pool_broker.md`](./container_pool_broker.md)
+- ADB agent prompt anatomy: [`adb_agent_prompt_design.md`](./adb_agent_prompt_design.md)
+- Error-recovery model (4 layers): [`../error_recovery.md`](../error_recovery.md)
+- Eval runbook: [`../../eval-runners/README.md`](../../eval-runners/README.md)
+- Training runbook: [`../../skyrl-agent/examples/README.md`](../../skyrl-agent/examples/README.md)

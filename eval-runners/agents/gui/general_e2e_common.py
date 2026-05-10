@@ -191,12 +191,12 @@ def run_general_e2e_task_sync(
     elapsed = time.time() - start_time
 
     finished = terminated or truncated
-    if not finished and auto_finish:
-        print(f"  Agent didn't finish — auto-finishing...")
-        auto_reward = force_eval(container_url)
-        reward = auto_reward
-        finished = True
-        print(f"  Auto-finish reward: {auto_reward}")
+    # if not finished and auto_finish:
+    #     print(f"  Agent didn't finish — auto-finishing...")
+    #     auto_reward = force_eval(container_url)
+    #     reward = auto_reward
+    #     finished = True
+    #     print(f"  Auto-finish reward: {auto_reward}")
 
     token_usage = {}
     if hasattr(agent, "get_total_token_usage"):

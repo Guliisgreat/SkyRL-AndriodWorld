@@ -11,6 +11,7 @@ import concurrent.futures
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,16 @@ ANDROID_ENV_SCRIPT = os.path.join(
 )
 ANDROID_ENV_SCRIPT = os.path.abspath(ANDROID_ENV_SCRIPT)
 
+WRAPPER_BASENAME = os.path.basename(ANDROID_ENV_SCRIPT)
+
+SHIM_WRAPPERS_DIR = os.path.join(
+    os.path.dirname(ANDROID_ENV_SCRIPT), "wrappers",
+)
+
+def _wrapper_path(stable: bool) -> str:
+    """Wrapper path the agent sees: basename when stable, absolute when not."""
+    return WRAPPER_BASENAME if stable else ANDROID_ENV_SCRIPT
+
 # ---------------------------------------------------------------------------
 # Prompt modules
 # ---------------------------------------------------------------------------
@@ -47,6 +58,11 @@ PROMPT_MODULES = {
     "optimized_terminal_v1": "skyrl_agent.agents.android.claude_sdk.prompts.optimized_terminal_v1",
     "optimized_terminal_v2": "skyrl_agent.agents.android.claude_sdk.prompts.optimized_terminal_v2",
     "clean_optimized": "agents.cli.claude_sdk.prompts.clean_optimized",
+    "clean_optimized_v10": "agents.cli.claude_sdk.prompts.clean_optimized_v10",
+    "clean_optimized_v10_tools": "agents.cli.claude_sdk.prompts.clean_optimized_v10_tools",
+    "clean_optimized_v11": "agents.cli.claude_sdk.prompts.clean_optimized_v11",
+    "clean_optimized_v11_tools": "agents.cli.claude_sdk.prompts.clean_optimized_v11_tools",
+    "clean_optimized_tools": "agents.cli.claude_sdk.prompts.clean_optimized_tools",
 }
 DEFAULT_PROMPT = "adb_baseline"
 
@@ -74,16 +90,74 @@ def load_prompt_module(prompt_name: str):
     return mod
 
 
-def load_system_prompt(prompt_name: str) -> str:
-    """Load a system prompt by name and format it with ANDROID_ENV_SCRIPT."""
+def _invocation_style(prompt_name: str) -> str:
+    """Return 'direct' for v11+ shim-on-PATH prompts, 'android_env' otherwise."""
     mod = load_prompt_module(prompt_name)
-    return mod.build_system_prompt(ANDROID_ENV_SCRIPT)
+    return getattr(mod, "INVOCATION_STYLE", "android_env")
 
 
-def get_allowed_tools(prompt_name: str) -> str:
-    """Get required tools for a prompt (default: Bash only)."""
+def _prompt_shims(prompt_name: str) -> list[str]:
+    """List of shim names a direct-invocation prompt expects on PATH."""
     mod = load_prompt_module(prompt_name)
-    return getattr(mod, "REQUIRED_TOOLS", "Bash(command:*)")
+    return list(getattr(mod, "SHIMS", ["adb", "finish"]))
+
+
+def load_system_prompt(prompt_name: str, stable: bool = True) -> str:
+    """Load a system prompt by name and format it with the wrapper path.
+
+    With stable=True (default), the agent sees the basename `android_env.py`
+    and the script is copied into the per-task cwd. With stable=False, the
+    absolute ANDROID_ENV_SCRIPT path is embedded.
+
+    For direct-invocation prompts (``INVOCATION_STYLE == "direct"``) the
+    agent never references android_env.py by name — the shim path is empty
+    and the prompt body ignores it.
+    """
+    mod = load_prompt_module(prompt_name)
+    if getattr(mod, "INVOCATION_STYLE", "android_env") == "direct":
+        return mod.build_system_prompt("")
+    return mod.build_system_prompt(_wrapper_path(stable))
+
+
+def _default_allowed_tools(stable: bool = True) -> str:
+    """Default: only allow Bash calls to the android_env.py wrapper."""
+    return f"Bash(python {_wrapper_path(stable)} *)"
+
+
+def _default_disallowed_tools() -> str:
+    """Default deny list. Hard-deny any Bash command containing adb pull/push/root.
+
+    Middle-wildcard patterns match the forbidden subcommand regardless of how
+    the agent invokes ADB — whether wrapped (`python android_env.py adb "adb
+    pull …"`, legacy v10) or direct (`adb pull …`, v11+).
+    """
+    return ",".join([
+        "Bash(*adb pull*)",
+        "Bash(*adb push*)",
+        "Bash(*adb root*)",
+    ])
+
+
+def get_allowed_tools(prompt_name: str, stable: bool = True) -> str:
+    """Get required tools for a prompt.
+
+    - Direct-invocation prompts (v11+): returns ``REQUIRED_TOOLS`` verbatim,
+      or a permissive list of ``Bash(<shim> *)`` patterns from ``SHIMS``.
+    - Legacy prompts (v10 and earlier): defaults to ``Bash(python android_env.py
+      *)`` and substitutes the ``Bash(command:*)`` sentinel inside any
+      ``REQUIRED_TOOLS`` value.
+    """
+    mod = load_prompt_module(prompt_name)
+    invocation = getattr(mod, "INVOCATION_STYLE", "android_env")
+    required = getattr(mod, "REQUIRED_TOOLS", None)
+    if invocation == "direct":
+        if required is not None:
+            return required
+        shims = _prompt_shims(prompt_name)
+        return ",".join(f"Bash({s} *)" for s in shims)
+    if required is None:
+        return _default_allowed_tools(stable)
+    return required.replace("Bash(command:*)", f"Bash(python {_wrapper_path(stable)} *)")
 
 
 # ---------------------------------------------------------------------------
@@ -186,9 +260,10 @@ def broker_release(broker_url, env_id, healthy=True, retries=3):
 # ---------------------------------------------------------------------------
 
 def run_one_task(task_def, container_url, model, max_turns, system_prompt,
-                 effort=None, allowed_tools="Bash(command:*)",
+                 effort=None, allowed_tools=None, disallowed_tools=None,
                  disable_tree=True, prompt_suffix="",
-                 skip_reset=False, task_timeout=900, auto_finish=True):
+                 skip_reset=False, task_timeout=900, auto_finish=True,
+                 stable_endpoint=True, prompt_name=None):
     """Run one Claude attempt on a task. Returns a result dict.
 
     Parameters
@@ -199,7 +274,28 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
         Extra text appended after the task description (e.g., feedback).
     task_timeout : int
         Max seconds for the Claude subprocess.
+    prompt_name : Optional[str]
+        Name of the prompt module. When the module declares
+        ``INVOCATION_STYLE = "direct"`` (v11+), the runner stages shim
+        scripts (``adb``, ``finish``, …) into a per-task ``bin/`` and
+        configures PATH/ANDROID_ENV_SCRIPT so the agent issues those
+        commands directly without seeing ``android_env.py`` in its cwd.
     """
+    if allowed_tools is None:
+        allowed_tools = _default_allowed_tools(stable_endpoint)
+    if disallowed_tools is None:
+        disallowed_tools = _default_disallowed_tools()
+
+    direct_invocation = False
+    direct_shims: list[str] = []
+    if prompt_name:
+        try:
+            direct_invocation = _invocation_style(prompt_name) == "direct"
+            if direct_invocation:
+                direct_shims = _prompt_shims(prompt_name)
+        except Exception:
+            direct_invocation = False
+
     task_id = task_def["task_id"]
     seed = task_def["seed"]
     task_text = task_def["task"]
@@ -247,14 +343,17 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     env.pop("CLAUDECODE", None)
 
     # Run claude CLI
+    claude_bin = os.environ.get("CLAUDE_BIN", "claude")
     cmd = [
-        "claude",
+        claude_bin,
         "-p", prompt,
         "--model", model,
         "--max-turns", str(max_turns),
         "--output-format", "json",
         "--allowedTools", allowed_tools,
     ]
+    if disallowed_tools:
+        cmd.extend(["--disallowedTools", disallowed_tools])
     if effort:
         cmd.extend(["--effort", effort])
 
@@ -265,11 +364,31 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     elapsed = 0
     claude_json = {}
     try:
-        result = subprocess.run(
-            cmd, env=env,
-            capture_output=True, text=True,
-            timeout=task_timeout,
-        )
+        with tempfile.TemporaryDirectory(prefix=f"claude_task{task_id}_cwd_") as run_cwd:
+            if direct_invocation:
+                # v11+: stage shim scripts into <run_cwd>/bin and prepend it
+                # to PATH so the agent's bare `adb`/`sql`/`finish`/... calls
+                # resolve to wrappers that forward to ANDROID_ENV_SCRIPT. The
+                # script itself is NOT copied into run_cwd.
+                bin_dir = os.path.join(run_cwd, "bin")
+                os.makedirs(bin_dir)
+                for shim in direct_shims:
+                    src = os.path.join(SHIM_WRAPPERS_DIR, shim)
+                    dst = os.path.join(bin_dir, shim)
+                    shutil.copy(src, dst)
+                    os.chmod(dst, 0o755)
+                env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+                env["ANDROID_ENV_SCRIPT"] = ANDROID_ENV_SCRIPT
+            elif stable_endpoint:
+                # Stage the wrapper into the cwd so the agent invokes it via
+                # the relative basename — no server-side absolute path leaks
+                # into the prompt or transcript.
+                shutil.copy(ANDROID_ENV_SCRIPT, os.path.join(run_cwd, WRAPPER_BASENAME))
+            result = subprocess.run(
+                cmd, env=env, cwd=run_cwd,
+                capture_output=True, text=True,
+                timeout=task_timeout,
+            )
         elapsed = time.time() - start_time
         print(f"  Claude finished in {elapsed:.0f}s (exit={result.returncode})")
 
@@ -320,12 +439,12 @@ def run_one_task(task_def, container_url, model, max_turns, system_prompt,
     step_count = state.get("step_count", 0)
     finished = state.get("terminated", False)
 
-    if not finished and auto_finish:
-        print(f"  Agent didn't call finish — auto-finishing...")
-        auto_reward = force_eval(container_url)
-        reward = auto_reward
-        finished = True
-        print(f"  Auto-finish reward: {auto_reward}")
+    # if not finished and auto_finish:
+    #     print(f"  Agent didn't call finish — auto-finishing...")
+    #     auto_reward = force_eval(container_url)
+    #     reward = auto_reward
+    #     finished = True
+    #     print(f"  Auto-finish reward: {auto_reward}")
 
     status = "OK" if reward > 0 else "FAIL"
     print(f"  >>> REWARD: {reward} ({status}), steps={step_count}, finished={finished}")
@@ -469,174 +588,152 @@ def run_parallel(tasks, broker_url, pool_size, output_path, task_runner):
 # ---------------------------------------------------------------------------
 # ATIF trajectory export
 # ---------------------------------------------------------------------------
+#
+# This module owns the ClaudeCodeCLI converter. Schema constants, step
+# builders, and the generic save driver live in atif_utils.py. Per-agent
+# converters (Terminus2, MiniSweAgent) live in their respective
+# *_common.py modules and are passed in via the ``result_to_atif_fn``
+# kwarg on ``finalize_results`` / ``save_atif_trajectories`` below.
 
-def result_to_atif(result, model, system_prompt):
-    """Convert a task result dict to an ATIF-v1.6 trajectory dict."""
-    task_id = result.get("task_id", 0)
-    session_id = f"androidworld-task{task_id}-{uuid.uuid4().hex[:8]}"
+from atif_utils import (  # noqa: E402
+    make_agent_step,
+    make_system_note_step,
+    make_system_step,
+    make_user_step,
+    save_atif_trajectories as _save_atif_trajectories_generic,
+    unwrap_command,
+    wrap_trajectory,
+)
 
-    steps = []
+
+def result_to_atif(result, model, system_prompt, *, output_dir=None):
+    """Convert a ClaudeCodeCLI task result to an ATIF-v1.6 trajectory.
+
+    Reads ``result["commands"]`` (= the device-side step_records appended
+    by ``android_env.py`` for each ``adb`` / ``tree`` / ``finish`` action)
+    and translates each entry into one ATIF agent step. Per-step LLM
+    rationale is recorded only when the wrapper captured ``thought``;
+    where it didn't, the agent ``message`` falls back to a verb-specific
+    placeholder so the field stays populated.
+
+    The ``tool_calls.arguments.command`` field stores the BARE verb form
+    (``adb shell ...``, ``finish --status ... --description "..."``) —
+    matching what the model actually emitted, and matching the same
+    field's shape in the Mini-SWE and Terminus2 converters.
+
+    ``output_dir`` is accepted for signature parity with the other
+    converters but ignored here.
+    """
+    del output_dir
+    steps: list = []
     step_id = 1
 
-    steps.append({
-        "step_id": step_id,
-        "source": "system",
-        "message": system_prompt,
-    })
+    steps.append(make_system_step(step_id, system_prompt))
     step_id += 1
 
-    steps.append({
-        "step_id": step_id,
-        "source": "user",
-        "message": result.get("task", ""),
-    })
+    steps.append(make_user_step(step_id, result.get("task", "")))
     step_id += 1
 
     for rec in result.get("commands", []):
         action_type = rec.get("action_type", "")
-        params = rec.get("action_params", {})
+        params = rec.get("action_params", {}) or {}
         cmd_output = rec.get("command_output", "")
+        thought = rec.get("thought", "") or ""
 
         if action_type == "adb":
-            command = params.get("command", "")
-            tool_call_id = f"call_{step_id}"
-            no_tree = params.get("no_tree", False)
-            tree_flag = " --no-tree" if no_tree else ""
-            bash_cmd = f"python android_env.py adb{tree_flag} \"{command}\""
-
-            steps.append({
-                "step_id": step_id,
-                "source": "agent",
-                "message": rec.get("thought", "") or f"Execute: {command}",
-                "model_name": model,
-                "tool_calls": [{
-                    "tool_call_id": tool_call_id,
-                    "function_name": "Bash",
-                    "arguments": {"command": bash_cmd},
-                }],
-                "observation": {
-                    "results": [{
-                        "source_call_id": tool_call_id,
-                        "content": cmd_output[:8000] if cmd_output else "(no output)",
-                    }],
-                },
-            })
+            command = params.get("command", "") or ""
+            steps.append(make_agent_step(
+                step_id,
+                message=thought or f"Execute: {command}",
+                command=command,
+                observation=cmd_output or "(no output)",
+                model_name=model,
+            ))
             step_id += 1
 
         elif action_type == "tree":
-            tool_call_id = f"call_{step_id}"
-            steps.append({
-                "step_id": step_id,
-                "source": "agent",
-                "message": rec.get("thought", "Get accessibility tree"),
-                "model_name": model,
-                "tool_calls": [{
-                    "tool_call_id": tool_call_id,
-                    "function_name": "Bash",
-                    "arguments": {"command": "python android_env.py tree"},
-                }],
-                "observation": {
-                    "results": [{
-                        "source_call_id": tool_call_id,
-                        "content": cmd_output[:8000] if cmd_output else "(no output)",
-                    }],
-                },
-            })
+            steps.append(make_agent_step(
+                step_id,
+                message=thought or "Get accessibility tree",
+                command="tree",
+                observation=cmd_output or "(no output)",
+                model_name=model,
+            ))
             step_id += 1
 
         elif action_type == "finish":
-            tool_call_id = f"call_{step_id}"
             status = params.get("status", "complete")
             desc = params.get("description", "")
-            bash_cmd = f'python android_env.py finish --status {status} --description "{desc}"'
-
-            steps.append({
-                "step_id": step_id,
-                "source": "agent",
-                "message": rec.get("thought", "") or f"Finish: {desc}",
-                "model_name": model,
-                "tool_calls": [{
-                    "tool_call_id": tool_call_id,
-                    "function_name": "Bash",
-                    "arguments": {"command": bash_cmd},
-                }],
-                "observation": {
-                    "results": [{
-                        "source_call_id": tool_call_id,
-                        "content": cmd_output[:8000] if cmd_output else "Task finished.",
-                    }],
-                },
-            })
+            command = f'finish --status {status} --description "{desc}"'
+            steps.append(make_agent_step(
+                step_id,
+                message=thought or f"Finish: {desc}",
+                command=command,
+                observation=cmd_output or "Task finished.",
+                model_name=model,
+            ))
             step_id += 1
 
+        else:
+            # Unknown action_type — preserve the entry so the trajectory
+            # documents it faithfully rather than silently dropping it.
+            steps.append(make_agent_step(
+                step_id,
+                message=thought or f"Action: {action_type}",
+                command=str(params.get("command", "")) or f"<{action_type}>",
+                observation=cmd_output or "(no output)",
+                model_name=model,
+            ))
+            step_id += 1
+
+    # Surface runtime failures the runner reported instead of an action.
+    err = result.get("error")
+    if err:
+        steps.append(make_system_note_step(
+            step_id, f"ENVIRONMENT_ERROR: {err}",
+        ))
+        step_id += 1
+
+    # Degenerate case: agent never produced a single device call (e.g.
+    # claude CLI exited early or only emitted text). Emit one agent step
+    # carrying whatever final blob the runner captured so the trajectory
+    # has a populated agent turn rather than a 2-step stub.
     if len(steps) == 2:
-        steps.append({
-            "step_id": step_id,
-            "source": "agent",
-            "message": result.get("claude_output", "")[:3000] or "(no output captured)",
-            "model_name": model,
-        })
+        claude_output = (result.get("claude_output", "") or "")[:3000]
+        steps.append(make_agent_step(
+            step_id,
+            message=claude_output or "(no output captured)",
+            command="",
+            observation="(agent never issued a device call)",
+            model_name=model,
+        ))
+        step_id += 1
 
-    trajectory = {
-        "schema_version": "ATIF-v1.6",
-        "session_id": session_id,
-        "agent": {
-            "name": "ClaudeCodeCLI",
-            "version": "1.0",
-            "model_name": model,
-            "tool_definitions": [{
-                "type": "function",
-                "function": {
-                    "name": "Bash",
-                    "description": "Execute a bash command",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "command": {"type": "string", "description": "The command to execute"},
-                        },
-                        "required": ["command"],
-                    },
-                },
-            }],
-        },
-        "steps": steps,
-        "final_metrics": {
-            "total_prompt_tokens": result.get("input_tokens", 0),
-            "total_completion_tokens": result.get("output_tokens", 0),
-            "total_cost_usd": result.get("cost_usd", 0.0),
-            "total_steps": result.get("step_count", 0),
-            "extra": {
-                "task_id": task_id,
-                "seed": result.get("seed", 0),
-                "reward": result.get("reward", 0.0),
-                "finished": result.get("finished", False),
-                "elapsed_seconds": result.get("elapsed_seconds", 0),
-                "finish_description": result.get("finish_description", ""),
-                "num_turns": result.get("num_turns", 0),
-            },
-        },
-        "extra": {
-            "benchmark": "AndroidWorld",
-            "task_text": result.get("task", ""),
-        },
-    }
-
-    return trajectory
+    return wrap_trajectory(
+        agent_name="ClaudeCodeCLI",
+        model=model,
+        result=result,
+        steps=steps,
+    )
 
 
-def save_atif_trajectories(results, output_dir, model, system_prompt):
-    """Save each task result as an individual ATIF JSON file."""
-    atif_dir = os.path.join(output_dir, "atif_trajectories")
-    os.makedirs(atif_dir, exist_ok=True)
+def save_atif_trajectories(results, output_dir, model, system_prompt,
+                            agent_name: str = "ClaudeCodeCLI",
+                            result_to_atif_fn=None):
+    """Save each task result as an individual ATIF JSON file.
 
-    for result in results:
-        task_id = result.get("task_id", 0)
-        traj = result_to_atif(result, model, system_prompt)
-        path = os.path.join(atif_dir, f"task_{task_id:03d}.json")
-        with open(path, "w") as f:
-            json.dump(traj, f, indent=2, default=str)
-
-    print(f"ATIF trajectories saved to {atif_dir}/ ({len(results)} files)")
+    ``agent_name`` is retained for backward compatibility but no longer
+    drives behavior — the converter is selected by ``result_to_atif_fn``.
+    When ``result_to_atif_fn`` is ``None`` (the default) we fall back to
+    the local ClaudeCodeCLI converter so legacy callers keep working.
+    """
+    del agent_name  # selection is now via result_to_atif_fn
+    if result_to_atif_fn is None:
+        result_to_atif_fn = result_to_atif
+    _save_atif_trajectories_generic(
+        results, output_dir, model, system_prompt,
+        result_to_atif_fn=result_to_atif_fn,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -669,8 +766,19 @@ def build_common_parser(description="Run Claude Code CLI on AndroidWorld tasks")
                         choices=list(PROMPT_MODULES.keys()),
                         help=f"System prompt variant (default: {DEFAULT_PROMPT})")
     parser.add_argument("--effort", default=None,
-                        choices=["low", "medium", "high", "max"],
+                        choices=["low", "medium", "high", "xhigh", "max"],
                         help="Claude reasoning effort level")
+    parser.add_argument("--stable-endpoint",
+                        action=argparse.BooleanOptionalAction, default=True,
+                        help="Hide the wrapper's absolute path from the agent "
+                             "by copying android_env.py into the per-task tmp "
+                             "cwd. Use --no-stable-endpoint to embed the "
+                             "absolute path (legacy behavior).")
+    parser.add_argument("--deny-list",
+                        action=argparse.BooleanOptionalAction, default=True,
+                        help="Pass --disallowedTools to the claude CLI to "
+                             "block adb pull/push/root. Use --no-deny-list "
+                             "to omit the flag entirely (legacy behavior).")
     return parser
 
 
@@ -684,14 +792,20 @@ def load_tasks(data_path, task_ids=None):
     return tasks
 
 
-def resolve_output_path(args):
-    """Determine output path and create directories."""
+def resolve_output_path(args, agent_name: str = "ClaudeCodeCLI"):
+    """Determine output path and create directories.
+
+    The folder name follows {AgentClass}_{ModelShort}_{yymmdd}_{HHMM} per
+    CLAUDE.md. ``agent_name`` defaults to ``ClaudeCodeCLI`` for backward
+    compatibility with the original claude_cli runner; other runners (mini-swe,
+    terminus2) should pass their own label.
+    """
     if args.output:
         output_path = os.path.abspath(args.output)
     else:
         model_short = args.model.replace("-", "").replace(".", "").replace("/", "")
         ts = time.strftime("%y%m%d_%H%M")
-        exp_name = f"ClaudeCodeCLI_{model_short}_{ts}"
+        exp_name = f"{agent_name}_{model_short}_{ts}"
         output_dir = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             os.pardir, os.pardir, "results", exp_name,
@@ -704,8 +818,14 @@ def resolve_output_path(args):
 
 
 def finalize_results(results, output_path, model, system_prompt, args,
-                     extra_summary=None):
-    """Print summary, save summary.json, ATIF trajectories, and prompt metadata."""
+                     extra_summary=None, agent_name: str = "ClaudeCodeCLI",
+                     result_to_atif_fn=None):
+    """Print summary, save summary.json, ATIF trajectories, and prompt metadata.
+
+    Non-ClaudeCodeCLI runners must pass their own ``result_to_atif_fn``
+    (typically imported from their ``*_common`` module) — see
+    ``run_terminus2.py`` and ``run_mini_swe.py``.
+    """
     successes = sum(1 for r in results if r.get("reward", 0) > 0)
     print(f"\n{'='*70}")
     print(f"FINAL: {successes}/{len(results)} ({100*successes/max(len(results),1):.0f}%)")
@@ -740,7 +860,11 @@ def finalize_results(results, output_path, model, system_prompt, args,
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
 
-    save_atif_trajectories(results, output_dir, model, system_prompt)
+    save_atif_trajectories(
+        results, output_dir, model, system_prompt,
+        agent_name=agent_name,
+        result_to_atif_fn=result_to_atif_fn,
+    )
 
     prompt_meta_path = os.path.join(output_dir, "prompt_variant.txt")
     with open(prompt_meta_path, "w") as f:
@@ -752,8 +876,17 @@ def finalize_results(results, output_path, model, system_prompt, args,
 
 def preflight_checks(args, system_prompt, allowed_tools, disable_tree):
     """Print config info and verify prerequisites."""
+    stable = getattr(args, "stable_endpoint", True)
+    deny_list = getattr(args, "deny_list", True)
+    direct = _invocation_style(args.prompt) == "direct"
     print(f"Prompt variant: {args.prompt}")
-    if allowed_tools != "Bash(command:*)":
+    if direct:
+        print(f"Invocation style: direct (shim wrappers on PATH; "
+              f"android_env.py not staged into per-task cwd)")
+    else:
+        print(f"Stable endpoint: {'on' if stable else 'OFF (legacy absolute path)'}")
+    print(f"Deny list: {'on' if deny_list else 'OFF (no --disallowedTools)'}")
+    if not direct and allowed_tools != _default_allowed_tools(stable):
         print(f"Allowed tools: {allowed_tools}")
     if not disable_tree:
         print(f"A11y tree: enabled")
@@ -761,6 +894,13 @@ def preflight_checks(args, system_prompt, allowed_tools, disable_tree):
     if not os.path.exists(ANDROID_ENV_SCRIPT):
         print(f"ERROR: android_env.py not found at {ANDROID_ENV_SCRIPT}")
         return False
+
+    if direct:
+        for shim in _prompt_shims(args.prompt):
+            shim_path = os.path.join(SHIM_WRAPPERS_DIR, shim)
+            if not os.path.exists(shim_path):
+                print(f"ERROR: shim wrapper {shim_path} not found")
+                return False
 
     try:
         subprocess.run(["claude", "--version"], capture_output=True, check=True)

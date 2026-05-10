@@ -40,7 +40,11 @@ from claude_cli_common import (
     ANDROID_ENV_SCRIPT,
 )
 
-from terminus2_common import run_terminus2_task_sync
+from terminus2_common import (
+    load_system_prompt as terminus2_load_system_prompt,
+    result_to_atif as terminus2_result_to_atif,
+    run_terminus2_task_sync,
+)
 
 
 def build_parser():
@@ -109,7 +113,7 @@ def main():
         print(f"ERROR: android_env.py not found at {ANDROID_ENV_SCRIPT}")
         return 1
 
-    output_path = resolve_output_path(args)
+    output_path = resolve_output_path(args, agent_name="Terminus2")
 
     # Resolve template override to absolute path
     template_override = None
@@ -134,10 +138,12 @@ def main():
         max_tokens=args.max_tokens,
     )
 
-    # Build a system prompt string for ATIF / finalize (not used by agent itself)
-    system_prompt = (
-        f"[Terminus_2 agent, model={args.model}, parser={args.parser}, "
-        f"temp={args.temperature}]"
+    # Load the rendered system-prompt body for ATIF step 1 — same
+    # template the agent sends to the LLM, with runtime substitution
+    # slots stripped. Matches what claude_cli and mini-swe record.
+    system_prompt = terminus2_load_system_prompt(
+        parser=args.parser,
+        template_override=template_override,
     )
 
     mode = "parallel" if args.broker_url else "sequential"
@@ -165,7 +171,9 @@ def main():
             tasks, args.container_url, output_path, task_runner,
         )
 
-    finalize_results(results, output_path, args.model, system_prompt, args)
+    finalize_results(results, output_path, args.model, system_prompt, args,
+                     agent_name="Terminus2",
+                     result_to_atif_fn=terminus2_result_to_atif)
     return 0
 
 

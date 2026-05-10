@@ -103,6 +103,8 @@ class Tier4BulkChangePriorityTasks(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if not self._low_titles:
+      return 0.0
     rows = _get_tasks(env)
     for row in rows:
       if row.title in self._low_titles:

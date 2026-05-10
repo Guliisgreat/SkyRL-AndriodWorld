@@ -32,7 +32,11 @@ from claude_cli_common import (
     ANDROID_ENV_SCRIPT,
 )
 
-from mini_swe_common import run_mini_swe_task, load_config
+from mini_swe_common import (
+    load_config,
+    result_to_atif as mini_swe_result_to_atif,
+    run_mini_swe_task,
+)
 
 
 def build_parser():
@@ -62,8 +66,19 @@ def build_parser():
                         help="Number of parallel workers")
     parser.add_argument("--task-timeout", type=int, default=900,
                         help="Per-task timeout in seconds")
-    parser.add_argument("--max-turns", type=int, default=30,
-                        help="(unused, kept for CLI compatibility)")
+    parser.add_argument("--max-turns", type=int, default=None,
+                        help="Override agent.step_limit from the YAML config "
+                             "(default: use the value in androidworld.yaml, 30)")
+
+    # Plumbed into config['model']['model_kwargs']['api_base']. Mirrors the
+    # --api-base flag on run_terminus2.py — useful for local vLLM and for
+    # OpenRouter when you want to be explicit (litellm handles `openrouter/*`
+    # natively, so this is optional for OpenRouter).
+    parser.add_argument("--api-base", default=None,
+                        help="Override LiteLLM api_base (e.g. https://openrouter.ai/api/v1 "
+                             "or http://localhost:8000/v1 for local vLLM)")
+    parser.add_argument("--reasoning-effort", default=None,
+                        help="LLM reasoning effort (for models that support it)")
 
     # For output path generation compatibility
     parser.add_argument("--prompt", default="mini_swe_agent",
@@ -94,14 +109,32 @@ def main():
         print(f"ERROR: Config not found at {config_path}")
         return 1
     config = load_config(config_path)
+    if args.max_turns is not None:
+        config.setdefault("agent", {})["step_limit"] = args.max_turns
+    # Reflect resolved step_limit back onto args so finalize_results' summary
+    # (summary.json:"max_turns") matches what the agent actually used.
+    args.max_turns = config.get("agent", {}).get("step_limit", 30)
 
-    output_path = resolve_output_path(args)
+    # --api-base goes inside model_kwargs (litellm.completion accepts api_base
+    # there). Top-level `api_base` would fail Pydantic validation on
+    # LitellmTextbasedModelConfig.
+    if args.api_base:
+        model_cfg = config.setdefault("model", {})
+        model_cfg.setdefault("model_kwargs", {})["api_base"] = args.api_base
+
+    if args.reasoning_effort:
+        model_cfg = config.setdefault("model", {})
+        model_cfg.setdefault("model_kwargs", {})["reasoning_effort"] = args.reasoning_effort
+
+    output_path = resolve_output_path(args, agent_name="MiniSweAgent")
+    traj_dir = os.path.join(os.path.dirname(output_path), "trajectories")
 
     task_runner = partial(
         run_mini_swe_task,
         model=args.model,
         config=config,
         task_timeout=args.task_timeout,
+        traj_dir=traj_dir,
     )
 
     system_prompt = (
@@ -132,7 +165,9 @@ def main():
             tasks, args.container_url, output_path, task_runner,
         )
 
-    finalize_results(results, output_path, args.model, system_prompt, args)
+    finalize_results(results, output_path, args.model, system_prompt, args,
+                     agent_name="MiniSweAgent",
+                     result_to_atif_fn=mini_swe_result_to_atif)
     return 0
 
 

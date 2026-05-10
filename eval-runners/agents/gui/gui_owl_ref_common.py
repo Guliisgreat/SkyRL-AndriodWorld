@@ -489,10 +489,10 @@ def run_gui_owl_ref_task_sync(
     elapsed = time.time() - start_time
 
     finished = terminated or truncated
-    if not finished and auto_finish:
-        auto_reward = force_eval(container_url)
-        reward = auto_reward
-        finished = True
+    # if not finished and auto_finish:
+    #     auto_reward = force_eval(container_url)
+    #     reward = auto_reward
+    #     finished = True
 
     status = "OK" if reward > 0 else "FAIL"
     print(f"  >>> REWARD: {reward} ({status}), steps={step_count}, finished={finished}")

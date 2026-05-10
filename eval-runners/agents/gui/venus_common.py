@@ -286,12 +286,12 @@ def run_venus_task_sync(
 
     # --- 5. Auto-finish if needed ---
     finished = terminated or truncated
-    if not finished and auto_finish:
-        print(f"  Agent didn't finish -- auto-finishing...")
-        auto_reward = force_eval(container_url)
-        reward = auto_reward
-        finished = True
-        print(f"  Auto-finish reward: {auto_reward}")
+    # if not finished and auto_finish:
+    #     print(f"  Agent didn't finish -- auto-finishing...")
+    #     auto_reward = force_eval(container_url)
+    #     reward = auto_reward
+    #     finished = True
+    #     print(f"  Auto-finish reward: {auto_reward}")
 
     # --- 6. Token usage ---
     token_usage = {}

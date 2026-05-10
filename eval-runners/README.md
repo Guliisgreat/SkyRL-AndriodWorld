@@ -34,7 +34,7 @@ Evaluation and inference runners for Android agent benchmarks. Supports multiple
 # AndroidWorld (16 containers)
 PYTHONPATH=eval-runners/common/runtime:. \
 python eval-runners/common/runtime/pool_broker.py \
-  --pool-size 16 --docker-image androidworld:2026 --port 9400 \
+  --pool-size 16 --docker-image androidworld:2026plusswipe --port 9400 \
   --base-env-id 700 --parallel 4
 
 # MobileWorld (pre-existing containers, scan port range)
@@ -78,7 +78,27 @@ PYTHONPATH=eval-runners/benchmarks/androidworld:. \
 python eval-runners/benchmarks/androidworld/run_claude_cli.py \
   --data data/androidworld_original/val_data_seed7.jsonl \
   --broker-url http://localhost:9400 --pool-size 16 \
-  --model claude-opus-4-6 --prompt clean_optimized --max-turns 30
+  --model claude-opus-4-7 --prompt clean_optimized_v10 --max-turns 50 --effort max
+
+# Terminus2 + Minimax-M2.7
+ANDROID_DISABLE_TREE=1 \
+OPENROUTER_API_KEY=... \
+python eval-runners/benchmarks/androidworld/run_terminus2.py \
+  --data data/androidworld_original/val_data_seed30.jsonl \
+  --broker-url http://localhost:9400 --pool-size 16 \
+  --model openrouter/minimax/minimax-m2.7 \
+  --api-base https://openrouter.ai/api/v1 \
+  --template eval-runners/agents/cli/terminus2/templates/optimized-v4-bash-only.txt \
+  --parser android-json --max-turns 50 --max-tokens 8192 --task-timeout 1800
+
+# Miniswe + Minimax-M2.7
+OPENROUTER_API_KEY=... \
+PYTHONPATH=eval-runners/benchmarks/androidworld:. \
+python eval-runners/benchmarks/androidworld/run_mini_swe.py \
+  --data data/androidworld_original/val_data_seed30.jsonl \
+  --broker-url http://localhost:9400 --pool-size 16 \
+  --model openrouter/minimax/minimax-m2.7 \
+  --prompt mini_swe_v10 --max-turns 50
 
 # Qwen3-VL GUI agent on AndroidWorld (via OpenRouter)
 PYTHONPATH=eval-runners/benchmarks/androidworld:eval-runners/agents/gui:. \
