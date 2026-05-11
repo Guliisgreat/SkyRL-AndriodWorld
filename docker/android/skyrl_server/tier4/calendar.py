@@ -211,104 +211,106 @@ class Tier4CrossAppCalendarToMarkor(task_eval.TaskEval):
     return {"keyword": random.choice(["meeting", "review", "standup", "sync"])}
 
 
-class Tier4FilterCalendarLongNoReminder(task_eval.TaskEval):
-  """List 'meeting' events >2h with no reminder. ADB-exclusive."""
+# [EXCLUDED] Removed from Tier 4 benchmark — not registered.
+# class Tier4FilterCalendarLongNoReminder(task_eval.TaskEval):
+#   """List 'meeting' events >2h with no reminder. ADB-exclusive."""
+#
+#   app_names = ("simple calendar pro",)
+#   complexity = 2.0
+#   schema = {"type": "object", "properties": {}, "required": []}
+#   template = (
+#       "List all calendar events that have no reminder set, last more than 2"
+#       " hours, and contain 'meeting' in the title. Output the event titles."
+#   )
+#
+#   _TWO_HOURS_MS = 2 * 3600 * 1000
+#
+#   def initialize_task(self, env: interface.AsyncEnv) -> None:
+#     super().initialize_task(env)
+#     _delete_tier4_events(env)
+#     base_ms = int(time.time() * 1000) + 3600000
+#     self._ground_truth: list[str] = []
+#
+#     # 2 events: meeting + >2h + NO reminder → should appear
+#     for i in range(2):
+#       title = f"{_CLEANUP_PREFIX}meeting_long_noreminder_{i}"
+#       dtstart = base_ms + i * 86400000
+#       _insert_event(title, dtstart, dtstart + self._TWO_HOURS_MS + 600000, env)
+#       self._ground_truth.append(title)
+#
+#     # 2 events: meeting + >2h + HAS reminder → should not appear
+#     for i in range(2):
+#       title = f"{_CLEANUP_PREFIX}meeting_long_reminder_{i}"
+#       dtstart = base_ms + (i + 3) * 86400000
+#       eid = _insert_event(title, dtstart, dtstart + self._TWO_HOURS_MS + 600000, env)
+#       _insert_reminder(eid, 15, env)
+#
+#     # 1 event: meeting + <2h + no reminder → too short
+#     title = f"{_CLEANUP_PREFIX}meeting_short_{0}"
+#     _insert_event(title, base_ms + 7 * 86400000, base_ms + 7 * 86400000 + 3600000, env)
+#
+#     # 1 event: no "meeting" + >2h + no reminder → wrong title
+#     title = f"{_CLEANUP_PREFIX}other_long_{0}"
+#     _insert_event(title, base_ms + 8 * 86400000, base_ms + 8 * 86400000 + self._TWO_HOURS_MS + 600000, env)
+#
+#   def tear_down(self, env: interface.AsyncEnv) -> None:
+#     _delete_tier4_events(env)
+#     super().tear_down(env)
+#
+#   def is_successful(self, env: interface.AsyncEnv) -> float:
+#     super().is_successful(env)
+#     if not self._ground_truth:
+#       return 0.0
+#     cache = getattr(env, "interaction_cache", "") or ""
+#     for title in self._ground_truth:
+#       if title not in cache:
+#         return 0.0
+#     return 1.0
+#
+#   @classmethod
+#   def generate_random_params(cls) -> dict[str, Any]:
+#     return {}
 
-  app_names = ("simple calendar pro",)
-  complexity = 2.0
-  schema = {"type": "object", "properties": {}, "required": []}
-  template = (
-      "List all calendar events that have no reminder set, last more than 2"
-      " hours, and contain 'meeting' in the title. Output the event titles."
-  )
 
-  _TWO_HOURS_MS = 2 * 3600 * 1000
-
-  def initialize_task(self, env: interface.AsyncEnv) -> None:
-    super().initialize_task(env)
-    _delete_tier4_events(env)
-    base_ms = int(time.time() * 1000) + 3600000
-    self._ground_truth: list[str] = []
-
-    # 2 events: meeting + >2h + NO reminder → should appear
-    for i in range(2):
-      title = f"{_CLEANUP_PREFIX}meeting_long_noreminder_{i}"
-      dtstart = base_ms + i * 86400000
-      _insert_event(title, dtstart, dtstart + self._TWO_HOURS_MS + 600000, env)
-      self._ground_truth.append(title)
-
-    # 2 events: meeting + >2h + HAS reminder → should not appear
-    for i in range(2):
-      title = f"{_CLEANUP_PREFIX}meeting_long_reminder_{i}"
-      dtstart = base_ms + (i + 3) * 86400000
-      eid = _insert_event(title, dtstart, dtstart + self._TWO_HOURS_MS + 600000, env)
-      _insert_reminder(eid, 15, env)
-
-    # 1 event: meeting + <2h + no reminder → too short
-    title = f"{_CLEANUP_PREFIX}meeting_short_{0}"
-    _insert_event(title, base_ms + 7 * 86400000, base_ms + 7 * 86400000 + 3600000, env)
-
-    # 1 event: no "meeting" + >2h + no reminder → wrong title
-    title = f"{_CLEANUP_PREFIX}other_long_{0}"
-    _insert_event(title, base_ms + 8 * 86400000, base_ms + 8 * 86400000 + self._TWO_HOURS_MS + 600000, env)
-
-  def tear_down(self, env: interface.AsyncEnv) -> None:
-    _delete_tier4_events(env)
-    super().tear_down(env)
-
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    super().is_successful(env)
-    if not self._ground_truth:
-      return 0.0
-    cache = getattr(env, "interaction_cache", "") or ""
-    for title in self._ground_truth:
-      if title not in cache:
-        return 0.0
-    return 1.0
-
-  @classmethod
-  def generate_random_params(cls) -> dict[str, Any]:
-    return {}
-
-
-class Tier4AggregationCalendarTotalDuration(task_eval.TaskEval):
-  """Total duration of all calendar events this month in minutes. ADB-exclusive."""
-
-  app_names = ("simple calendar pro",)
-  complexity = 1.5
-  schema = {"type": "object", "properties": {}, "required": []}
-  template = (
-      "What is the total duration (in minutes) of all calendar events this"
-      " month in Simple Calendar Pro? Output the number."
-  )
-
-  def initialize_task(self, env: interface.AsyncEnv) -> None:
-    super().initialize_task(env)
-    _delete_tier4_events(env)
-    base_ms = _month_start_ms() + 86400000  # day 2 of this month
-    durations_min = [60, 90, 45, 120, 75]
-    self._ground_truth: int = sum(durations_min)
-    for i, dur in enumerate(durations_min):
-      dtstart = base_ms + i * 86400000
-      dtend = dtstart + dur * 60 * 1000
-      _insert_event(f"{_CLEANUP_PREFIX}dur_{i}", dtstart, dtend, env)
-
-  def tear_down(self, env: interface.AsyncEnv) -> None:
-    _delete_tier4_events(env)
-    super().tear_down(env)
-
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    super().is_successful(env)
-    cache = getattr(env, "interaction_cache", "") or ""
-    numbers = re.findall(r"\b\d+\b", cache)
-    for n in numbers:
-      if abs(int(n) - self._ground_truth) <= 5:
-        return 1.0
-    return 0.0
-
-  @classmethod
-  def generate_random_params(cls) -> dict[str, Any]:
-    return {}
+# [EXCLUDED] Removed from Tier 4 benchmark — not registered.
+# class Tier4AggregationCalendarTotalDuration(task_eval.TaskEval):
+#   """Total duration of all calendar events this month in minutes. ADB-exclusive."""
+#
+#   app_names = ("simple calendar pro",)
+#   complexity = 1.5
+#   schema = {"type": "object", "properties": {}, "required": []}
+#   template = (
+#       "What is the total duration (in minutes) of all calendar events this"
+#       " month in Simple Calendar Pro? Output the number."
+#   )
+#
+#   def initialize_task(self, env: interface.AsyncEnv) -> None:
+#     super().initialize_task(env)
+#     _delete_tier4_events(env)
+#     base_ms = _month_start_ms() + 86400000  # day 2 of this month
+#     durations_min = [60, 90, 45, 120, 75]
+#     self._ground_truth: int = sum(durations_min)
+#     for i, dur in enumerate(durations_min):
+#       dtstart = base_ms + i * 86400000
+#       dtend = dtstart + dur * 60 * 1000
+#       _insert_event(f"{_CLEANUP_PREFIX}dur_{i}", dtstart, dtend, env)
+#
+#   def tear_down(self, env: interface.AsyncEnv) -> None:
+#     _delete_tier4_events(env)
+#     super().tear_down(env)
+#
+#   def is_successful(self, env: interface.AsyncEnv) -> float:
+#     super().is_successful(env)
+#     cache = getattr(env, "interaction_cache", "") or ""
+#     numbers = re.findall(r"\b\d+\b", cache)
+#     for n in numbers:
+#       if abs(int(n) - self._ground_truth) <= 5:
+#         return 1.0
+#     return 0.0
+#
+#   @classmethod
+#   def generate_random_params(cls) -> dict[str, Any]:
+#     return {}
 
 
 class Tier4DedupCalendarDeleteDuplicateEvents(task_eval.TaskEval):
@@ -381,54 +383,55 @@ class Tier4DedupCalendarDeleteDuplicateEvents(task_eval.TaskEval):
     return {}
 
 
-class Tier4TopKCalendarEarliestEvent(task_eval.TaskEval):
-  """What is the earliest calendar event? ADB-exclusive."""
-
-  app_names = ("simple calendar pro",)
-  complexity = 1.2
-  schema = {"type": "object", "properties": {}, "required": []}
-  template = (
-      "What is the earliest (oldest by start date) event in Simple Calendar"
-      " Pro? Output the event title and its date."
-  )
-
-  # Fixed historical dates to ensure clear ordering
-  _DATES = [
-      datetime.datetime(2019, 3, 15, 10, 0),
-      datetime.datetime(2020, 7, 22, 14, 0),
-      datetime.datetime(2021, 11, 8, 9, 0),
-      datetime.datetime(2022, 5, 1, 16, 0),
-      datetime.datetime(2023, 9, 30, 11, 0),
-  ]
-
-  def initialize_task(self, env: interface.AsyncEnv) -> None:
-    super().initialize_task(env)
-    _delete_tier4_events(env)
-    dates = list(self._DATES)
-    random.shuffle(dates)
-    earliest_dt = min(dates)
-    named: list[tuple[str, datetime.datetime]] = []
-    for i, dt in enumerate(dates):
-      title = f"{_CLEANUP_PREFIX}hist_event_{i}"
-      dtstart_ms = _ms(dt)
-      _insert_event(title, dtstart_ms, dtstart_ms + 3600000, env)
-      named.append((title, dt))
-    earliest = min(named, key=lambda x: x[1])
-    self._ground_truth_title: str = earliest[0]
-    self._ground_truth_date: str = earliest[1].strftime("%Y-%m-%d")
-
-  def tear_down(self, env: interface.AsyncEnv) -> None:
-    _delete_tier4_events(env)
-    super().tear_down(env)
-
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    super().is_successful(env)
-    cache = getattr(env, "interaction_cache", "") or ""
-    return 1.0 if self._ground_truth_title in cache else 0.0
-
-  @classmethod
-  def generate_random_params(cls) -> dict[str, Any]:
-    return {}
+# [EXCLUDED] Removed from Tier 4 benchmark — not registered.
+# class Tier4TopKCalendarEarliestEvent(task_eval.TaskEval):
+#   """What is the earliest calendar event? ADB-exclusive."""
+#
+#   app_names = ("simple calendar pro",)
+#   complexity = 1.2
+#   schema = {"type": "object", "properties": {}, "required": []}
+#   template = (
+#       "What is the earliest (oldest by start date) event in Simple Calendar"
+#       " Pro? Output the event title and its date."
+#   )
+#
+#   # Fixed historical dates to ensure clear ordering
+#   _DATES = [
+#       datetime.datetime(2019, 3, 15, 10, 0),
+#       datetime.datetime(2020, 7, 22, 14, 0),
+#       datetime.datetime(2021, 11, 8, 9, 0),
+#       datetime.datetime(2022, 5, 1, 16, 0),
+#       datetime.datetime(2023, 9, 30, 11, 0),
+#   ]
+#
+#   def initialize_task(self, env: interface.AsyncEnv) -> None:
+#     super().initialize_task(env)
+#     _delete_tier4_events(env)
+#     dates = list(self._DATES)
+#     random.shuffle(dates)
+#     earliest_dt = min(dates)
+#     named: list[tuple[str, datetime.datetime]] = []
+#     for i, dt in enumerate(dates):
+#       title = f"{_CLEANUP_PREFIX}hist_event_{i}"
+#       dtstart_ms = _ms(dt)
+#       _insert_event(title, dtstart_ms, dtstart_ms + 3600000, env)
+#       named.append((title, dt))
+#     earliest = min(named, key=lambda x: x[1])
+#     self._ground_truth_title: str = earliest[0]
+#     self._ground_truth_date: str = earliest[1].strftime("%Y-%m-%d")
+#
+#   def tear_down(self, env: interface.AsyncEnv) -> None:
+#     _delete_tier4_events(env)
+#     super().tear_down(env)
+#
+#   def is_successful(self, env: interface.AsyncEnv) -> float:
+#     super().is_successful(env)
+#     cache = getattr(env, "interaction_cache", "") or ""
+#     return 1.0 if self._ground_truth_title in cache else 0.0
+#
+#   @classmethod
+#   def generate_random_params(cls) -> dict[str, Any]:
+#     return {}
 
 
 class Tier4CoverageCalendarEventsHaveReminders(task_eval.TaskEval):
@@ -438,9 +441,8 @@ class Tier4CoverageCalendarEventsHaveReminders(task_eval.TaskEval):
   complexity = 1.5
   schema = {"type": "object", "properties": {}, "required": []}
   template = (
-      "Confirm that all calendar events this month in Simple Calendar Pro have"
-      " a reminder set. If any events don't have a reminder, list their titles."
-      " If all have reminders, output 'All events have reminders'."
+      "Do all my calendar events this month have reminders set? If any are"
+      " missing reminders, tell me which ones."
   )
 
   def initialize_task(self, env: interface.AsyncEnv) -> None:
@@ -481,68 +483,67 @@ class Tier4CoverageCalendarEventsHaveReminders(task_eval.TaskEval):
     return {}
 
 
-# ── tier4_extra ──────────────────────────────────────────────────────────
 
 
-class Tier4ExtraAggregationCalendarEventsPerDay(task_eval.TaskEval):
-  """Which day this month has the most calendar events? ADB-exclusive (aggregation)."""
-
-  app_names = ("simple calendar pro",)
-  complexity = 1.5
-  schema = {"type": "object", "properties": {}, "required": []}
-  template = (
-      "Which day this month has the most calendar events in Simple Calendar Pro?"
-      " Output the date and the number of events."
-  )
-
-  def initialize_task(self, env: interface.AsyncEnv) -> None:
-    super().initialize_task(env)
-    _delete_tier4_events(env)
-    base_ms = _month_start_ms()
-    # Distribute events: day 5 → 4 events, day 10 → 2, day 15 → 1, day 3 → 3
-    day_events = {5: 4, 10: 2, 15: 1, 3: 3}
-    for day_offset, count in day_events.items():
-      for i in range(count):
-        dtstart = base_ms + (day_offset - 1) * 86400000 + i * 3600000
-        dtend = dtstart + 3600000
-        _insert_event(f"{_CLEANUP_PREFIX}daycount_{day_offset}_{i}",
-                      dtstart, dtend, env)
-    now = datetime.datetime.utcnow()
-    # Day 5 has the most events (4)
-    self._ground_truth_day: str = f"{now.year}-{now.month:02d}-05"
-    self._ground_truth_count: int = 4
-
-  def tear_down(self, env: interface.AsyncEnv) -> None:
-    _delete_tier4_events(env)
-    super().tear_down(env)
-
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    super().is_successful(env)
-    cache = getattr(env, "interaction_cache", "") or ""
-    if str(self._ground_truth_count) not in cache:
-      return 0.0
-    # Check for day reference (accept "5", "05", or full date)
-    if "5" in cache:
-      return 1.0
-    return 0.0
-
-  @classmethod
-  def generate_random_params(cls) -> dict[str, Any]:
-    return {}
-
-
-# ── tier4_extra ──
+# [EXCLUDED] Removed from Tier 4 benchmark — not registered.
+# class Tier4AggregationCalendarEventsPerDay(task_eval.TaskEval):
+#   """Which day this month has the most calendar events? ADB-exclusive (aggregation)."""
+#
+#   app_names = ("simple calendar pro",)
+#   complexity = 1.5
+#   schema = {"type": "object", "properties": {}, "required": []}
+#   template = (
+#       "Which day this month has the most calendar events in Simple Calendar Pro?"
+#       " Output the date and the number of events."
+#   )
+#
+#   def initialize_task(self, env: interface.AsyncEnv) -> None:
+#     super().initialize_task(env)
+#     _delete_tier4_events(env)
+#     base_ms = _month_start_ms()
+#     # Distribute events: day 5 → 4 events, day 10 → 2, day 15 → 1, day 3 → 3
+#     day_events = {5: 4, 10: 2, 15: 1, 3: 3}
+#     for day_offset, count in day_events.items():
+#       for i in range(count):
+#         dtstart = base_ms + (day_offset - 1) * 86400000 + i * 3600000
+#         dtend = dtstart + 3600000
+#         _insert_event(f"{_CLEANUP_PREFIX}daycount_{day_offset}_{i}",
+#                       dtstart, dtend, env)
+#     now = datetime.datetime.utcnow()
+#     # Day 5 has the most events (4)
+#     self._ground_truth_day: str = f"{now.year}-{now.month:02d}-05"
+#     self._ground_truth_count: int = 4
+#
+#   def tear_down(self, env: interface.AsyncEnv) -> None:
+#     _delete_tier4_events(env)
+#     super().tear_down(env)
+#
+#   def is_successful(self, env: interface.AsyncEnv) -> float:
+#     super().is_successful(env)
+#     cache = getattr(env, "interaction_cache", "") or ""
+#     if str(self._ground_truth_count) not in cache:
+#       return 0.0
+#     # Check for day reference (accept "5", "05", or full date)
+#     if "5" in cache:
+#       return 1.0
+#     return 0.0
+#
+#   @classmethod
+#   def generate_random_params(cls) -> dict[str, Any]:
+#     return {}
 
 
-class Tier4ExtraFilterCalendarWeekendEvents(task_eval.TaskEval):
+
+
+class Tier4FilterCalendarWeekendEvents(task_eval.TaskEval):
   """List events that start on a Saturday or Sunday. ADB-exclusive."""
 
   app_names = ("simple calendar pro",)
   complexity = 1.5
   schema = {"type": "object", "properties": {}, "required": []}
   template = (
-      "List all calendar events in Simple Calendar Pro that start on a Saturday"
-      " or Sunday. Output the event titles."
+      "What do I have planned on weekends this month? List all calendar events"
+      " that fall on a Saturday or Sunday."
   )
 
   def initialize_task(self, env: interface.AsyncEnv) -> None:
@@ -577,110 +578,110 @@ class Tier4ExtraFilterCalendarWeekendEvents(task_eval.TaskEval):
     return {}
 
 
-# ── tier4_extra ──
 
 
-class Tier4ExtraTopKCalendarLongestEvents(task_eval.TaskEval):
-  """List the 3 longest calendar events by duration. ADB-exclusive."""
-
-  app_names = ("simple calendar pro",)
-  complexity = 1.2
-  schema = {"type": "object", "properties": {}, "required": []}
-  template = (
-      "What are the 3 longest calendar events by duration in Simple Calendar"
-      " Pro? Output the event titles."
-  )
-
-  def initialize_task(self, env: interface.AsyncEnv) -> None:
-    super().initialize_task(env)
-    _delete_tier4_events(env)
-    base_ms = int(time.time() * 1000) + 86400000
-    # 7 events with varying durations (minutes)
-    durations_min = [30, 60, 120, 180, 45, 240, 90]
-    random.shuffle(durations_min)
-    named: list[tuple[str, int]] = []
-    for i, dur in enumerate(durations_min):
-      title = f"{_CLEANUP_PREFIX}longev_{i}"
-      dtstart = base_ms + i * 86400000
-      dtend = dtstart + dur * 60 * 1000
-      _insert_event(title, dtstart, dtend, env)
-      named.append((title, dur))
-    top3 = sorted(named, key=lambda x: x[1], reverse=True)[:3]
-    self._ground_truth: list[str] = [t for t, _ in top3]
-
-  def tear_down(self, env: interface.AsyncEnv) -> None:
-    _delete_tier4_events(env)
-    super().tear_down(env)
-
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    super().is_successful(env)
-    cache = getattr(env, "interaction_cache", "") or ""
-    for title in self._ground_truth:
-      if title not in cache:
-        return 0.0
-    return 1.0
-
-  @classmethod
-  def generate_random_params(cls) -> dict[str, Any]:
-    return {}
-
-
-# ── tier4_extra ──
+# [EXCLUDED] Removed from Tier 4 benchmark — not registered.
+# class Tier4TopKCalendarLongestEvents(task_eval.TaskEval):
+#   """List the 3 longest calendar events by duration. ADB-exclusive."""
+#
+#   app_names = ("simple calendar pro",)
+#   complexity = 1.2
+#   schema = {"type": "object", "properties": {}, "required": []}
+#   template = (
+#       "What are the 3 longest calendar events by duration in Simple Calendar"
+#       " Pro? Output the event titles."
+#   )
+#
+#   def initialize_task(self, env: interface.AsyncEnv) -> None:
+#     super().initialize_task(env)
+#     _delete_tier4_events(env)
+#     base_ms = int(time.time() * 1000) + 86400000
+#     # 7 events with varying durations (minutes)
+#     durations_min = [30, 60, 120, 180, 45, 240, 90]
+#     random.shuffle(durations_min)
+#     named: list[tuple[str, int]] = []
+#     for i, dur in enumerate(durations_min):
+#       title = f"{_CLEANUP_PREFIX}longev_{i}"
+#       dtstart = base_ms + i * 86400000
+#       dtend = dtstart + dur * 60 * 1000
+#       _insert_event(title, dtstart, dtend, env)
+#       named.append((title, dur))
+#     top3 = sorted(named, key=lambda x: x[1], reverse=True)[:3]
+#     self._ground_truth: list[str] = [t for t, _ in top3]
+#
+#   def tear_down(self, env: interface.AsyncEnv) -> None:
+#     _delete_tier4_events(env)
+#     super().tear_down(env)
+#
+#   def is_successful(self, env: interface.AsyncEnv) -> float:
+#     super().is_successful(env)
+#     cache = getattr(env, "interaction_cache", "") or ""
+#     for title in self._ground_truth:
+#       if title not in cache:
+#         return 0.0
+#     return 1.0
+#
+#   @classmethod
+#   def generate_random_params(cls) -> dict[str, Any]:
+#     return {}
 
 
-class Tier4ExtraBulkAddReminderToAllEvents(task_eval.TaskEval):
-  """Add a 15-minute reminder to all events that lack one. ADB-exclusive."""
 
-  app_names = ("simple calendar pro",)
-  complexity = 2.0
-  schema = {"type": "object", "properties": {}, "required": []}
-  template = (
-      "Add a 15-minute reminder to all calendar events in Simple Calendar Pro"
-      " that do not already have a reminder set."
-  )
 
-  def initialize_task(self, env: interface.AsyncEnv) -> None:
-    super().initialize_task(env)
-    _delete_tier4_events(env)
-    base_ms = int(time.time() * 1000) + 86400000
-
-    self._needs_reminder_ids: list[str] = []
-    self._has_reminder_ids: list[str] = []
-
-    # 3 events WITHOUT reminder → agent should add one
-    for i in range(3):
-      dtstart = base_ms + i * 86400000
-      eid = _insert_event(f"{_CLEANUP_PREFIX}noremind_{i}",
-                          dtstart, dtstart + 3600000, env)
-      self._needs_reminder_ids.append(eid)
-
-    # 2 events WITH reminder → agent should skip
-    for i in range(2):
-      dtstart = base_ms + (i + 5) * 86400000
-      eid = _insert_event(f"{_CLEANUP_PREFIX}hasremind_{i}",
-                          dtstart, dtstart + 3600000, env)
-      _insert_reminder(eid, 30, env)
-      self._has_reminder_ids.append(eid)
-
-  def tear_down(self, env: interface.AsyncEnv) -> None:
-    _delete_tier4_events(env)
-    super().tear_down(env)
-
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    super().is_successful(env)
-    # Check that events that needed reminders now have one
-    for eid in self._needs_reminder_ids:
-      res = adb_utils.issue_generic_request(
-          ["shell", "content", "query", "--uri", _CALENDAR_REMINDERS_URI,
-           "--where", f"event_id={eid}",
-           "--projection", "minutes"],
-          env.controller,
-      )
-      output = res.generic.output.decode()
-      if "No result found" in output:
-        return 0.0
-    return 1.0
-
-  @classmethod
-  def generate_random_params(cls) -> dict[str, Any]:
-    return {}
+# [EXCLUDED] Removed from Tier 4 benchmark — not registered.
+# class Tier4BulkAddReminderToAllEvents(task_eval.TaskEval):
+#   """Add a 15-minute reminder to all events that lack one. ADB-exclusive."""
+#
+#   app_names = ("simple calendar pro",)
+#   complexity = 2.0
+#   schema = {"type": "object", "properties": {}, "required": []}
+#   template = (
+#       "Add a 15-minute reminder to all calendar events in Simple Calendar Pro"
+#       " that do not already have a reminder set."
+#   )
+#
+#   def initialize_task(self, env: interface.AsyncEnv) -> None:
+#     super().initialize_task(env)
+#     _delete_tier4_events(env)
+#     base_ms = int(time.time() * 1000) + 86400000
+#
+#     self._needs_reminder_ids: list[str] = []
+#     self._has_reminder_ids: list[str] = []
+#
+#     # 3 events WITHOUT reminder → agent should add one
+#     for i in range(3):
+#       dtstart = base_ms + i * 86400000
+#       eid = _insert_event(f"{_CLEANUP_PREFIX}noremind_{i}",
+#                           dtstart, dtstart + 3600000, env)
+#       self._needs_reminder_ids.append(eid)
+#
+#     # 2 events WITH reminder → agent should skip
+#     for i in range(2):
+#       dtstart = base_ms + (i + 5) * 86400000
+#       eid = _insert_event(f"{_CLEANUP_PREFIX}hasremind_{i}",
+#                           dtstart, dtstart + 3600000, env)
+#       _insert_reminder(eid, 30, env)
+#       self._has_reminder_ids.append(eid)
+#
+#   def tear_down(self, env: interface.AsyncEnv) -> None:
+#     _delete_tier4_events(env)
+#     super().tear_down(env)
+#
+#   def is_successful(self, env: interface.AsyncEnv) -> float:
+#     super().is_successful(env)
+#     # Check that events that needed reminders now have one
+#     for eid in self._needs_reminder_ids:
+#       res = adb_utils.issue_generic_request(
+#           ["shell", "content", "query", "--uri", _CALENDAR_REMINDERS_URI,
+#            "--where", f"event_id={eid}",
+#            "--projection", "minutes"],
+#           env.controller,
+#       )
+#       output = res.generic.output.decode()
+#       if "No result found" in output:
+#         return 0.0
+#     return 1.0
+#
+#   @classmethod
+#   def generate_random_params(cls) -> dict[str, Any]:
+#     return {}

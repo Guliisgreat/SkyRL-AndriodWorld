@@ -145,57 +145,58 @@ class Tier4FilterJoplinContainsNotContains(task_eval.TaskEval):
     return {'keyword_a': kw_a, 'keyword_b': kw_b}
 
 
-class Tier4DedupJoplinSameTitleNotes(task_eval.TaskEval):
-  """List all Joplin notes that have the same title as another note. ADB-exclusive."""
-
-  app_names = (_APP_NAME,)
-  complexity = 1.5
-  schema = {'type': 'object', 'properties': {}, 'required': []}
-  template = (
-      "List all Joplin notes that have the same title as another note"
-      " (i.e., duplicate titles). Output the duplicate titles."
-  )
-
-  def initialize_task(self, env: interface.AsyncEnv) -> None:
-    super().initialize_task(env)
-    _clear_notes(env)
-    notes = []
-    self._ground_truth: list[str] = []
-
-    # 2 pairs of duplicate titles
-    dup_titles = ['Meeting Notes', 'Project Plan']
-    for title in dup_titles:
-      notes.append(sqlite_schema_utils.JoplinNote(
-          title=title, body='First copy of this note.',
-      ))
-      notes.append(sqlite_schema_utils.JoplinNote(
-          title=title, body='Second copy, slightly different content.',
-      ))
-      self._ground_truth.append(title)
-
-    # 2 unique titles
-    notes.append(sqlite_schema_utils.JoplinNote(
-        title='Shopping List', body='Milk, eggs, bread.',
-    ))
-    notes.append(sqlite_schema_utils.JoplinNote(
-        title='Journal Entry', body='Today was a good day.',
-    ))
-    _insert_notes(notes, env)
-
-  def tear_down(self, env: interface.AsyncEnv) -> None:
-    _clear_notes(env)
-    super().tear_down(env)
-
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    super().is_successful(env)
-    if not self._ground_truth:
-      return 0.0
-    cache = getattr(env, 'interaction_cache', '') or ''
-    for title in self._ground_truth:
-      if title not in cache:
-        return 0.0
-    return 1.0
-
-  @classmethod
-  def generate_random_params(cls) -> dict[str, Any]:
-    return {}
+# [EXCLUDED] Removed from Tier 4 benchmark — not registered.
+# class Tier4DedupJoplinSameTitleNotes(task_eval.TaskEval):
+#   """List all Joplin notes that have the same title as another note. ADB-exclusive."""
+#
+#   app_names = (_APP_NAME,)
+#   complexity = 1.5
+#   schema = {'type': 'object', 'properties': {}, 'required': []}
+#   template = (
+#       "List all Joplin notes that have the same title as another note"
+#       " (i.e., duplicate titles). Output the duplicate titles."
+#   )
+#
+#   def initialize_task(self, env: interface.AsyncEnv) -> None:
+#     super().initialize_task(env)
+#     _clear_notes(env)
+#     notes = []
+#     self._ground_truth: list[str] = []
+#
+#     # 2 pairs of duplicate titles
+#     dup_titles = ['Meeting Notes', 'Project Plan']
+#     for title in dup_titles:
+#       notes.append(sqlite_schema_utils.JoplinNote(
+#           title=title, body='First copy of this note.',
+#       ))
+#       notes.append(sqlite_schema_utils.JoplinNote(
+#           title=title, body='Second copy, slightly different content.',
+#       ))
+#       self._ground_truth.append(title)
+#
+#     # 2 unique titles
+#     notes.append(sqlite_schema_utils.JoplinNote(
+#         title='Shopping List', body='Milk, eggs, bread.',
+#     ))
+#     notes.append(sqlite_schema_utils.JoplinNote(
+#         title='Journal Entry', body='Today was a good day.',
+#     ))
+#     _insert_notes(notes, env)
+#
+#   def tear_down(self, env: interface.AsyncEnv) -> None:
+#     _clear_notes(env)
+#     super().tear_down(env)
+#
+#   def is_successful(self, env: interface.AsyncEnv) -> float:
+#     super().is_successful(env)
+#     if not self._ground_truth:
+#       return 0.0
+#     cache = getattr(env, 'interaction_cache', '') or ''
+#     for title in self._ground_truth:
+#       if title not in cache:
+#         return 0.0
+#     return 1.0
+#
+#   @classmethod
+#   def generate_random_params(cls) -> dict[str, Any]:
+#     return {}

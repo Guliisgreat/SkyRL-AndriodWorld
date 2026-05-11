@@ -74,69 +74,70 @@ class Tier4BulkDeleteTmpInDownloads(task_eval.TaskEval):
     return {}
 
 
-class Tier4CoverageNoTmpInDownloads(task_eval.TaskEval):
-  """Confirm no .tmp files in Downloads. Output 'None' or list them. ADB-exclusive."""
-
-  app_names = ("files",)
-  complexity = 1.2
-  schema = {
-      "type": "object",
-      "properties": {"variant": {"type": "string", "enum": ["empty", "has_tmp"]}},
-      "required": [],
-  }
-  template = (
-      "Confirm that there are no files with extension .tmp in the Downloads"
-      " folder. If any exist, list their names. If none exist, output 'None' or"
-      " '0'."
-  )
-
-  def initialize_task(self, env: interface.AsyncEnv) -> None:
-    super().initialize_task(env)
-    variant = self.params.get("variant", "empty")
-    self._ground_truth: list[str] = []
-    if variant == "has_tmp":
-      for i in range(random.randint(2, 3)):
-        name = f"check_{random.randint(100, 999)}.tmp"
-        self._ground_truth.append(name)
-        file_utils.create_file(
-            name, device_constants.DOWNLOAD_DATA, env.controller, content="x"
-        )
-
-  def tear_down(self, env: interface.AsyncEnv) -> None:
-    adb_utils.issue_generic_request(
-        ["shell", "find", device_constants.DOWNLOAD_DATA, "-name", "*.tmp", "-delete"],
-        env.controller,
-    )
-    super().tear_down(env)
-
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    super().is_successful(env)
-    res = adb_utils.issue_generic_request(
-        ["shell", "find", device_constants.DOWNLOAD_DATA, "-name", "*.tmp"],
-        env.controller,
-    )
-    actual_files = [
-        line.strip().split("/")[-1]
-        for line in res.generic.output.decode().strip().split("\n")
-        if line.strip()
-    ]
-    # Compare agent output in interaction_cache to ground truth
-    cache = getattr(env, "interaction_cache", "") or ""
-    cache_lower = cache.lower()
-    if not self._ground_truth:
-      # Variant A: expect "none" or "0"
-      if "none" in cache_lower or cache.strip() == "0":
-        return 1.0
-      return 0.0
-    # Variant B: agent should list the files
-    for f in self._ground_truth:
-      if f not in cache:
-        return 0.0
-    return 1.0
-
-  @classmethod
-  def generate_random_params(cls) -> dict[str, Any]:
-    return {"variant": random.choice(["empty", "has_tmp"])}
+# [EXCLUDED] Removed from Tier 4 benchmark — not registered.
+# class Tier4CoverageNoTmpInDownloads(task_eval.TaskEval):
+#   """Confirm no .tmp files in Downloads. Output 'None' or list them. ADB-exclusive."""
+#
+#   app_names = ("files",)
+#   complexity = 1.2
+#   schema = {
+#       "type": "object",
+#       "properties": {"variant": {"type": "string", "enum": ["empty", "has_tmp"]}},
+#       "required": [],
+#   }
+#   template = (
+#       "Confirm that there are no files with extension .tmp in the Downloads"
+#       " folder. If any exist, list their names. If none exist, output 'None' or"
+#       " '0'."
+#   )
+#
+#   def initialize_task(self, env: interface.AsyncEnv) -> None:
+#     super().initialize_task(env)
+#     variant = self.params.get("variant", "empty")
+#     self._ground_truth: list[str] = []
+#     if variant == "has_tmp":
+#       for i in range(random.randint(2, 3)):
+#         name = f"check_{random.randint(100, 999)}.tmp"
+#         self._ground_truth.append(name)
+#         file_utils.create_file(
+#             name, device_constants.DOWNLOAD_DATA, env.controller, content="x"
+#         )
+#
+#   def tear_down(self, env: interface.AsyncEnv) -> None:
+#     adb_utils.issue_generic_request(
+#         ["shell", "find", device_constants.DOWNLOAD_DATA, "-name", "*.tmp", "-delete"],
+#         env.controller,
+#     )
+#     super().tear_down(env)
+#
+#   def is_successful(self, env: interface.AsyncEnv) -> float:
+#     super().is_successful(env)
+#     res = adb_utils.issue_generic_request(
+#         ["shell", "find", device_constants.DOWNLOAD_DATA, "-name", "*.tmp"],
+#         env.controller,
+#     )
+#     actual_files = [
+#         line.strip().split("/")[-1]
+#         for line in res.generic.output.decode().strip().split("\n")
+#         if line.strip()
+#     ]
+#     # Compare agent output in interaction_cache to ground truth
+#     cache = getattr(env, "interaction_cache", "") or ""
+#     cache_lower = cache.lower()
+#     if not self._ground_truth:
+#       # Variant A: expect "none" or "0"
+#       if "none" in cache_lower or cache.strip() == "0":
+#         return 1.0
+#       return 0.0
+#     # Variant B: agent should list the files
+#     for f in self._ground_truth:
+#       if f not in cache:
+#         return 0.0
+#     return 1.0
+#
+#   @classmethod
+#   def generate_random_params(cls) -> dict[str, Any]:
+#     return {"variant": random.choice(["empty", "has_tmp"])}
 
 
 class Tier4BulkRenameScreenshots(task_eval.TaskEval):
@@ -279,64 +280,65 @@ class Tier4BulkMoveLargeFiles(task_eval.TaskEval):
     return {}
 
 
-class Tier4FilterRecentLogFiles(task_eval.TaskEval):
-  """List .log and .txt files in Downloads modified within last 60 min. ADB-exclusive."""
-
-  app_names = ("files",)
-  complexity = 1.5
-  schema = {"type": "object", "properties": {}, "required": []}
-  template = (
-      "List all .log and .txt files in the Downloads folder that were modified"
-      " within the last 60 minutes. Output the filenames."
-  )
-
-  def initialize_task(self, env: interface.AsyncEnv) -> None:
-    super().initialize_task(env)
-    self._all_names: list[str] = []
-    self._ground_truth: list[str] = []
-    for _ in range(random.randint(3, 4)):
-      ext = random.choice([".log", ".txt"])
-      name = f"recent_{random.randint(1000, 9999)}{ext}"
-      file_utils.create_file(
-          name, device_constants.DOWNLOAD_DATA, env.controller, content="log data"
-      )
-      self._all_names.append(name)
-      self._ground_truth.append(name)
-    # Create 2 old files with mtime definitely > 60 min ago
-    for _ in range(2):
-      ext = random.choice([".log", ".txt"])
-      name = f"old_{random.randint(1000, 9999)}{ext}"
-      file_utils.create_file(
-          name, device_constants.DOWNLOAD_DATA, env.controller, content="old log"
-      )
-      adb_utils.issue_generic_request(
-          ["shell", "touch", "-t", "202001010000.00",
-           f"{device_constants.DOWNLOAD_DATA}/{name}"],
-          env.controller,
-      )
-      self._all_names.append(name)
-
-  def tear_down(self, env: interface.AsyncEnv) -> None:
-    for name in self._all_names:
-      adb_utils.issue_generic_request(
-          ["shell", "rm", "-f", f"{device_constants.DOWNLOAD_DATA}/{name}"],
-          env.controller,
-      )
-    super().tear_down(env)
-
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    super().is_successful(env)
-    if not self._ground_truth:
-      return 0.0
-    cache = getattr(env, "interaction_cache", "") or ""
-    for name in self._ground_truth:
-      if name not in cache:
-        return 0.0
-    return 1.0
-
-  @classmethod
-  def generate_random_params(cls) -> dict[str, Any]:
-    return {}
+# [EXCLUDED] Removed from Tier 4 benchmark — not registered.
+# class Tier4FilterRecentLogFiles(task_eval.TaskEval):
+#   """List .log and .txt files in Downloads modified within last 60 min. ADB-exclusive."""
+#
+#   app_names = ("files",)
+#   complexity = 1.5
+#   schema = {"type": "object", "properties": {}, "required": []}
+#   template = (
+#       "List all .log and .txt files in the Downloads folder that were modified"
+#       " within the last 60 minutes. Output the filenames."
+#   )
+#
+#   def initialize_task(self, env: interface.AsyncEnv) -> None:
+#     super().initialize_task(env)
+#     self._all_names: list[str] = []
+#     self._ground_truth: list[str] = []
+#     for _ in range(random.randint(3, 4)):
+#       ext = random.choice([".log", ".txt"])
+#       name = f"recent_{random.randint(1000, 9999)}{ext}"
+#       file_utils.create_file(
+#           name, device_constants.DOWNLOAD_DATA, env.controller, content="log data"
+#       )
+#       self._all_names.append(name)
+#       self._ground_truth.append(name)
+#     # Create 2 old files with mtime definitely > 60 min ago
+#     for _ in range(2):
+#       ext = random.choice([".log", ".txt"])
+#       name = f"old_{random.randint(1000, 9999)}{ext}"
+#       file_utils.create_file(
+#           name, device_constants.DOWNLOAD_DATA, env.controller, content="old log"
+#       )
+#       adb_utils.issue_generic_request(
+#           ["shell", "touch", "-t", "202001010000.00",
+#            f"{device_constants.DOWNLOAD_DATA}/{name}"],
+#           env.controller,
+#       )
+#       self._all_names.append(name)
+#
+#   def tear_down(self, env: interface.AsyncEnv) -> None:
+#     for name in self._all_names:
+#       adb_utils.issue_generic_request(
+#           ["shell", "rm", "-f", f"{device_constants.DOWNLOAD_DATA}/{name}"],
+#           env.controller,
+#       )
+#     super().tear_down(env)
+#
+#   def is_successful(self, env: interface.AsyncEnv) -> float:
+#     super().is_successful(env)
+#     if not self._ground_truth:
+#       return 0.0
+#     cache = getattr(env, "interaction_cache", "") or ""
+#     for name in self._ground_truth:
+#       if name not in cache:
+#         return 0.0
+#     return 1.0
+#
+#   @classmethod
+#   def generate_random_params(cls) -> dict[str, Any]:
+#     return {}
 
 
 class Tier4AggregationDownloadSizeTop3(task_eval.TaskEval):
@@ -458,32 +460,63 @@ class Tier4TopKLargestDownloadFiles(task_eval.TaskEval):
     return {}
 
 
-# ── tier4_extra ──────────────────────────────────────────────────────────
 
 
-class Tier4ExtraAggregationFileCountByExtension(task_eval.TaskEval):
-  """Count files per extension in Downloads. ADB-exclusive (aggregation)."""
+class Tier4FilterLargeOldFiles(task_eval.TaskEval):
+  """Find large old files in Downloads. ADB-exclusive (multi-condition filter)."""
 
   app_names = ("files",)
   complexity = 1.5
   schema = {"type": "object", "properties": {}, "required": []}
   template = (
-      "Count how many files of each extension type (.txt, .log, .bin, .dat)"
-      " are in the Downloads folder. Output the counts per extension."
+      "Are there any large files (over 10 MB) in my Downloads folder that"
+      " haven't been modified in over 30 days? List them."
   )
 
   def initialize_task(self, env: interface.AsyncEnv) -> None:
     super().initialize_task(env)
     self._filenames: list[str] = []
-    ext_counts = {".txt": 3, ".log": 2, ".bin": 4, ".dat": 1}
-    self._ground_truth: dict[str, int] = dict(ext_counts)
-    for ext, count in ext_counts.items():
-      for i in range(count):
-        name = f"tier4ext_count_{i}{ext}"
-        file_utils.create_file(
-            name, device_constants.DOWNLOAD_DATA, env.controller, content="data"
-        )
-        self._filenames.append(name)
+    self._ground_truth: list[str] = []
+    import time
+
+    # Large + old → should be listed
+    large_old_files = ["tier4ext_bigold_video.mp4", "tier4ext_bigold_backup.zip"]
+    for name in large_old_files:
+      path = f"{device_constants.DOWNLOAD_DATA}/{name}"
+      # Create 15MB file (sparse)
+      adb_utils.issue_generic_request(
+          ["shell", "dd", "if=/dev/zero", f"of={path}",
+           "bs=1M", "count=15", "2>/dev/null"],
+          env.controller,
+      )
+      # Set mtime to 60 days ago
+      adb_utils.issue_generic_request(
+          ["shell", "touch", "-d", "2024-01-01", path],
+          env.controller,
+      )
+      self._filenames.append(name)
+      self._ground_truth.append(name)
+
+    # Large + recent → should NOT be listed
+    large_recent = "tier4ext_bigrecent_data.bin"
+    path = f"{device_constants.DOWNLOAD_DATA}/{large_recent}"
+    adb_utils.issue_generic_request(
+        ["shell", "dd", "if=/dev/zero", f"of={path}",
+         "bs=1M", "count=15", "2>/dev/null"],
+        env.controller,
+    )
+    self._filenames.append(large_recent)
+
+    # Small + old → should NOT be listed
+    small_old = "tier4ext_smallold_readme.txt"
+    path = f"{device_constants.DOWNLOAD_DATA}/{small_old}"
+    file_utils.create_file(small_old, device_constants.DOWNLOAD_DATA,
+                           env.controller, content="tiny")
+    adb_utils.issue_generic_request(
+        ["shell", "touch", "-d", "2024-01-01", path],
+        env.controller,
+    )
+    self._filenames.append(small_old)
 
   def tear_down(self, env: interface.AsyncEnv) -> None:
     for name in self._filenames:
@@ -496,10 +529,14 @@ class Tier4ExtraAggregationFileCountByExtension(task_eval.TaskEval):
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
     cache = getattr(env, "interaction_cache", "") or ""
-    # Check that each count appears in the output
-    for ext, count in self._ground_truth.items():
-      if str(count) not in cache:
+    if not self._ground_truth:
+      return 0.0
+    for name in self._ground_truth:
+      if name not in cache:
         return 0.0
+    # Ensure non-matching files are NOT listed
+    if "bigrecent" in cache or "smallold" in cache:
+      return 0.0
     return 1.0
 
   @classmethod
@@ -507,10 +544,9 @@ class Tier4ExtraAggregationFileCountByExtension(task_eval.TaskEval):
     return {}
 
 
-# ── tier4_extra ──
 
 
-class Tier4ExtraFilterEmptyFilesInDownloads(task_eval.TaskEval):
+class Tier4FilterEmptyFilesInDownloads(task_eval.TaskEval):
   """List zero-byte files in Downloads. ADB-exclusive (stat check)."""
 
   app_names = ("files",)
@@ -564,71 +600,68 @@ class Tier4ExtraFilterEmptyFilesInDownloads(task_eval.TaskEval):
     return {}
 
 
-# ── tier4_extra ──
 
 
-class Tier4ExtraBulkFlattenSubdirectories(task_eval.TaskEval):
-  """Move all files from subdirectories into Downloads root. ADB-exclusive."""
+class Tier4BulkDeleteApkFiles(task_eval.TaskEval):
+  """Delete all .apk files in Downloads. ADB-exclusive (bulk delete by extension)."""
 
   app_names = ("files",)
   complexity = 1.5
   schema = {"type": "object", "properties": {}, "required": []}
   template = (
-      "Move all files from any subdirectories within Downloads"
-      " (/storage/emulated/0/Download/) into the Downloads root folder,"
-      " then remove the empty subdirectories."
+      "Delete all .apk files in my Downloads folder — those are leftover"
+      " app installers I no longer need."
   )
 
   def initialize_task(self, env: interface.AsyncEnv) -> None:
     super().initialize_task(env)
-    self._subdirs: list[str] = []
-    self._files: list[str] = []
-    # Create 2 subdirectories with files
-    for i in range(2):
-      subdir = f"tier4ext_subdir_{random.randint(1000, 9999)}"
-      subdir_path = f"{device_constants.DOWNLOAD_DATA}/{subdir}"
-      adb_utils.issue_generic_request(
-          ["shell", "mkdir", "-p", subdir_path], env.controller
+    self._apk_files: list[str] = []
+    self._other_files: list[str] = []
+    # Create .apk files (should be deleted)
+    for i in range(4):
+      name = f"tier4ext_app_{i}.apk"
+      file_utils.create_file(
+          name, device_constants.DOWNLOAD_DATA, env.controller,
+          content="fake apk data",
       )
-      self._subdirs.append(subdir)
-      for j in range(2):
-        fname = f"tier4ext_nested_{i}_{j}.txt"
-        file_utils.create_file(fname, subdir_path, env.controller, content="nested")
-        self._files.append(fname)
+      self._apk_files.append(name)
+    # Create non-.apk files (should remain)
+    for name in ["tier4ext_notes.txt", "tier4ext_photo.jpg"]:
+      file_utils.create_file(
+          name, device_constants.DOWNLOAD_DATA, env.controller,
+          content="keep me",
+      )
+      self._other_files.append(name)
 
   def tear_down(self, env: interface.AsyncEnv) -> None:
-    for fname in self._files:
+    for name in self._apk_files + self._other_files:
       adb_utils.issue_generic_request(
-          ["shell", "rm", "-f", f"{device_constants.DOWNLOAD_DATA}/{fname}"],
-          env.controller,
-      )
-    for subdir in self._subdirs:
-      adb_utils.issue_generic_request(
-          ["shell", "rm", "-rf", f"{device_constants.DOWNLOAD_DATA}/{subdir}"],
+          ["shell", "rm", "-f", f"{device_constants.DOWNLOAD_DATA}/{name}"],
           env.controller,
       )
     super().tear_down(env)
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
-    # All files should be in root Downloads
-    for fname in self._files:
+    # All .apk files should be gone
+    for name in self._apk_files:
       res = adb_utils.issue_generic_request(
-          ["shell", "find", device_constants.DOWNLOAD_DATA, "-maxdepth", "1",
-           "-name", fname],
-          env.controller,
-      )
-      if not res.generic.output.decode().strip():
-        return 0.0
-    # Subdirectories should be gone
-    for subdir in self._subdirs:
-      res = adb_utils.issue_generic_request(
-          ["shell", "test", "-d",
-           f"{device_constants.DOWNLOAD_DATA}/{subdir}",
+          ["shell", "test", "-f",
+           f"{device_constants.DOWNLOAD_DATA}/{name}",
            "&&", "echo", "exists"],
           env.controller,
       )
       if "exists" in res.generic.output.decode():
+        return 0.0
+    # Non-.apk files should still exist
+    for name in self._other_files:
+      res = adb_utils.issue_generic_request(
+          ["shell", "test", "-f",
+           f"{device_constants.DOWNLOAD_DATA}/{name}",
+           "&&", "echo", "exists"],
+          env.controller,
+      )
+      if "exists" not in res.generic.output.decode():
         return 0.0
     return 1.0
 

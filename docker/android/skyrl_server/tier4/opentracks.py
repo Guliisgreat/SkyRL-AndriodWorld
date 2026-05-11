@@ -90,9 +90,8 @@ class Tier4AggregationOpenTracksWeeklyStats(task_eval.TaskEval):
   complexity = 2.0
   schema = {'type': 'object', 'properties': {}, 'required': []}
   template = (
-      "What is the total distance (in km) of all activities this week in"
-      " OpenTracks, and which activity covered the longest distance?"
-      " Output the total distance and the activity name."
+      "What is the total distance of all activities this week in OpenTracks,"
+      " and which activity covered the longest distance?"
   )
 
   def initialize_task(self, env: interface.AsyncEnv) -> None:
@@ -184,62 +183,66 @@ class Tier4TopKOpenTracksFastestActivity(task_eval.TaskEval):
     return {}
 
 
-class Tier4CrossAppOpenTracksToTasks(task_eval.TaskEval):
-  """Find longest OpenTracks activity, create Tasks entry with name+distance. ADB-exclusive."""
-
-  app_names = (_APP_NAME, 'tasks')
-  complexity = 2.5
-  schema = {'type': 'object', 'properties': {}, 'required': []}
-  template = (
-      "Find the longest activity (by distance) in OpenTracks and create a"
-      " task in the Tasks app with the activity name and distance (in km) as"
-      " the task title."
-  )
-
-  _TASKS_DB_PATH = '/data/data/org.tasks/databases/database'
-  _TASKS_TABLE = 'tasks'
-  _TASKS_APP = 'tasks'
-
-  def initialize_task(self, env: interface.AsyncEnv) -> None:
-    super().initialize_task(env)
-    _clear_activities(env)
-    now_ms = _now_ms()
-    configs = [
-        ('Trail Run', 8000),
-        ('City Walk', 3500),
-        ('Marathon Prep', 21000),   # longest: 21 km
-        ('Recovery Jog', 4000),
-    ]
-    rows = []
-    for i, (name, dist_m) in enumerate(configs):
-      starttime = now_ms - (4 - i) * 86400000
-      rows.append(_make_activity(name, dist_m, 7200000, starttime))
-    _insert_activities(rows, env)
-    self._ground_truth_name: str = 'Marathon Prep'
-    self._ground_truth_km: str = '21.0'
-
-  def tear_down(self, env: interface.AsyncEnv) -> None:
-    _clear_activities(env)
-    # Clean up the task we expect the agent to have created
-    sqlite_utils.delete_all_rows_from_table(
-        self._TASKS_TABLE, self._TASKS_DB_PATH, env, self._TASKS_APP
-    )
-    super().tear_down(env)
-
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    super().is_successful(env)
-    try:
-      tasks = sqlite_utils.get_rows_from_remote_device(
-          self._TASKS_TABLE, self._TASKS_DB_PATH,
-          sqlite_schema_utils.Task, env,
-      )
-    except Exception:
-      return 0.0
-    for task in tasks:
-      if self._ground_truth_name in (task.title or ''):
-        return 1.0
-    return 0.0
-
-  @classmethod
-  def generate_random_params(cls) -> dict[str, Any]:
-    return {}
+# [EXCLUDED] Removed from Tier 4 benchmark — not registered.
+# class Tier4CrossAppOpenTracksToTasks(task_eval.TaskEval):
+#   """Find longest OpenTracks activity this week, save to Markor note. ADB-exclusive."""
+#
+#   app_names = (_APP_NAME, 'markor')
+#   complexity = 2.5
+#   schema = {'type': 'object', 'properties': {}, 'required': []}
+#   template = (
+#       "What was my longest exercise this week in OpenTracks? Save its name"
+#       " and distance to a note called 'best_run' in Markor."
+#   )
+#
+#   _MARKOR_DIR = '/storage/emulated/0/Documents/Markor'
+#   _NOTE_NAME = 'best_run.md'
+#
+#   def initialize_task(self, env: interface.AsyncEnv) -> None:
+#     super().initialize_task(env)
+#     _clear_activities(env)
+#     now_ms = _now_ms()
+#     configs = [
+#         ('Trail Run', 8000),
+#         ('City Walk', 3500),
+#         ('Marathon Prep', 21000),   # longest: 21 km
+#         ('Recovery Jog', 4000),
+#     ]
+#     rows = []
+#     for i, (name, dist_m) in enumerate(configs):
+#       starttime = now_ms - (4 - i) * 86400000
+#       rows.append(_make_activity(name, dist_m, 7200000, starttime))
+#     _insert_activities(rows, env)
+#     self._ground_truth_name: str = 'Marathon Prep'
+#     self._ground_truth_km: float = 21.0
+#     self._note_path = f"{self._MARKOR_DIR}/{self._NOTE_NAME}"
+#
+#   def tear_down(self, env: interface.AsyncEnv) -> None:
+#     _clear_activities(env)
+#     from android_world.utils import adb_utils
+#     adb_utils.issue_generic_request(
+#         ["shell", "rm", "-f", self._note_path], env.controller
+#     )
+#     super().tear_down(env)
+#
+#   def is_successful(self, env: interface.AsyncEnv) -> float:
+#     super().is_successful(env)
+#     from android_world.utils import adb_utils
+#     res = adb_utils.issue_generic_request(
+#         ["shell", "cat", self._note_path], env.controller
+#     )
+#     content = res.generic.output.decode()
+#     # Check that activity name is present
+#     if self._ground_truth_name not in content:
+#       return 0.0
+#     # Check distance with ±0.5 km tolerance
+#     import re
+#     numbers = re.findall(r'\b\d+\.?\d*\b', content)
+#     for n in numbers:
+#       if abs(float(n) - self._ground_truth_km) <= 0.5:
+#         return 1.0
+#     return 0.0
+#
+#   @classmethod
+#   def generate_random_params(cls) -> dict[str, Any]:
+#     return {}

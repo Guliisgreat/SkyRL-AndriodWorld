@@ -72,29 +72,32 @@ def _clear_tasks(env: interface.AsyncEnv) -> None:
 
 
 class Tier4BulkChangePriorityTasks(task_eval.TaskEval):
-  """Change all Low priority tasks to Medium priority. ADB-exclusive."""
+  """Change all overdue tasks to High priority. ADB-exclusive."""
 
   app_names = (_APP_NAME,)
   complexity = 1.5
   schema = {'type': 'object', 'properties': {}, 'required': []}
   template = (
-      "In the Tasks app, change all tasks with priority 'Low' to priority"
-      " 'Medium'. Leave all other tasks unchanged."
+      "Change all overdue tasks in the Tasks app to High priority."
   )
 
   def initialize_task(self, env: interface.AsyncEnv) -> None:
     super().initialize_task(env)
     _clear_tasks(env)
     rows = []
-    self._low_titles: list[str] = []
-    # 4 Low priority tasks
+    self._overdue_titles: list[str] = []
+    past_ms = _now_ms() - 3 * 24 * 3600 * 1000  # 3 days ago
+    future_ms = _now_ms() + 3 * 24 * 3600 * 1000  # 3 days ahead
+    # 4 overdue tasks (past due date, Low priority, not completed)
     for i in range(4):
-      title = f'low_task_{i}'
-      rows.append(_make_task(title, _PRIORITY_LOW))
-      self._low_titles.append(title)
-    # 2 High priority tasks (should stay unchanged)
+      title = f'overdue_task_{i}'
+      rows.append(_make_task(title, _PRIORITY_LOW,
+                             due_ms=past_ms - i * 86400000))
+      self._overdue_titles.append(title)
+    # 2 non-overdue tasks with Low priority (should stay unchanged)
     for i in range(2):
-      rows.append(_make_task(f'high_task_{i}', _PRIORITY_HIGH))
+      rows.append(_make_task(f'future_task_{i}', _PRIORITY_LOW,
+                             due_ms=future_ms + i * 86400000))
     _insert_tasks(rows, env)
 
   def tear_down(self, env: interface.AsyncEnv) -> None:
@@ -103,16 +106,17 @@ class Tier4BulkChangePriorityTasks(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
-    if not self._low_titles:
+    if not self._overdue_titles:
       return 0.0
     rows = _get_tasks(env)
     for row in rows:
-      if row.title in self._low_titles:
-        if row.importance != _PRIORITY_MEDIUM:
-          return 0.0
-      elif row.title.startswith('high_task_'):
+      if row.title in self._overdue_titles:
         if row.importance != _PRIORITY_HIGH:
           return 0.0
+      elif row.title.startswith('future_task_'):
+        # Non-overdue tasks should NOT have been changed to High
+        if row.importance == _PRIORITY_HIGH:
+          return 0.0
     return 1.0
 
   @classmethod
@@ -120,57 +124,58 @@ class Tier4BulkChangePriorityTasks(task_eval.TaskEval):
     return {}
 
 
-class Tier4CoverageOverdueTasksCompleted(task_eval.TaskEval):
-  """Confirm all overdue tasks are marked completed; list any that aren't. ADB-exclusive."""
-
-  app_names = (_APP_NAME,)
-  complexity = 1.5
-  schema = {'type': 'object', 'properties': {}, 'required': []}
-  template = (
-      "Confirm all overdue tasks in the Tasks app are marked completed."
-      " If any are not completed, list their titles."
-      " If all are completed, output 'all completed'."
-  )
-
-  def initialize_task(self, env: interface.AsyncEnv) -> None:
-    super().initialize_task(env)
-    _clear_tasks(env)
-    # Overdue = dueDate in the past
-    past_ms = _now_ms() - 7 * 24 * 3600 * 1000  # 7 days ago
-    rows = []
-    self._ground_truth: list[str] = []
-
-    # 2 overdue + completed (should not appear)
-    for i in range(2):
-      rows.append(_make_task(f'overdue_done_{i}', _PRIORITY_MEDIUM,
-                             due_ms=past_ms, completed=_now_ms()))
-
-    # 2 overdue + NOT completed → should appear in output
-    for i in range(2):
-      title = f'overdue_pending_{i}'
-      rows.append(_make_task(title, _PRIORITY_MEDIUM,
-                             due_ms=past_ms, completed=0))
-      self._ground_truth.append(title)
-
-    # 1 not overdue, not completed (future due date — ok)
-    future_ms = _now_ms() + 7 * 24 * 3600 * 1000
-    rows.append(_make_task('future_task', _PRIORITY_LOW, due_ms=future_ms))
-    _insert_tasks(rows, env)
-
-  def tear_down(self, env: interface.AsyncEnv) -> None:
-    _clear_tasks(env)
-    super().tear_down(env)
-
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    super().is_successful(env)
-    cache = (getattr(env, 'interaction_cache', '') or '').lower()
-    if not self._ground_truth:
-      return 1.0 if 'all' in cache or 'none' in cache else 0.0
-    for title in self._ground_truth:
-      if title not in cache:
-        return 0.0
-    return 1.0
-
-  @classmethod
-  def generate_random_params(cls) -> dict[str, Any]:
-    return {}
+# [EXCLUDED] Removed from Tier 4 benchmark — not registered.
+# class Tier4CoverageOverdueTasksCompleted(task_eval.TaskEval):
+#   """Confirm all overdue tasks are marked completed; list any that aren't. ADB-exclusive."""
+#
+#   app_names = (_APP_NAME,)
+#   complexity = 1.5
+#   schema = {'type': 'object', 'properties': {}, 'required': []}
+#   template = (
+#       "Confirm all overdue tasks in the Tasks app are marked completed."
+#       " If any are not completed, list their titles."
+#       " If all are completed, output 'all completed'."
+#   )
+#
+#   def initialize_task(self, env: interface.AsyncEnv) -> None:
+#     super().initialize_task(env)
+#     _clear_tasks(env)
+#     # Overdue = dueDate in the past
+#     past_ms = _now_ms() - 7 * 24 * 3600 * 1000  # 7 days ago
+#     rows = []
+#     self._ground_truth: list[str] = []
+#
+#     # 2 overdue + completed (should not appear)
+#     for i in range(2):
+#       rows.append(_make_task(f'overdue_done_{i}', _PRIORITY_MEDIUM,
+#                              due_ms=past_ms, completed=_now_ms()))
+#
+#     # 2 overdue + NOT completed → should appear in output
+#     for i in range(2):
+#       title = f'overdue_pending_{i}'
+#       rows.append(_make_task(title, _PRIORITY_MEDIUM,
+#                              due_ms=past_ms, completed=0))
+#       self._ground_truth.append(title)
+#
+#     # 1 not overdue, not completed (future due date — ok)
+#     future_ms = _now_ms() + 7 * 24 * 3600 * 1000
+#     rows.append(_make_task('future_task', _PRIORITY_LOW, due_ms=future_ms))
+#     _insert_tasks(rows, env)
+#
+#   def tear_down(self, env: interface.AsyncEnv) -> None:
+#     _clear_tasks(env)
+#     super().tear_down(env)
+#
+#   def is_successful(self, env: interface.AsyncEnv) -> float:
+#     super().is_successful(env)
+#     cache = (getattr(env, 'interaction_cache', '') or '').lower()
+#     if not self._ground_truth:
+#       return 1.0 if 'all' in cache or 'none' in cache else 0.0
+#     for title in self._ground_truth:
+#       if title not in cache:
+#         return 0.0
+#     return 1.0
+#
+#   @classmethod
+#   def generate_random_params(cls) -> dict[str, Any]:
+#     return {}
