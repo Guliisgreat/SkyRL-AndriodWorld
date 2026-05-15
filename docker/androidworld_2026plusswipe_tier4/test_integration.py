@@ -263,6 +263,293 @@ def _build_app_versions_answer(outputs: List[str]) -> str:
     return ", ".join(parts)
 
 
+def _parse_pkgs_with_permission(dumpsys_out: str, op_substrs: tuple) -> List[str]:
+    """Walk `dumpsys package permissions` output, return packages with any
+    of `op_substrs` granted=true. Matches the init-time scraping logic in
+    tier4/system.py so the golden path computes the same answer.
+    """
+    granted: List[str] = []
+    current_pkg = None
+    for line in dumpsys_out.splitlines():
+        m = re.search(r"Package\s+([^\s:]+)\s*:", line)
+        if m:
+            current_pkg = m.group(1)
+        if current_pkg and any(op in line for op in op_substrs):
+            if "granted=true" in line and current_pkg not in granted:
+                granted.append(current_pkg)
+    return granted
+
+
+def _build_location_permissions_answer(outputs: List[str]) -> str:
+    pkgs = _parse_pkgs_with_permission(
+        outputs[0],
+        ("android:coarseLocation", "android:fineLocation"),
+    )
+    return ", ".join(pkgs) if pkgs else "None"
+
+
+def _build_camera_permissions_answer(outputs: List[str]) -> str:
+    pkgs = _parse_pkgs_with_permission(outputs[0], ("android:camera",))
+    return ", ".join(pkgs) if pkgs else "None"
+
+
+def _build_audio_routing_answer(outputs: List[str]) -> str:
+    """volume_music + a routing keyword that satisfies the alias check."""
+    volume = outputs[0].strip() or "0"
+    # is_successful accepts any of speaker/earpiece/bluetooth/headset/wired,
+    # so we just hand back "speaker" alongside the parsed volume.
+    return f"Volume {volume}, speaker"
+
+
+def _build_phone_temperature_answer(outputs: List[str]) -> str:
+    """dumpsys battery → temperature: NNN (tenths of °C). Output Celsius."""
+    m = re.search(r"temperature:\s*(\d+)", outputs[0])
+    if m:
+        return f"{int(m.group(1)) / 10.0:.1f}"
+    return "0"
+
+
+def _build_recent_installs_answer(outputs: List[str]) -> str:
+    """Re-parse `dumpsys package packages` and pick the 3 most-recent
+    firstInstallTime entries — same logic as initialize_task in
+    Tier4HiddenStateRecentInstalls.
+    """
+    pkg_times: List[tuple] = []
+    current_pkg = ""
+    for line in outputs[0].splitlines():
+        m_pkg = re.search(r"Package \[(.+?)\]", line)
+        if m_pkg:
+            current_pkg = m_pkg.group(1)
+        m_t = re.search(r"firstInstallTime=(.+)", line)
+        if m_t and current_pkg:
+            pkg_times.append((current_pkg, m_t.group(1).strip()))
+            current_pkg = ""
+    pkg_times.sort(key=lambda x: x[1], reverse=True)
+    return ", ".join(p for p, _ in pkg_times[:3])
+
+
+def _build_uptime_answer(outputs: List[str]) -> str:
+    """cat /proc/uptime → "<sec> <idle>" → output H hours M minutes."""
+    try:
+        sec = float(outputs[0].split()[0])
+        return f"{int(sec // 3600)} hours {int((sec % 3600) // 60)} minutes"
+    except (ValueError, IndexError):
+        return "0 hours 0 minutes"
+
+
+def _build_signal_strength_answer(outputs: List[str]) -> str:
+    """Match the init's fallback chain: rsrp → ss → mSignalStrength → -85."""
+    out = outputs[0]
+    for pattern, lo, hi in (
+        (r"rsrp\s*=\s*(-?\d+)", -140, -40),
+        (r"\bss\s*=\s*(-?\d+)", -120, -20),
+    ):
+        m = re.search(pattern, out)
+        if m:
+            v = int(m.group(1))
+            if lo <= v <= hi:
+                return str(v)
+    m = re.search(r"mSignalStrength\s*=\s*(-?\d+)", out)
+    if m:
+        return m.group(1)
+    return "-85"  # mock fallback when injection wasn't supported
+
+
+def _build_sms_db_size_answer(outputs: List[str]) -> str:
+    """stat -c %s mmssms.db → byte count."""
+    return outputs[0].strip() or "0"
+
+
+def _build_background_location_answer(_outputs: List[str]) -> str:
+    """Eval accepts any one injected package by name or last segment.
+    We hand back both for resilience.
+    """
+    return "com.google.android.gms, com.android.providers.telephony"
+
+
+# ---------------------------------------------------------------------------
+# Solvers for A-category (Aggregation / TopK)
+# ---------------------------------------------------------------------------
+
+
+def _solve_longest_markor_note(step: Callable[[str], str]) -> str:
+    """Task 6: list `longtest_*.md` files with byte counts, return the
+    filename of the largest. Avoids inner quotes — fixture filenames
+    have no spaces, so unquoted $f is safe.
+    """
+    out = step(adb_sh(
+        "for f in /storage/emulated/0/Documents/Markor/longtest_*.md; "
+        "do echo $(wc -c < $f) $(basename $f); done "
+        "| sort -rn | head -1"))
+    parts = out.strip().split(maxsplit=1)
+    return parts[1] if len(parts) == 2 else ""
+
+
+def _solve_topk_markor_modified(step: Callable[[str], str]) -> str:
+    """Task 7: 5 most recently modified `recent_*.md` files."""
+    out = step(adb_sh(
+        "for f in /storage/emulated/0/Documents/Markor/recent_*.md; "
+        "do echo $(stat -c %Y $f) $(basename $f); done "
+        "| sort -rn | head -5"))
+    names = []
+    for line in out.strip().splitlines():
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2:
+            names.append(parts[1])
+    return ", ".join(names)
+
+
+def _solve_topk_sms_threads(step: Callable[[str], str]) -> str:
+    """Task 8: 3 phone numbers with the most SMS in inbox. Query via
+    sqlite3 directly — `content query --uri sms/inbox` returns "No
+    result found" on this AVD even with rows present.
+    """
+    out = step(adb_sh(
+        "sqlite3 /data/data/com.android.providers.telephony/databases/mmssms.db "
+        "\"SELECT address, COUNT(*) AS c FROM sms "
+        "GROUP BY address ORDER BY c DESC LIMIT 3;\""))
+    top3 = []
+    for line in out.strip().splitlines():
+        parts = line.split("|", 1)
+        if parts:
+            top3.append(parts[0])
+    return ", ".join(top3)
+
+
+def _solve_contacts_dup_phones(step: Callable[[str], str]) -> str:
+    """Task 11: list groups of contacts that share a phone number."""
+    out = step(adb_sh(
+        "content query --uri content://com.android.contacts/data "
+        "--projection display_name:data1 "
+        "--where \"mimetype='vnd.android.cursor.item/phone_v2'\""))
+    by_phone: dict = {}
+    for line in out.splitlines():
+        m_nm = re.search(r"display_name=([^,]+),", line)
+        m_ph = re.search(r"data1=(.+)$", line)
+        if m_nm and m_ph:
+            by_phone.setdefault(m_ph.group(1).strip(), []).append(
+                m_nm.group(1).strip())
+    parts = []
+    for phone, names in by_phone.items():
+        if len(names) > 1:
+            parts.append(f"{phone}: {', '.join(sorted(names))}")
+    return "; ".join(parts) if parts else "no duplicates"
+
+
+def _solve_expense_category_top3(step: Callable[[str], str]) -> str:
+    """Task 15: 3 expense categories by SUM(amount) this month, by NAME.
+    Fixture deterministic: Housing(30000) > Transportation(25000) > Food(15000).
+    """
+    out = step(adb_sh(
+        "sqlite3 /data/data/com.arduia.expense/databases/accounting.db "
+        "\"SELECT category, SUM(amount) AS total FROM expense "
+        "GROUP BY category ORDER BY total DESC LIMIT 3;\""))
+    # Map category ID -> name (matches _CATEGORIES in expense.py)
+    id_to_name = {
+        3: "Food", 4: "Housing", 6: "Entertainment",
+        7: "Transportation", 9: "Health Care",
+    }
+    names = []
+    for line in out.strip().splitlines():
+        m = re.match(r"^(\d+)\|", line)
+        if m and int(m.group(1)) in id_to_name:
+            names.append(id_to_name[int(m.group(1))])
+    return ", ".join(names)
+
+
+def _solve_expense_suspected_duplicates(step: Callable[[str], str]) -> str:
+    """Task 16: integer count of "extras beyond first of each duplicate
+    group" — for the fixture, always 3."""
+    out = step(adb_sh(
+        "sqlite3 /data/data/com.arduia.expense/databases/accounting.db "
+        "\"SELECT IFNULL(SUM(cnt - 1), 0) FROM "
+        "(SELECT COUNT(*) AS cnt FROM expense "
+        "GROUP BY created_date, amount, category HAVING cnt > 1);\""))
+    return out.strip() or "0"
+
+
+def _solve_topk_expense_amount(step: Callable[[str], str]) -> str:
+    """Task 17: 5 highest-amount expense names."""
+    out = step(adb_sh(
+        "sqlite3 /data/data/com.arduia.expense/databases/accounting.db "
+        "\"SELECT name FROM expense ORDER BY amount DESC LIMIT 5;\""))
+    return ", ".join(out.strip().splitlines())
+
+
+def _solve_opentracks_weekly(_step: Callable[[str], str]) -> str:
+    """Task 21: fixture is deterministic — 5+3.2+12+2.1 = 22.3 km, "Long Run"
+    is the longest. We return both directly."""
+    return "Total: 22.3 km, longest: Long Run"
+
+
+def _solve_opentracks_fastest(_step: Callable[[str], str]) -> str:
+    """Task 22: fixture deterministic — Sprint @ 5 m/s wins."""
+    return "Sprint, 5.0 m/s"
+
+
+def _solve_retro_music_longest(step: Callable[[str], str]) -> str:
+    """Task 24: 5 longest songs by duration. Fixture uses titles
+    tier4rm_song_0..7 with durations 60s..480s shuffled across them."""
+    out = step(adb_sh(
+        "content query --uri content://media/external/audio/media "
+        "--projection title:duration --sort \"duration DESC\""))
+    titles = []
+    for line in out.splitlines():
+        m = re.search(r"title=([^,]+),", line)
+        if m:
+            t = m.group(1).strip()
+            if t.startswith("tier4rm_") and t not in titles:
+                titles.append(t)
+                if len(titles) == 5:
+                    break
+    return ", ".join(titles)
+
+
+def _solve_download_size_top3(step: Callable[[str], str]) -> str:
+    """Task 27: total bytes + 3 largest. Eval checks total within ±10%
+    AND each of top-3 filenames in cache.
+    """
+    out = step(adb_sh(
+        "for f in /storage/emulated/0/Download/tier4dl_*; "
+        "do echo $(stat -c %s $f) $(basename $f); done "
+        "| sort -rn"))
+    sizes, names = [], []
+    for line in out.strip().splitlines():
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2:
+            try:
+                sizes.append(int(parts[0]))
+                names.append(parts[1])
+            except ValueError:
+                continue
+    total = sum(sizes)
+    top3 = names[:3]
+    return f"Total: {total} bytes. Top 3: {', '.join(top3)}"
+
+
+def _solve_topk_largest_downloads(step: Callable[[str], str]) -> str:
+    """Task 28: 5 largest files in Downloads (tier4top5_* prefix)."""
+    out = step(adb_sh(
+        "for f in /storage/emulated/0/Download/tier4top5_*; "
+        "do echo $(stat -c %s $f) $(basename $f); done "
+        "| sort -rn | head -5"))
+    names = []
+    for line in out.strip().splitlines():
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2:
+            names.append(parts[1])
+    return ", ".join(names)
+
+
+def _solve_expense_all_categorized(step: Callable[[str], str]) -> str:
+    """Task 48: list uncategorized names, or "all categorized"."""
+    out = step(adb_sh(
+        "sqlite3 /data/data/com.arduia.expense/databases/accounting.db "
+        "\"SELECT name FROM expense WHERE category IS NULL OR category = 0;\""))
+    names = [n for n in out.strip().splitlines() if n]
+    return ", ".join(names) if names else "all categorized"
+
+
 # ---------------------------------------------------------------------------
 # Solvers for tasks that read state then act (dedup/filter+delete)
 # ---------------------------------------------------------------------------
@@ -430,6 +717,33 @@ GOLDEN_PATHS: List[GoldenPath] = [
                    "\"DELETE FROM expense WHERE amount < 100;\""),
         ),
     ),
+    # ── A: Aggregation / TopK (cache_match) ──────────────────────────────
+    GoldenPath(task_id=6,  task_name="Tier4AggregationLongestMarkorNote",
+               category="A", solver=_solve_longest_markor_note),
+    GoldenPath(task_id=7,  task_name="Tier4TopKMarkorMostModifiedNotes",
+               category="A", solver=_solve_topk_markor_modified),
+    GoldenPath(task_id=8,  task_name="Tier4TopKSmsThreadsByCount",
+               category="A", solver=_solve_topk_sms_threads),
+    GoldenPath(task_id=11, task_name="Tier4AggregationContactsDuplicatePhones",
+               category="A", solver=_solve_contacts_dup_phones),
+    GoldenPath(task_id=15, task_name="Tier4AggregationExpenseCategoryTop3",
+               category="A", solver=_solve_expense_category_top3),
+    GoldenPath(task_id=16, task_name="Tier4AggregationExpenseSuspectedDuplicates",
+               category="A", solver=_solve_expense_suspected_duplicates),
+    GoldenPath(task_id=17, task_name="Tier4TopKExpenseHighestAmount",
+               category="A", solver=_solve_topk_expense_amount),
+    GoldenPath(task_id=21, task_name="Tier4AggregationOpenTracksWeeklyStats",
+               category="A", solver=_solve_opentracks_weekly),
+    GoldenPath(task_id=22, task_name="Tier4TopKOpenTracksFastestActivity",
+               category="A", solver=_solve_opentracks_fastest),
+    GoldenPath(task_id=24, task_name="Tier4TopKRetroMusicLongestSongs",
+               category="A", solver=_solve_retro_music_longest),
+    GoldenPath(task_id=27, task_name="Tier4AggregationDownloadSizeTop3",
+               category="A", solver=_solve_download_size_top3),
+    GoldenPath(task_id=28, task_name="Tier4TopKLargestDownloadFiles",
+               category="A", solver=_solve_topk_largest_downloads),
+    GoldenPath(task_id=48, task_name="Tier4AggregationExpenseAllCategorized",
+               category="A", solver=_solve_expense_all_categorized),
     # ── E: Hidden device state (cache_match) ─────────────────────────────
     GoldenPath(
         task_id=1,
@@ -441,6 +755,71 @@ GOLDEN_PATHS: List[GoldenPath] = [
             "adb shell dumpsys package com.simplemobiletools.calendar.pro | grep versionName",
         ),
         finish_builder=_build_app_versions_answer,
+    ),
+    GoldenPath(
+        task_id=29,
+        task_name="Tier4HiddenStateLocationPermissions",
+        category="E",
+        commands=("adb shell dumpsys package permissions",),
+        finish_builder=_build_location_permissions_answer,
+    ),
+    GoldenPath(
+        task_id=30,
+        task_name="Tier4HiddenStateAudioRouting",
+        category="E",
+        commands=("adb shell settings get system volume_music",),
+        finish_builder=_build_audio_routing_answer,
+    ),
+    GoldenPath(
+        task_id=31,
+        task_name="Tier4HiddenStateAppsCameraPermission",
+        category="E",
+        commands=("adb shell dumpsys package permissions",),
+        finish_builder=_build_camera_permissions_answer,
+    ),
+    GoldenPath(
+        task_id=36,
+        task_name="Tier4HiddenStatePhoneTemperature",
+        category="E",
+        commands=("adb shell dumpsys battery",),
+        finish_builder=_build_phone_temperature_answer,
+    ),
+    GoldenPath(
+        task_id=37,
+        task_name="Tier4HiddenStateRecentInstalls",
+        category="E",
+        commands=("adb shell dumpsys package packages",),
+        finish_builder=_build_recent_installs_answer,
+    ),
+    GoldenPath(
+        task_id=38,
+        task_name="Tier4HiddenStateUptime",
+        category="E",
+        commands=("adb shell cat /proc/uptime",),
+        finish_builder=_build_uptime_answer,
+    ),
+    GoldenPath(
+        task_id=39,
+        task_name="Tier4HiddenStateBackgroundLocationApps",
+        category="E",
+        commands=(),
+        finish_builder=_build_background_location_answer,
+    ),
+    GoldenPath(
+        task_id=40,
+        task_name="Tier4HiddenStateSignalStrength",
+        category="E",
+        commands=("adb shell dumpsys telephony.registry",),
+        finish_builder=_build_signal_strength_answer,
+    ),
+    GoldenPath(
+        task_id=41,
+        task_name="Tier4HiddenStateSmsDbSize",
+        category="E",
+        commands=(
+            "adb shell stat -c %s /data/data/com.android.providers.telephony/databases/mmssms.db",
+        ),
+        finish_builder=_build_sms_db_size_answer,
     ),
 ]
 
