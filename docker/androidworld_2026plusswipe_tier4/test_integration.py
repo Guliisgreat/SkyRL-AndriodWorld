@@ -662,6 +662,197 @@ def _solve_filter_expense_above_average(_step: Callable[[str], str]) -> str:
     return "aboveavg_3, aboveavg_4"
 
 
+_MARKOR_DIR_DEV = "/storage/emulated/0/Documents/Markor"
+
+
+# ---------------------------------------------------------------------------
+# Solvers for D-category (CrossApp)
+#
+# These tasks read state from one app and write/compare to another. Many
+# fixtures use deterministic seed data (specific names, hardcoded amounts)
+# and the eval only inspects the agent's text output or the file the agent
+# was supposed to create. For state-write tasks we issue the write directly
+# via adb; for pure cache-match we hand back the deterministic answer.
+# ---------------------------------------------------------------------------
+
+
+def _solve_cross_app_sms_non_contacts(step: Callable[[str], str]) -> str:
+    """Task 2: list SMS senders from last 7 days who are NOT in contacts.
+    Fixture seeds 2 random non-contact numbers + 1 contact. Query both
+    via sqlite and compute set difference."""
+    sms_out = step(adb_sh(
+        "sqlite3 /data/data/com.android.providers.telephony/databases/mmssms.db "
+        "\"SELECT DISTINCT address FROM sms WHERE date > "
+        "(strftime('%s','now') - 7*86400)*1000;\""))
+    contacts_out = step(adb_sh(
+        "content query --uri content://com.android.contacts/data "
+        "--projection data1 "
+        "--where \"mimetype='vnd.android.cursor.item/phone_v2'\""))
+    sms_addrs = [a.strip() for a in sms_out.strip().splitlines() if a.strip()]
+    contact_nums = set()
+    for line in contacts_out.splitlines():
+        m = re.search(r"data1=(.+)$", line)
+        if m:
+            contact_nums.add(m.group(1).strip())
+    norm = lambda s: s.replace("-", "").replace(" ", "")
+    contact_norm = {norm(n) for n in contact_nums}
+    unknown = [a for a in sms_addrs if norm(a) not in contact_norm]
+    return ", ".join(unknown)
+
+
+def _solve_cross_app_expense_to_markor_calendar(step: Callable[[str], str]) -> str:
+    """Task 18: fixture deterministic — total = $77.50.
+    Eval checks Markor note `monthly_summary.md` contains "77.50" AND
+    a calendar event titled 'Monthly Expense: $77.50' exists."""
+    total = "77.50"
+    note_path = f"{_MARKOR_DIR_DEV}/monthly_summary.md"
+    # Write Markor note with total
+    step(adb_sh(f"mkdir -p {_MARKOR_DIR_DEV}; echo 'Total: ${total}' > {note_path}"))
+    # Insert calendar event for end of this month
+    import datetime
+    now = datetime.datetime.utcnow()
+    if now.month == 12:
+        last_day = datetime.datetime(now.year, 12, 31)
+    else:
+        next_month = datetime.datetime(now.year, now.month + 1, 1)
+        last_day = next_month - datetime.timedelta(days=1)
+    dtstart_ms = int(last_day.replace(hour=12).timestamp() * 1000)
+    # Avoid `$` in the title — device shell expands `$77` as positional
+    # var $7 (empty) followed by literal "7" -> "7.50". Use plain
+    # underscores so eval's "77.50" substring check still matches.
+    step(adb_sh(
+        f"content insert --uri content://com.android.calendar/events "
+        f"--bind title:s:Monthly_Expense_{total} "
+        f"--bind dtstart:l:{dtstart_ms} "
+        f"--bind dtend:l:{dtstart_ms + 3600000} "
+        f"--bind calendar_id:i:1 "
+        f"--bind eventTimezone:s:UTC"))
+    return f"Total this month: {total}"
+
+
+def _solve_cross_app_broccoli_to_markor(_step: Callable[[str], str]) -> str:
+    """Task 25: fixture deterministic — Bob Martinez and Carol Davis are
+    the contacts who texted me but I didn't reply. Eval also checks
+    Alice is NOT in cache."""
+    return "Bob Martinez, Carol Davis"
+
+
+def _solve_cross_app_markor_phones_vs_contacts(_step: Callable[[str], str]) -> str:
+    """Task 26: fixture deterministic — 4 phone numbers in note,
+    2 in contacts. Non-contact ones are +15550009901 and +15550009902."""
+    return "+15550009901, +15550009902"
+
+
+def _solve_cross_app_calendar_to_markor(step: Callable[[str], str]) -> str:
+    """Task 33: query calendar for events with the keyword, write titles
+    to a Markor file `<keyword>_events.md`. The keyword is in params —
+    we discover it by reading the task goal that /reset returned."""
+    # Discover the keyword by listing events with the tier4cal_ prefix
+    out = step(adb_sh(
+        "content query --uri content://com.android.calendar/events "
+        "--projection title:dtstart"))
+    keyword = None
+    matching = []
+    for line in out.splitlines():
+        m = re.search(r"title=(tier4cal_(\w+)_item_\d+),", line)
+        if m:
+            keyword = m.group(2)
+            matching.append(m.group(1))
+    if not keyword:
+        return "no events"
+    # Write the Markor file
+    note_path = f"{_MARKOR_DIR_DEV}/{keyword}_events.md"
+    content = "\\n".join(matching)
+    step(adb_sh(f"mkdir -p {_MARKOR_DIR_DEV}; printf '{content}\\n' > {note_path}"))
+    return f"wrote {keyword}_events.md"
+
+
+def _solve_cross_app_contacts_to_markor(step: Callable[[str], str]) -> str:
+    """Task 51: fixture deterministic — 3 contacts (Alice Smith, Bob
+    Jones, Carol Lee). Write contacts_export.md with one per line."""
+    note_path = f"{_MARKOR_DIR_DEV}/contacts_export.md"
+    content = (
+        "Alice Smith: +15550001001\\n"
+        "Bob Jones: +15550001002\\n"
+        "Carol Lee: +15550001003"
+    )
+    step(adb_sh(f"mkdir -p {_MARKOR_DIR_DEV}; printf '{content}\\n' > {note_path}"))
+    return "wrote contacts_export.md"
+
+
+def _solve_cross_app_calendar_sms_conflicts(step: Callable[[str], str]) -> str:
+    """Task 52: find SMS sent during yesterday's calendar event.
+    Fixture seeds an event 10-11am yesterday + 2 SMS during + 1 outside.
+    The 2 ground-truth SMS sender numbers are random per init — query
+    them dynamically.
+    """
+    import datetime
+    today = datetime.date.today()
+    yesterday = today - datetime.timedelta(days=1)
+    y_start_ms = int(datetime.datetime(yesterday.year, yesterday.month,
+                                       yesterday.day, 10, 0).timestamp() * 1000)
+    y_end_ms = y_start_ms + 3600000
+    out = step(adb_sh(
+        f"sqlite3 /data/data/com.android.providers.telephony/databases/mmssms.db "
+        f"\"SELECT address FROM sms WHERE date >= {y_start_ms} AND date < {y_end_ms};\""))
+    addrs = [a.strip() for a in out.strip().splitlines() if a.strip()]
+    return ", ".join(addrs)
+
+
+def _solve_cross_app_sms_keyword_to_tasks(step: Callable[[str], str]) -> str:
+    """Task 53: find SMS with 'urgent' in body, create a task for each.
+    Eval checks the tasks DB contains rows with matching titles.
+
+    org.tasks has many NOT NULL columns (importance, dueDate, hideUntil,
+    created, modified, completed, deleted, estimatedSeconds, elapsedSeconds,
+    timerStart, notificationFlags, lastNotified, collapsed, parent) — set
+    them all to 0 / sensible defaults.
+    """
+    out = step(adb_sh(
+        "sqlite3 /data/data/com.android.providers.telephony/databases/mmssms.db "
+        "\"SELECT body FROM sms WHERE body LIKE '%urgent%';\""))
+    bodies = [b.strip() for b in out.strip().splitlines() if b.strip()]
+    cols = ("title, importance, dueDate, hideUntil, created, modified, "
+            "completed, deleted, estimatedSeconds, elapsedSeconds, "
+            "timerStart, notificationFlags, lastNotified, collapsed, parent")
+    for body in bodies:
+        body_sql = body.replace("'", "''")
+        step(adb_sh(
+            f"sqlite3 /data/data/org.tasks/databases/database "
+            f"\"INSERT INTO tasks ({cols}) VALUES "
+            f"('{body_sql}', 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);\""))
+    return f"created {len(bodies)} tasks"
+
+
+def _solve_cross_app_opentracks_to_markor(step: Callable[[str], str]) -> str:
+    """Task 54: fixture deterministic — 3 activities, 20.2 km total.
+    Write weekly_stats.md with the summary."""
+    note_path = f"{_MARKOR_DIR_DEV}/weekly_stats.md"
+    content = "Activities: 3, Total distance: 20.2 km"
+    step(adb_sh(f"mkdir -p {_MARKOR_DIR_DEV}; echo '{content}' > {note_path}"))
+    return content
+
+
+def _solve_cross_app_joplin_to_calendar(step: Callable[[str], str]) -> str:
+    """Task 55: export Joplin notes with 'meeting' in title to Markor as
+    separate notes named <title>.md.
+    """
+    out = step(adb_sh(
+        "sqlite3 /data/data/net.cozic.joplin/databases/joplin.sqlite "
+        "\"SELECT title, body FROM notes WHERE title LIKE '%meeting%';\""))
+    count = 0
+    for line in out.strip().splitlines():
+        if "|" not in line:
+            continue
+        title, body = line.split("|", 1)
+        body_safe = body.replace("'", "")
+        step(adb_sh(
+            f"mkdir -p {_MARKOR_DIR_DEV}; "
+            f"echo '{body_safe}' > {_MARKOR_DIR_DEV}/{title}.md"))
+        count += 1
+    return f"exported {count} notes"
+
+
 def _solve_filter_calendar_weekend_events(step: Callable[[str], str]) -> str:
     """Task 50: events titled tier4cal_wkday_{offset} where today+offset
     is Saturday or Sunday. Query content provider for titles + dtstart,
@@ -849,6 +1040,31 @@ GOLDEN_PATHS: List[GoldenPath] = [
                    "\"DELETE FROM expense WHERE amount < 100;\""),
         ),
     ),
+    # ── D: Cross-app correlation (hybrid: cache_match + state mutation) ──
+    GoldenPath(task_id=2,  task_name="Tier4CrossAppSmsNumbersNotInContacts",
+               category="D", solver=_solve_cross_app_sms_non_contacts,
+               skip_reason="fixture uses adb_utils.text_emulator (telnet "
+                           "console SMS) to seed inbox, which does not "
+                           "land in mmssms.db on this AVD — agent has no "
+                           "SMS data to read"),
+    GoldenPath(task_id=18, task_name="Tier4CrossAppExpenseToMarkorCalendar",
+               category="D", solver=_solve_cross_app_expense_to_markor_calendar),
+    GoldenPath(task_id=25, task_name="Tier4CrossAppBroccoliToMarkorIndex",
+               category="D", solver=_solve_cross_app_broccoli_to_markor),
+    GoldenPath(task_id=26, task_name="Tier4CrossAppMarkorPhonesVsContacts",
+               category="D", solver=_solve_cross_app_markor_phones_vs_contacts),
+    GoldenPath(task_id=33, task_name="Tier4CrossAppCalendarToMarkor",
+               category="D", solver=_solve_cross_app_calendar_to_markor),
+    GoldenPath(task_id=51, task_name="Tier4CrossAppContactsToMarkor",
+               category="D", solver=_solve_cross_app_contacts_to_markor),
+    GoldenPath(task_id=52, task_name="Tier4CrossAppCalendarSmsConflicts",
+               category="D", solver=_solve_cross_app_calendar_sms_conflicts),
+    GoldenPath(task_id=53, task_name="Tier4CrossAppSmsKeywordToTasks",
+               category="D", solver=_solve_cross_app_sms_keyword_to_tasks),
+    GoldenPath(task_id=54, task_name="Tier4CrossAppOpenTracksToMarkor",
+               category="D", solver=_solve_cross_app_opentracks_to_markor),
+    GoldenPath(task_id=55, task_name="Tier4CrossAppJoplinToCalendar",
+               category="D", solver=_solve_cross_app_joplin_to_calendar),
     # ── C: Multi-condition filter / coverage (cache_match) ───────────────
     GoldenPath(task_id=9,  task_name="Tier4FilterContactsBirthdayNoPhone",
                category="C", solver=_solve_filter_contacts_birthday_no_phone),
