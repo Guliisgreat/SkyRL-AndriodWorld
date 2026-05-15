@@ -643,25 +643,25 @@ class Tier4BulkDeleteApkFiles(task_eval.TaskEval):
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
-    # All .apk files should be gone
+    # All .apk files should be gone, non-.apk should remain. We use `find`
+    # instead of `test -f && echo` because `test -f` returns non-zero when
+    # the file is absent — and adb_utils.issue_generic_request raises on
+    # non-zero exit, which is exactly the "success" case we want to detect.
     for name in self._apk_files:
       res = adb_utils.issue_generic_request(
-          ["shell", "test", "-f",
-           f"{device_constants.DOWNLOAD_DATA}/{name}",
-           "&&", "echo", "exists"],
+          ["shell", "find", device_constants.DOWNLOAD_DATA,
+           "-maxdepth", "1", "-name", name],
           env.controller,
       )
-      if "exists" in res.generic.output.decode():
+      if res.generic.output.decode().strip():
         return 0.0
-    # Non-.apk files should still exist
     for name in self._other_files:
       res = adb_utils.issue_generic_request(
-          ["shell", "test", "-f",
-           f"{device_constants.DOWNLOAD_DATA}/{name}",
-           "&&", "echo", "exists"],
+          ["shell", "find", device_constants.DOWNLOAD_DATA,
+           "-maxdepth", "1", "-name", name],
           env.controller,
       )
-      if "exists" not in res.generic.output.decode():
+      if not res.generic.output.decode().strip():
         return 0.0
     return 1.0
 
