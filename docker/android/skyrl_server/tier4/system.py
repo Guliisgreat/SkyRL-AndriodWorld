@@ -195,7 +195,7 @@ class Tier4HiddenStateAudioRouting(task_eval.TaskEval):
     return {}
 
 
-class Tier4CoverageAppsCameraPermission(task_eval.TaskEval):
+class Tier4HiddenStateAppsCameraPermission(task_eval.TaskEval):
   """List all apps granted Camera permission. ADB-exclusive."""
 
   app_names = ("settings",)
@@ -243,99 +243,97 @@ class Tier4CoverageAppsCameraPermission(task_eval.TaskEval):
     return {}
 
 
-class Tier4CoverageWifiConnected(task_eval.TaskEval):
-  """Report WiFi enabled state and connected SSID. ADB-exclusive."""
-
-  app_names = ("settings",)
-  complexity = 1.0
-  schema = {"type": "object", "properties": {}, "required": []}
-  template = (
-      "Is WiFi currently enabled and connected? If so, what SSID is it"
-      " connected to? Output WiFi state (enabled/disabled) and the SSID"
-      " (or 'not connected' if disconnected)."
-  )
-
-  def initialize_task(self, env: interface.AsyncEnv) -> None:
-    super().initialize_task(env)
-    wifi_res = adb_utils.issue_generic_request(
-        ["shell", "settings", "get", "global", "wifi_on"], env.controller
-    )
-    wifi_on = wifi_res.generic.output.decode().strip() == "1"
-    self._wifi_enabled: bool = wifi_on
-    ssid = "not connected"
-    if wifi_on:
-      dump_res = adb_utils.issue_generic_request(
-          ["shell", "dumpsys", "wifi"], env.controller
-      )
-      dump_out = dump_res.generic.output.decode()
-      m = re.search(r'SSID[=:]\s*"?([^",\n]+)"?', dump_out)
-      if m:
-        ssid = m.group(1).strip()
-    self._ground_truth_ssid: str = ssid
-
-  def tear_down(self, env: interface.AsyncEnv) -> None:
-    super().tear_down(env)
-
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    super().is_successful(env)
-    cache = (getattr(env, "interaction_cache", "") or "").lower()
-    state_word = "enabled" if self._wifi_enabled else "disabled"
-    if state_word not in cache:
-      return 0.0
-    if self._ground_truth_ssid.lower() not in cache:
-      if self._ground_truth_ssid != "not connected" or "not connected" not in cache:
-        return 0.0
-    return 1.0
-
-  @classmethod
-  def generate_random_params(cls) -> dict[str, Any]:
-    return {}
-
-
-# ── tier4_extra ──────────────────────────────────────────────────────────
+# [EXCLUDED] Removed from Tier 4 benchmark — not registered.
+# class Tier4CoverageWifiConnected(task_eval.TaskEval):
+#   """Report WiFi enabled state and connected SSID. ADB-exclusive."""
+#
+#   app_names = ("settings",)
+#   complexity = 1.0
+#   schema = {"type": "object", "properties": {}, "required": []}
+#   template = (
+#       "Is WiFi currently enabled and connected? If so, what SSID is it"
+#       " connected to? Output WiFi state (enabled/disabled) and the SSID"
+#       " (or 'not connected' if disconnected)."
+#   )
+#
+#   def initialize_task(self, env: interface.AsyncEnv) -> None:
+#     super().initialize_task(env)
+#     wifi_res = adb_utils.issue_generic_request(
+#         ["shell", "settings", "get", "global", "wifi_on"], env.controller
+#     )
+#     wifi_on = wifi_res.generic.output.decode().strip() == "1"
+#     self._wifi_enabled: bool = wifi_on
+#     ssid = "not connected"
+#     if wifi_on:
+#       dump_res = adb_utils.issue_generic_request(
+#           ["shell", "dumpsys", "wifi"], env.controller
+#       )
+#       dump_out = dump_res.generic.output.decode()
+#       m = re.search(r'SSID[=:]\s*"?([^",\n]+)"?', dump_out)
+#       if m:
+#         ssid = m.group(1).strip()
+#     self._ground_truth_ssid: str = ssid
+#
+#   def tear_down(self, env: interface.AsyncEnv) -> None:
+#     super().tear_down(env)
+#
+#   def is_successful(self, env: interface.AsyncEnv) -> float:
+#     super().is_successful(env)
+#     cache = (getattr(env, "interaction_cache", "") or "").lower()
+#     state_word = "enabled" if self._wifi_enabled else "disabled"
+#     if state_word not in cache:
+#       return 0.0
+#     if self._ground_truth_ssid.lower() not in cache:
+#       if self._ground_truth_ssid != "not connected" or "not connected" not in cache:
+#         return 0.0
+#     return 1.0
+#
+#   @classmethod
+#   def generate_random_params(cls) -> dict[str, Any]:
+#     return {}
 
 
-class Tier4ExtraHiddenStateRemainingStorage(task_eval.TaskEval):
-  """Report remaining storage space on /data. ADB-exclusive (df)."""
+
+
+class Tier4HiddenStatePhoneTemperature(task_eval.TaskEval):
+  """Report phone temperature from dumpsys battery. ADB-exclusive."""
 
   app_names = ("settings",)
   complexity = 1.2
   schema = {"type": "object", "properties": {}, "required": []}
   template = (
-      "How much free storage space is remaining on the device (internal"
-      " storage)? Output the amount in GB (rounded to 1 decimal place)."
+      "What is my phone's current temperature? Is it overheating?"
   )
 
   def initialize_task(self, env: interface.AsyncEnv) -> None:
     super().initialize_task(env)
     res = adb_utils.issue_generic_request(
-        ["shell", "df", "/data"], env.controller
+        ["shell", "dumpsys", "battery"], env.controller
     )
     output = res.generic.output.decode()
-    # df output: Filesystem  1K-blocks  Used  Available  Use%  Mounted on
-    lines = [l for l in output.strip().split("\n") if "/data" in l]
-    if lines:
-      parts = lines[0].split()
-      # Available is typically the 4th column (index 3) in 1K-blocks
-      try:
-        avail_kb = int(parts[3])
-        self._ground_truth_gb: float = round(avail_kb / (1024 * 1024), 1)
-      except (IndexError, ValueError):
-        self._ground_truth_gb = 0.0
+    # Parse "temperature: <value>" (in tenths of degrees Celsius)
+    m = re.search(r"temperature:\s*(\d+)", output)
+    if m:
+      self._ground_truth_tenths: int = int(m.group(1))
+      self._ground_truth_celsius: float = self._ground_truth_tenths / 10.0
     else:
-      self._ground_truth_gb = 0.0
+      self._ground_truth_tenths = 0
+      self._ground_truth_celsius = 0.0
 
   def tear_down(self, env: interface.AsyncEnv) -> None:
     super().tear_down(env)
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
+    if self._ground_truth_celsius == 0.0:
+      return 0.0
     cache = (getattr(env, "interaction_cache", "") or "").lower()
-    # Check for the GB number with tolerance ±0.5 GB
+    # Accept temperature in Celsius with ±2°C tolerance
     numbers = re.findall(r"\b\d+\.?\d*\b", cache)
     for n in numbers:
       try:
-        if abs(float(n) - self._ground_truth_gb) <= 0.5:
+        val = float(n)
+        if abs(val - self._ground_truth_celsius) <= 2.0:
           return 1.0
       except ValueError:
         continue
@@ -346,14 +344,10 @@ class Tier4ExtraHiddenStateRemainingStorage(task_eval.TaskEval):
     return {}
 
 
-# Backward-compatible alias for old class name
-Tier4ExtraHiddenStateBatteryHealth = Tier4ExtraHiddenStateRemainingStorage
 
 
-# ── tier4_extra ──
 
-
-class Tier4ExtraHiddenStateRecentInstalls(task_eval.TaskEval):
+class Tier4HiddenStateRecentInstalls(task_eval.TaskEval):
   """List the 3 most recently installed apps. ADB-exclusive (dumpsys package)."""
 
   app_names = ("settings",)
@@ -401,10 +395,9 @@ class Tier4ExtraHiddenStateRecentInstalls(task_eval.TaskEval):
     return {}
 
 
-# ── tier4_extra ──
 
 
-class Tier4ExtraHiddenStateUptime(task_eval.TaskEval):
+class Tier4HiddenStateUptime(task_eval.TaskEval):
   """Report device uptime in hours and minutes. ADB-exclusive (/proc/uptime)."""
 
   app_names = ("settings",)
@@ -446,188 +439,177 @@ class Tier4ExtraHiddenStateUptime(task_eval.TaskEval):
     return {}
 
 
-# ── tier4_extra ──
 
 
-class Tier4ExtraHiddenStateBatteryDrain(task_eval.TaskEval):
-  """Report the app that consumed the most battery. ADB-exclusive (dumpsys)."""
-
-  app_names = ("settings",)
-  complexity = 1.5
-  schema = {"type": "object", "properties": {}, "required": []}
-  template = (
-      "Which app has consumed the most battery since last full charge?"
-      " Output the app package name and its estimated battery usage"
-      " percentage."
-  )
-
-  def initialize_task(self, env: interface.AsyncEnv) -> None:
-    super().initialize_task(env)
-    res = adb_utils.issue_generic_request(
-        ["shell", "dumpsys", "batterystats"], env.controller
-    )
-    output = res.generic.output.decode()
-    # Parse "Uid <uid> <pkg>: <pct>" from Estimated power use section
-    pkg_pcts: list[tuple[str, float]] = []
-    in_section = False
-    for line in output.split("\n"):
-      if "Estimated power use" in line:
-        in_section = True
-        continue
-      if in_section:
-        if line.strip() == "" or line.startswith("  ") is False:
-          if pkg_pcts:
-            break
-        # Match lines like "    Uid 10123: 15.2 ( cpu=10.1 ... )"
-        m = re.search(r"Uid\s+\S+:\s+(\d+\.?\d*)", line)
-        if m:
-          pct = float(m.group(1))
-          # Try to get package name from same line or uid mapping
-          pkg_m = re.search(r"Uid\s+(\S+):", line)
-          if pkg_m:
-            uid_str = pkg_m.group(1)
-            pkg_pcts.append((uid_str, pct))
-    # Also try the simpler per-app format
-    if not pkg_pcts:
-      for line in output.split("\n"):
-        m = re.search(r"^\s+Uid\s+(\S+):\s+(\d+\.?\d*)", line)
-        if m:
-          pkg_pcts.append((m.group(1), float(m.group(2))))
-    if pkg_pcts:
-      pkg_pcts.sort(key=lambda x: x[1], reverse=True)
-      self._ground_truth_pkg: str = pkg_pcts[0][0]
-      self._ground_truth_pct: float = pkg_pcts[0][1]
-    else:
-      self._ground_truth_pkg = ""
-      self._ground_truth_pct = 0.0
-
-  def tear_down(self, env: interface.AsyncEnv) -> None:
-    super().tear_down(env)
-
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    super().is_successful(env)
-    if not self._ground_truth_pkg:
-      return 0.0
-    cache = (getattr(env, "interaction_cache", "") or "").lower()
-    # Check the package name (or last segment) appears
-    pkg_lower = self._ground_truth_pkg.lower()
-    if pkg_lower not in cache:
-      last_seg = pkg_lower.split(".")[-1] if "." in pkg_lower else pkg_lower
-      if last_seg not in cache:
-        return 0.0
-    # Check the percentage is approximately correct (±2%)
-    numbers = re.findall(r"\b\d+\.?\d*\b", cache)
-    for n in numbers:
-      try:
-        if abs(float(n) - self._ground_truth_pct) <= 2.0:
-          return 1.0
-      except ValueError:
-        continue
-    # If the package is found, accept even without exact percentage
-    return 0.5
-
-  @classmethod
-  def generate_random_params(cls) -> dict[str, Any]:
-    return {}
-
-
-# Backward-compatible alias for old class name
-Tier4ExtraHiddenStateDisabledApps = Tier4ExtraHiddenStateBatteryDrain
-
-
-# ── tier4_extra ──
-
-
-class Tier4ExtraHiddenStateMobileDataUsage(task_eval.TaskEval):
-  """Report which app used the most mobile data. ADB-exclusive (netstats)."""
+class Tier4HiddenStateBackgroundLocationApps(task_eval.TaskEval):
+  """Report apps that accessed location in background. ADB-exclusive (appops)."""
 
   app_names = ("settings",)
   complexity = 1.5
   schema = {"type": "object", "properties": {}, "required": []}
   template = (
-      "Which app has used the most mobile data (cellular data) on the device?"
-      " Output the app package name and approximate data usage in MB."
+      "Which apps have recently accessed my location in the background?"
   )
+
+  # Packages we inject background-location-access records for.
+  # These must be packages that exist on the emulator.
+  _INJECT_PKGS = [
+      "com.google.android.gms",
+      "com.android.providers.telephony",
+  ]
 
   def initialize_task(self, env: interface.AsyncEnv) -> None:
     super().initialize_task(env)
-    # Get per-uid mobile data usage
-    res = adb_utils.issue_generic_request(
-        ["shell", "dumpsys", "netstats", "detail"], env.controller
-    )
-    output = res.generic.output.decode()
-    # Parse uid-level rx/tx bytes from the mobile (ident) section
-    uid_bytes: dict[str, int] = {}
-    current_uid = ""
-    in_mobile = False
-    for line in output.split("\n"):
-      # Look for mobile interface section
-      if "iface=" in line and ("rmnet" in line or "ccmni" in line or "mobile" in line.lower()):
-        in_mobile = True
-        uid_m = re.search(r"uid=(\d+)", line)
-        if uid_m:
-          current_uid = uid_m.group(1)
-      elif "iface=" in line:
-        in_mobile = False
-        current_uid = ""
-      if in_mobile and current_uid:
-        rx_m = re.search(r"rxBytes=(\d+)", line)
-        tx_m = re.search(r"txBytes=(\d+)", line)
-        total = 0
-        if rx_m:
-          total += int(rx_m.group(1))
-        if tx_m:
-          total += int(tx_m.group(1))
-        if total > 0:
-          uid_bytes[current_uid] = uid_bytes.get(current_uid, 0) + total
-    # Map UID to package name
-    best_uid = ""
-    best_bytes = 0
-    for uid, total in uid_bytes.items():
-      if total > best_bytes:
-        best_bytes = total
-        best_uid = uid
-    if best_uid:
-      pkg_res = adb_utils.issue_generic_request(
-          ["shell", "pm", "list", "packages", "--uid", best_uid],
+    import time
+    # Inject background location access via appops.
+    # `appops set` allows the op, `appops note` creates a timestamped record.
+    # On emulator, adb runs as root so these commands succeed.
+    for pkg in self._INJECT_PKGS:
+      adb_utils.issue_generic_request(
+          ["shell", "appops", "set", pkg, "coarse_location", "allow"],
           env.controller,
       )
-      pkg_out = pkg_res.generic.output.decode().strip()
-      m = re.search(r"package:(\S+)", pkg_out)
-      self._ground_truth_pkg: str = m.group(1) if m else best_uid
-      self._ground_truth_mb: float = round(best_bytes / (1024 * 1024), 1)
-    else:
-      self._ground_truth_pkg = ""
-      self._ground_truth_mb = 0.0
+      adb_utils.issue_generic_request(
+          ["shell", "appops", "note", pkg, "coarse_location"],
+          env.controller,
+      )
+    time.sleep(1)
+
+    # Read back to confirm and build ground truth
+    res = adb_utils.issue_generic_request(
+        ["shell", "dumpsys", "appops"], env.controller
+    )
+    output = res.generic.output.decode()
+    self._ground_truth_pkgs: list[str] = list(self._INJECT_PKGS)
+    # Also pick up any other packages with location access
+    current_pkg = ""
+    for line in output.split("\n"):
+      pkg_m = re.search(r"Package\s+(\S+):", line)
+      if pkg_m:
+        current_pkg = pkg_m.group(1)
+        continue
+      if current_pkg and current_pkg not in self._ground_truth_pkgs:
+        if ("coarse_location" in line.lower()
+            or "fine_location" in line.lower()):
+          if "time=" in line or "Access:" in line:
+            self._ground_truth_pkgs.append(current_pkg)
 
   def tear_down(self, env: interface.AsyncEnv) -> None:
+    for pkg in self._INJECT_PKGS:
+      adb_utils.issue_generic_request(
+          ["shell", "appops", "set", pkg, "coarse_location", "default"],
+          env.controller,
+      )
     super().tear_down(env)
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
-    if not self._ground_truth_pkg:
+    if not self._ground_truth_pkgs:
       return 0.0
     cache = (getattr(env, "interaction_cache", "") or "").lower()
-    pkg_lower = self._ground_truth_pkg.lower()
-    if pkg_lower not in cache:
-      last_seg = pkg_lower.split(".")[-1] if "." in pkg_lower else pkg_lower
-      if last_seg not in cache:
-        return 0.0
-    # Check MB within tolerance ±5 MB
-    numbers = re.findall(r"\b\d+\.?\d*\b", cache)
-    for n in numbers:
-      try:
-        if abs(float(n) - self._ground_truth_mb) <= 5.0:
-          return 1.0
-      except ValueError:
-        continue
-    # Package found but no matching MB — partial credit
-    return 0.5
+    # Check how many injected packages the agent found
+    # We only require the injected ones (deterministic) to be found
+    found = 0
+    for pkg in self._INJECT_PKGS:
+      pkg_lower = pkg.lower()
+      if pkg_lower in cache:
+        found += 1
+      else:
+        # Accept last segment match (e.g. "gms", "telephony")
+        last_seg = pkg_lower.split(".")[-1]
+        if last_seg in cache:
+          found += 1
+    # Require at least 1 of the injected packages to be mentioned
+    return 1.0 if found >= 1 else 0.0
 
   @classmethod
   def generate_random_params(cls) -> dict[str, Any]:
     return {}
 
 
-# Backward-compatible alias for old class name
-Tier4ExtraHiddenStateAppStorageUsage = Tier4ExtraHiddenStateMobileDataUsage
+
+
+
+class Tier4HiddenStateSignalStrength(task_eval.TaskEval):
+  """Report current network signal strength in dBm. ADB-exclusive."""
+
+  app_names = ("settings",)
+  complexity = 1.2
+  schema = {"type": "object", "properties": {}, "required": []}
+  template = (
+      "What is my current network signal strength in dBm?"
+  )
+
+  # Default signal level to inject if emulator has no real signal
+  _MOCK_SIGNAL_LEVEL = 3  # 0-4 scale; maps to ~-85 dBm in emulator
+
+  def initialize_task(self, env: interface.AsyncEnv) -> None:
+    super().initialize_task(env)
+    # Ensure emulator has a simulated signal by setting gsm signal strength
+    # This uses the emulator console command via 'cmd phone' or direct property
+    adb_utils.issue_generic_request(
+        ["shell", "cmd", "phone", "set-signal-strength",
+         "-l", str(self._MOCK_SIGNAL_LEVEL)],
+        env.controller,
+    )
+    import time
+    time.sleep(1)
+
+    # Now read the actual signal strength
+    res = adb_utils.issue_generic_request(
+        ["shell", "dumpsys", "telephony.registry"], env.controller
+    )
+    output = res.generic.output.decode()
+    self._ground_truth_dbm: int = 0
+    # Try rsrp (LTE)
+    m = re.search(r"rsrp\s*=\s*(-?\d+)", output)
+    if m:
+      val = int(m.group(1))
+      if -140 <= val <= -40:
+        self._ground_truth_dbm = val
+    # Fall back to ss (signal strength)
+    if self._ground_truth_dbm == 0:
+      m = re.search(r"\bss\s*=\s*(-?\d+)", output)
+      if m:
+        val = int(m.group(1))
+        if -120 <= val <= -20:
+          self._ground_truth_dbm = val
+    # Fall back to mSignalStrength raw value
+    if self._ground_truth_dbm == 0:
+      m = re.search(r"mSignalStrength\s*=\s*(-?\d+)", output)
+      if m:
+        self._ground_truth_dbm = int(m.group(1))
+    # Final fallback: use a known mock value that the signal level maps to
+    if self._ground_truth_dbm == 0:
+      # Level 3 typically maps to ~-85 dBm on Android emulator
+      self._ground_truth_dbm = -85
+
+  def tear_down(self, env: interface.AsyncEnv) -> None:
+    # Reset signal to default (level 4 = full)
+    adb_utils.issue_generic_request(
+        ["shell", "cmd", "phone", "set-signal-strength", "-l", "4"],
+        env.controller,
+    )
+    super().tear_down(env)
+
+  def is_successful(self, env: interface.AsyncEnv) -> float:
+    super().is_successful(env)
+    if self._ground_truth_dbm == 0:
+      return 0.0
+    cache = (getattr(env, "interaction_cache", "") or "")
+    # Look for negative dBm values in output
+    numbers = re.findall(r"-?\d+", cache)
+    for n in numbers:
+      try:
+        val = int(n)
+        # Accept within ±5 dBm (signal can fluctuate slightly)
+        if abs(val - self._ground_truth_dbm) <= 5:
+          return 1.0
+      except ValueError:
+        continue
+    return 0.0
+
+  @classmethod
+  def generate_random_params(cls) -> dict[str, Any]:
+    return {}
+

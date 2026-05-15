@@ -113,59 +113,60 @@ def _insert_sms_inbox(
 
 # ── Task classes ───────────────────────────────────────────────────────
 
-class Tier4CrossAppContactsNoRecentSms(task_eval.TaskEval):
-  """List contacts with email but no SMS in last 6 months. ADB-exclusive."""
-
-  app_names = ("contacts", "simple sms messenger")
-  complexity = 2.0
-  schema = {"type": "object", "properties": {}, "required": []}
-  template = (
-      "List all contacts that have an email address but have NOT received any"
-      " SMS from them in the last 6 months. Output the contact names."
-  )
-
-  def initialize_task(self, env: interface.AsyncEnv) -> None:
-    super().initialize_task(env)
-    adb_utils.delete_contacts(env.controller)
-    sms_validators.clear_sms_and_threads(env.controller)
-    time.sleep(2)
-
-    now_ms = int(time.time() * 1000)
-    # 2 contacts with email + recent SMS (should NOT appear in output)
-    self._sms_contacts: list[str] = []
-    for i in range(2):
-      name = f"ContactSms{i}"
-      phone = user_data_generation.generate_random_number()
-      _add_contact_with_email(name, phone, f"sms{i}@test.com", env)
-      _insert_sms_inbox(phone, "hello", now_ms, env)
-      self._sms_contacts.append(name)
-
-    # 2 contacts with email + NO SMS (should appear in output)
-    self._ground_truth: list[str] = []
-    for i in range(2):
-      name = f"ContactNoSms{i}"
-      phone = user_data_generation.generate_random_number()
-      _add_contact_with_email(name, phone, f"nosms{i}@test.com", env)
-      self._ground_truth.append(name)
-
-  def tear_down(self, env: interface.AsyncEnv) -> None:
-    adb_utils.delete_contacts(env.controller)
-    sms_validators.clear_sms_and_threads(env.controller)
-    super().tear_down(env)
-
-  def is_successful(self, env: interface.AsyncEnv) -> float:
-    super().is_successful(env)
-    if not self._ground_truth:
-      return 0.0
-    cache = getattr(env, "interaction_cache", "") or ""
-    for name in self._ground_truth:
-      if name not in cache:
-        return 0.0
-    return 1.0
-
-  @classmethod
-  def generate_random_params(cls) -> dict[str, Any]:
-    return {}
+# [EXCLUDED] Removed from Tier 4 benchmark — not registered.
+# class Tier4CrossAppContactsNoRecentSms(task_eval.TaskEval):
+#   """List contacts with email but no SMS in last 6 months. ADB-exclusive."""
+#
+#   app_names = ("contacts", "simple sms messenger")
+#   complexity = 2.0
+#   schema = {"type": "object", "properties": {}, "required": []}
+#   template = (
+#       "List all contacts that have an email address but have NOT received any"
+#       " SMS from them in the last 6 months. Output the contact names."
+#   )
+#
+#   def initialize_task(self, env: interface.AsyncEnv) -> None:
+#     super().initialize_task(env)
+#     adb_utils.delete_contacts(env.controller)
+#     sms_validators.clear_sms_and_threads(env.controller)
+#     time.sleep(2)
+#
+#     now_ms = int(time.time() * 1000)
+#     # 2 contacts with email + recent SMS (should NOT appear in output)
+#     self._sms_contacts: list[str] = []
+#     for i in range(2):
+#       name = f"ContactSms{i}"
+#       phone = user_data_generation.generate_random_number()
+#       _add_contact_with_email(name, phone, f"sms{i}@test.com", env)
+#       _insert_sms_inbox(phone, "hello", now_ms, env)
+#       self._sms_contacts.append(name)
+#
+#     # 2 contacts with email + NO SMS (should appear in output)
+#     self._ground_truth: list[str] = []
+#     for i in range(2):
+#       name = f"ContactNoSms{i}"
+#       phone = user_data_generation.generate_random_number()
+#       _add_contact_with_email(name, phone, f"nosms{i}@test.com", env)
+#       self._ground_truth.append(name)
+#
+#   def tear_down(self, env: interface.AsyncEnv) -> None:
+#     adb_utils.delete_contacts(env.controller)
+#     sms_validators.clear_sms_and_threads(env.controller)
+#     super().tear_down(env)
+#
+#   def is_successful(self, env: interface.AsyncEnv) -> float:
+#     super().is_successful(env)
+#     if not self._ground_truth:
+#       return 0.0
+#     cache = getattr(env, "interaction_cache", "") or ""
+#     for name in self._ground_truth:
+#       if name not in cache:
+#         return 0.0
+#     return 1.0
+#
+#   @classmethod
+#   def generate_random_params(cls) -> dict[str, Any]:
+#     return {}
 
 
 class Tier4FilterContactsBirthdayNoPhone(task_eval.TaskEval):
@@ -226,39 +227,52 @@ class Tier4FilterContactsBirthdayNoPhone(task_eval.TaskEval):
     return {}
 
 
-class Tier4AggregationLongestContactName(task_eval.TaskEval):
-  """What is the longest contact name? ADB-exclusive."""
+class Tier4FilterContactsNoFamilyName(task_eval.TaskEval):
+  """List contacts with phone but no family name (first name only). ADB-exclusive."""
 
   app_names = ("contacts",)
-  complexity = 1.2
+  complexity = 1.5
   schema = {"type": "object", "properties": {}, "required": []}
   template = (
-      "What is the longest contact name in your contacts? Output the full name."
+      "List all contacts that have a phone number but no family name"
+      " (first name only)."
   )
 
-  _NAMES = [
-      "Al",
-      "Bob Smith",
-      "Catherine Williams",
-      "Dr. Alexandra Montgomery-Harper",
-      "Eve",
-      "Fernando Castillo-Reyes",
+  # Contacts: (display_name, given_name, family_name, has_phone)
+  _CONTACTS = [
+      ("Alice", "Alice", "", True),         # first-only + phone → MATCH
+      ("Bob Smith", "Bob", "Smith", True),   # has family name → NO
+      ("Charlie", "Charlie", "", True),      # first-only + phone → MATCH
+      ("Diana Prince", "Diana", "Prince", True),  # has family → NO
+      ("Eve", "Eve", "", False),             # first-only but NO phone → NO
+      ("Frank", "Frank", "", True),          # first-only + phone → MATCH
   ]
 
   def initialize_task(self, env: interface.AsyncEnv) -> None:
     super().initialize_task(env)
     adb_utils.delete_contacts(env.controller)
     time.sleep(2)
-    names = list(self._NAMES)
-    random.shuffle(names)
-    for name in names:
-      contacts_utils.add_contact(
-          name,
-          user_data_generation.generate_random_number(),
-          env.controller,
+    self._ground_truth: list[str] = []
+    for display, given, family, has_phone in self._CONTACTS:
+      raw_id = _insert_raw_contact(env)
+      if not raw_id:
+        continue
+      # Insert structured name with given/family
+      binds = ["--bind", f"data2:s:{given}"]
+      if family:
+        binds.extend(["--bind", f"data3:s:{family}"])
+      _insert_contact_data(
+          raw_id, "vnd.android.cursor.item/name", display, env,
+          extra_binds=binds,
       )
+      if has_phone:
+        phone = user_data_generation.generate_random_number()
+        _insert_contact_data(
+            raw_id, "vnd.android.cursor.item/phone_v2", phone, env,
+        )
       time.sleep(0.5)
-    self._ground_truth: str = max(names, key=len)
+      if has_phone and not family:
+        self._ground_truth.append(display)
 
   def tear_down(self, env: interface.AsyncEnv) -> None:
     adb_utils.delete_contacts(env.controller)
@@ -267,14 +281,23 @@ class Tier4AggregationLongestContactName(task_eval.TaskEval):
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
     cache = getattr(env, "interaction_cache", "") or ""
-    return 1.0 if self._ground_truth in cache else 0.0
+    if not self._ground_truth:
+      return 0.0
+    for name in self._ground_truth:
+      if name not in cache:
+        return 0.0
+    # Make sure contacts WITH family name are not listed
+    for display, _, family, _ in self._CONTACTS:
+      if family and display in cache:
+        return 0.0
+    return 1.0
 
   @classmethod
   def generate_random_params(cls) -> dict[str, Any]:
     return {}
 
 
-class Tier4DedupContactsDuplicatePhones(task_eval.TaskEval):
+class Tier4AggregationContactsDuplicatePhones(task_eval.TaskEval):
   """List groups of contacts sharing the same phone number. ADB-exclusive."""
 
   app_names = ("contacts",)
