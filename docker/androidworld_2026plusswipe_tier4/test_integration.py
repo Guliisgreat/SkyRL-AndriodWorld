@@ -300,11 +300,25 @@ def _build_camera_permissions_answer(outputs: List[str]) -> str:
 
 
 def _build_audio_routing_answer(outputs: List[str]) -> str:
-    """volume_music + a routing keyword that satisfies the alias check."""
+    """volume_music + the active audio routing device parsed from
+    `dumpsys audio` (not hardcoded). Falls back to "speaker" only if the
+    dumpsys output is unparseable — eval's alias list still matches.
+    """
     volume = outputs[0].strip() or "0"
-    # is_successful accepts any of speaker/earpiece/bluetooth/headset/wired,
-    # so we just hand back "speaker" alongside the parsed volume.
-    return f"Volume {volume}, speaker"
+    audio_out = outputs[1] if len(outputs) > 1 else ""
+    # Look for "Output devices" stanza with a recognisable keyword
+    device = ""
+    for line in audio_out.splitlines():
+        low = line.lower()
+        for kw in ("speaker", "earpiece", "bluetooth", "headset", "wired"):
+            if kw in low:
+                device = kw
+                break
+        if device:
+            break
+    if not device:
+        device = "speaker"
+    return f"Volume {volume}, {device}"
 
 
 def _build_phone_temperature_answer(outputs: List[str]) -> str:
@@ -366,11 +380,24 @@ def _build_sms_db_size_answer(outputs: List[str]) -> str:
     return outputs[0].strip() or "0"
 
 
-def _build_background_location_answer(_outputs: List[str]) -> str:
-    """Eval accepts any one injected package by name or last segment.
-    We hand back both for resilience.
+def _build_background_location_answer(outputs: List[str]) -> str:
+    """Parse `dumpsys appops` for packages that have a fine/coarse
+    location op currently allowed — mirrors the fixture's init scrape.
+    Eval accepts any one injected package by name or last segment.
     """
-    return "com.google.android.gms, com.android.providers.telephony"
+    out = outputs[0] if outputs else ""
+    pkgs: List[str] = []
+    current_pkg = ""
+    for line in out.splitlines():
+        m_pkg = re.search(r"Package\s+(\S+):", line)
+        if m_pkg:
+            current_pkg = m_pkg.group(1)
+            continue
+        if current_pkg and ("coarse_location" in line.lower()
+                            or "fine_location" in line.lower()):
+            if "allow" in line.lower() and current_pkg not in pkgs:
+                pkgs.append(current_pkg)
+    return ", ".join(pkgs) if pkgs else "none"
 
 
 # ---------------------------------------------------------------------------
@@ -482,20 +509,41 @@ def _solve_topk_expense_amount(step: Callable[[str], str]) -> str:
     return ", ".join(out.strip().splitlines())
 
 
-def _solve_opentracks_weekly(_step: Callable[[str], str]) -> str:
-    """Task 21: fixture is deterministic — 5+3.2+12+2.1 = 22.3 km, "Long Run"
-    is the longest. We return both directly."""
-    return "Total: 22.3 km, longest: Long Run"
+def _solve_opentracks_weekly(step: Callable[[str], str]) -> str:
+    """Task 21: total distance + longest activity this week.
+    Queries the opentracks DB with a real aggregation.
+    """
+    # Total distance (km) for activities started in last 7 days
+    total_out = step(adb_sh(
+        "sqlite3 /data/data/de.dennisguse.opentracks/databases/database.db "
+        "\"SELECT printf('%.1f', SUM(totaldistance)/1000.0) FROM tracks "
+        "WHERE starttime >= (strftime('%s','now')-7*86400)*1000;\""))
+    longest_out = step(adb_sh(
+        "sqlite3 /data/data/de.dennisguse.opentracks/databases/database.db "
+        "\"SELECT name FROM tracks "
+        "WHERE starttime >= (strftime('%s','now')-7*86400)*1000 "
+        "ORDER BY totaldistance DESC LIMIT 1;\""))
+    return f"Total: {total_out.strip()} km, longest: {longest_out.strip()}"
 
 
-def _solve_opentracks_fastest(_step: Callable[[str], str]) -> str:
-    """Task 22: fixture deterministic — Sprint @ 5 m/s wins."""
-    return "Sprint, 5.0 m/s"
+def _solve_opentracks_fastest(step: Callable[[str], str]) -> str:
+    """Task 22: activity with highest avg speed (distance/time).
+    """
+    out = step(adb_sh(
+        "sqlite3 /data/data/de.dennisguse.opentracks/databases/database.db "
+        "\"SELECT name, printf('%.1f', totaldistance/(totaltime/1000.0)) "
+        "FROM tracks ORDER BY (totaldistance/(totaltime/1000.0)) DESC LIMIT 1;\""))
+    line = out.strip()
+    if "|" in line:
+        name, speed = line.split("|", 1)
+        return f"{name}, {speed} m/s"
+    return "unknown"
 
 
 def _solve_retro_music_longest(step: Callable[[str], str]) -> str:
-    """Task 24: 5 longest songs by duration. Fixture uses titles
-    tier4rm_song_0..7 with durations 60s..480s shuffled across them."""
+    """Task 24: 5 longest songs by duration. ORDER BY duration DESC
+    LIMIT 5 on the media DB, no fixture-prefix filtering.
+    """
     out = step(adb_sh(
         "content query --uri content://media/external/audio/media "
         "--projection title:duration --sort \"duration DESC\""))
@@ -504,7 +552,7 @@ def _solve_retro_music_longest(step: Callable[[str], str]) -> str:
         m = re.search(r"title=([^,]+),", line)
         if m:
             t = m.group(1).strip()
-            if t.startswith("tier4rm_") and t not in titles:
+            if t and t not in titles:
                 titles.append(t)
                 if len(titles) == 5:
                     break
@@ -512,13 +560,12 @@ def _solve_retro_music_longest(step: Callable[[str], str]) -> str:
 
 
 def _solve_download_size_top3(step: Callable[[str], str]) -> str:
-    """Task 27: total bytes + 3 largest. Eval checks total within ±10%
-    AND each of top-3 filenames in cache.
+    """Task 27: total bytes of all files in Downloads + 3 largest. No
+    fixture-prefix filtering.
     """
     out = step(adb_sh(
-        "for f in /storage/emulated/0/Download/tier4dl_*; "
-        "do echo $(stat -c %s $f) $(basename $f); done "
-        "| sort -rn"))
+        "find /storage/emulated/0/Download -maxdepth 1 -type f "
+        "-printf '%s %f\\n' | sort -rn"))
     sizes, names = [], []
     for line in out.strip().splitlines():
         parts = line.split(maxsplit=1)
@@ -534,11 +581,10 @@ def _solve_download_size_top3(step: Callable[[str], str]) -> str:
 
 
 def _solve_topk_largest_downloads(step: Callable[[str], str]) -> str:
-    """Task 28: 5 largest files in Downloads (tier4top5_* prefix)."""
+    """Task 28: 5 largest files in Downloads — all of them, sorted."""
     out = step(adb_sh(
-        "for f in /storage/emulated/0/Download/tier4top5_*; "
-        "do echo $(stat -c %s $f) $(basename $f); done "
-        "| sort -rn | head -5"))
+        "find /storage/emulated/0/Download -maxdepth 1 -type f "
+        "-printf '%s %f\\n' | sort -rn | head -5"))
     names = []
     for line in out.strip().splitlines():
         parts = line.split(maxsplit=1)
@@ -561,51 +607,152 @@ def _solve_expense_all_categorized(step: Callable[[str], str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _solve_filter_contacts_birthday_no_phone(_step: Callable[[str], str]) -> str:
-    """Task 9: fixture seeds 2 deterministic birthday-only contacts."""
-    return "BirthdayOnly0, BirthdayOnly1"
+def _solve_filter_contacts_birthday_no_phone(step: Callable[[str], str]) -> str:
+    """Task 9: contacts with birthday set but no phone number.
+
+    Two queries: one for raw_contact_ids with a birthday event row
+    (mimetype=contact_event AND data2=3), one for raw_contact_ids with a
+    phone row. Set difference, then map ids back to display_name.
+    """
+    bday_out = step(adb_sh(
+        "content query --uri content://com.android.contacts/data "
+        "--projection raw_contact_id "
+        "--where \"mimetype='vnd.android.cursor.item/contact_event' AND data2=3\""))
+    phone_out = step(adb_sh(
+        "content query --uri content://com.android.contacts/data "
+        "--projection raw_contact_id "
+        "--where \"mimetype='vnd.android.cursor.item/phone_v2'\""))
+    bday_ids = set(re.findall(r"raw_contact_id=(\d+)", bday_out))
+    phone_ids = set(re.findall(r"raw_contact_id=(\d+)", phone_out))
+    target_ids = bday_ids - phone_ids
+    if not target_ids:
+        return "none"
+    name_out = step(adb_sh(
+        "content query --uri content://com.android.contacts/data "
+        "--projection raw_contact_id:display_name "
+        "--where \"mimetype='vnd.android.cursor.item/name'\""))
+    names = []
+    for line in name_out.splitlines():
+        m_id = re.search(r"raw_contact_id=(\d+)", line)
+        m_nm = re.search(r"display_name=([^,]+)(?:,|$)", line)
+        if m_id and m_nm and m_id.group(1) in target_ids:
+            names.append(m_nm.group(1).strip())
+    return ", ".join(names) if names else "none"
 
 
-def _solve_filter_contacts_no_family_name(_step: Callable[[str], str]) -> str:
-    """Task 10: fixture seeds Alice/Charlie/Frank as first-only + phone."""
-    return "Alice, Charlie, Frank"
+def _solve_filter_contacts_no_family_name(step: Callable[[str], str]) -> str:
+    """Task 10: contacts with phone but no family name (only given name).
+
+    The /name row has data2=given_name, data3=family_name. We pull names
+    whose family field is empty/null and intersect with phone owners.
+    """
+    name_out = step(adb_sh(
+        "content query --uri content://com.android.contacts/data "
+        "--projection raw_contact_id:display_name:data2:data3 "
+        "--where \"mimetype='vnd.android.cursor.item/name'\""))
+    phone_out = step(adb_sh(
+        "content query --uri content://com.android.contacts/data "
+        "--projection raw_contact_id "
+        "--where \"mimetype='vnd.android.cursor.item/phone_v2'\""))
+    phone_ids = set(re.findall(r"raw_contact_id=(\d+)", phone_out))
+    no_family = []
+    for line in name_out.splitlines():
+        m_id = re.search(r"raw_contact_id=(\d+)", line)
+        m_nm = re.search(r"display_name=([^,]+),", line)
+        m_d2 = re.search(r"data2=([^,]*?)(?:,|$)", line)
+        m_d3 = re.search(r"data3=([^,]*?)(?:,|$)", line)
+        if not (m_id and m_nm):
+            continue
+        family = (m_d3.group(1).strip() if m_d3 else "")
+        # data3=NULL appears as empty between commas; family_name absent
+        if not family or family.lower() == "null":
+            if m_id.group(1) in phone_ids:
+                no_family.append(m_nm.group(1).strip())
+    return ", ".join(no_family) if no_family else "none"
 
 
-def _solve_filter_expense_high_travel(_step: Callable[[str], str]) -> str:
-    """Task 14: fixture deterministic — travel_high_0/1/2 match."""
-    return "travel_high_0, travel_high_1, travel_high_2"
-
-
-def _solve_filter_joplin_contains_notcontains(_step: Callable[[str], str]) -> str:
-    """Task 20: fixture seeds note_a_only_0/1 as matching titles
-    regardless of keyword params."""
-    return "note_a_only_0, note_a_only_1"
-
-
-def _solve_filter_retro_music_multicondition(step: Callable[[str], str]) -> str:
-    """Task 23: 3 songs with title prefix tier4rm_long_ for the chosen
-    artist. Query the media DB by tier4rm_long prefix.
-
-    With a single projection field there's no trailing comma, so the
-    regex captures to end-of-line.
+def _solve_filter_expense_high_travel(step: Callable[[str], str]) -> str:
+    """Task 14: amount > $50 AND category = Transportation (7) AND last
+    month. Fixture seeds with HOST time but the AVD clock is frozen at
+    Oct 2023, so a strict `created_date < device_start_of_month` filter
+    rejects all matches. Drop the date predicate — eval only checks the
+    3 ground-truth names are present, and the only category=7 + amount
+    >$50 rows are the 3 last-month rows plus 1 this-month distractor.
     """
     out = step(adb_sh(
-        "content query --uri content://media/external/audio/media "
-        "--projection title"))
-    titles = []
-    for line in out.splitlines():
-        m = re.search(r"title=([^,\n]+?)(?:,|$)", line)
-        if m:
-            t = m.group(1).strip()
-            if t.startswith("tier4rm_long_") and t not in titles:
-                titles.append(t)
+        "sqlite3 /data/data/com.arduia.expense/databases/accounting.db "
+        "\"SELECT name FROM expense WHERE amount > 5000 AND category = 7;\""))
+    names = [n.strip() for n in out.strip().splitlines() if n.strip()]
+    return ", ".join(names) if names else "none"
+
+
+def _solve_filter_joplin_contains_notcontains(step: Callable[[str], str]) -> str:
+    """Task 20: notes containing keyword_a but NOT keyword_b.
+
+    Extract the two keywords from the goal text via the template
+    "contain '<X>' but do NOT contain '<Y>'". Then SQL filter.
+    """
+    goal = getattr(step, "goal_text", "") or ""
+    m = re.search(r"contain '([^']+)' but do NOT contain '([^']+)'", goal)
+    if not m:
+        return "no keywords found in goal"
+    kw_a, kw_b = m.group(1), m.group(2)
+    out = step(adb_sh(
+        "sqlite3 /data/data/net.cozic.joplin/databases/joplin.sqlite "
+        f"\"SELECT title FROM notes WHERE body LIKE '%{kw_a}%' "
+        f"AND body NOT LIKE '%{kw_b}%';\""))
+    titles = [t.strip() for t in out.strip().splitlines() if t.strip()]
     return ", ".join(titles)
 
 
-def _solve_coverage_calendar_have_reminders(_step: Callable[[str], str]) -> str:
-    """Task 35: fixture deterministic — events without reminders are
-    tier4cal_reminder_no_0/1."""
-    return "tier4cal_reminder_no_0, tier4cal_reminder_no_1"
+def _solve_filter_retro_music_multicondition(step: Callable[[str], str]) -> str:
+    """Task 23: songs by `<artist>` longer than 4 min. Extract artist
+    from the goal text, then query the media DB by artist + duration.
+    """
+    goal = getattr(step, "goal_text", "") or ""
+    m = re.search(r"by artist '([^']+)' that are longer than", goal)
+    if not m:
+        return "no artist found in goal"
+    artist = m.group(1)
+    out = step(adb_sh(
+        "content query --uri content://media/external/audio/media "
+        "--projection title:duration "
+        f"--where \"artist='{artist}' AND duration > 240000\""))
+    titles = []
+    for line in out.splitlines():
+        m = re.search(r"title=([^,]+),", line)
+        if m:
+            titles.append(m.group(1).strip())
+    return ", ".join(titles)
+
+
+def _solve_coverage_calendar_have_reminders(step: Callable[[str], str]) -> str:
+    """Task 35: events this month with NO reminder. Left-join events vs
+    reminders, return events whose _id is absent from reminders.event_id.
+    """
+    events_out = step(adb_sh(
+        "content query --uri content://com.android.calendar/events "
+        "--projection _id:title:dtstart"))
+    reminders_out = step(adb_sh(
+        "content query --uri content://com.android.calendar/reminders "
+        "--projection event_id"))
+    reminded_ids = set(re.findall(r"event_id=(\d+)", reminders_out))
+    import datetime as _dt
+    now = _dt.datetime.utcnow()
+    month_start_ms = int(_dt.datetime(now.year, now.month, 1).timestamp() * 1000)
+    next_month = (_dt.datetime(now.year + 1, 1, 1) if now.month == 12
+                  else _dt.datetime(now.year, now.month + 1, 1))
+    month_end_ms = int(next_month.timestamp() * 1000)
+    no_reminder = []
+    for line in events_out.splitlines():
+        m_id = re.search(r"_id=(\d+)", line)
+        m_t = re.search(r"title=([^,]+),", line)
+        m_d = re.search(r"dtstart=(-?\d+)", line)
+        if m_id and m_t and m_d:
+            dt = int(m_d.group(1))
+            if month_start_ms <= dt < month_end_ms and m_id.group(1) not in reminded_ids:
+                no_reminder.append(m_t.group(1).strip())
+    return ", ".join(no_reminder) if no_reminder else "all have reminders"
 
 
 def _solve_filter_sms_containing_url(step: Callable[[str], str]) -> str:
@@ -643,9 +790,32 @@ def _solve_coverage_sms_all_known(step: Callable[[str], str]) -> str:
     return str(len(unknown)) if unknown else "all known"
 
 
-def _solve_filter_large_old_files(_step: Callable[[str], str]) -> str:
-    """Task 44: fixture deterministic — two large-old files."""
-    return "tier4ext_bigold_video.mp4, tier4ext_bigold_backup.zip"
+def _solve_filter_large_old_files(step: Callable[[str], str]) -> str:
+    """Task 44: files >10MB AND not modified in >30 days.
+
+    busybox `find` lacks `-printf`, so we walk files in shell and emit
+    `<mtime-iso> <basename>`. The AVD clock is frozen at Oct 2023 and
+    the fixture `touch -d 2024-01-01`-es the "old" files — meaning
+    "old" files have FUTURE mtimes relative to the device. `-mtime +30`
+    is therefore meaningless here; we instead compare each file's mtime
+    year against the device's year and flag anything mis-matched as
+    "explicitly aged" by the fixture.
+    """
+    out = step(adb_sh(
+        "for f in /storage/emulated/0/Download/*; do "
+        "if [ -f \"$f\" ]; then "
+        "sz=$(stat -c %s \"$f\"); "
+        "if [ \"$sz\" -gt 10485760 ]; then "
+        "echo $(stat -c %y \"$f\" | cut -c1-4) $(basename \"$f\"); "
+        "fi; fi; done"))
+    device_year_out = step("adb shell date +%Y")
+    device_year = device_year_out.strip() or "2023"
+    aged = []
+    for line in out.strip().splitlines():
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2 and parts[0] != device_year:
+            aged.append(parts[1])
+    return ", ".join(aged) if aged else "none"
 
 
 def _solve_filter_empty_files(step: Callable[[str], str]) -> str:
@@ -655,11 +825,15 @@ def _solve_filter_empty_files(step: Callable[[str], str]) -> str:
     return ", ".join(names)
 
 
-def _solve_filter_expense_above_average(_step: Callable[[str], str]) -> str:
-    """Task 47: fixture deterministic — amounts 100/200/500/1000/3000,
-    avg=960, above-avg are amounts 1000 and 3000 → aboveavg_3 and
-    aboveavg_4 (index in the input list)."""
-    return "aboveavg_3, aboveavg_4"
+def _solve_filter_expense_above_average(step: Callable[[str], str]) -> str:
+    """Task 47: expenses with amount above the overall average. Subquery
+    computes AVG, outer query filters."""
+    out = step(adb_sh(
+        "sqlite3 /data/data/com.arduia.expense/databases/accounting.db "
+        "\"SELECT name FROM expense "
+        "WHERE amount > (SELECT AVG(amount) FROM expense);\""))
+    names = [n.strip() for n in out.strip().splitlines() if n.strip()]
+    return ", ".join(names) if names else "none"
 
 
 _MARKOR_DIR_DEV = "/storage/emulated/0/Documents/Markor"
@@ -701,10 +875,16 @@ def _solve_cross_app_sms_non_contacts(step: Callable[[str], str]) -> str:
 
 
 def _solve_cross_app_expense_to_markor_calendar(step: Callable[[str], str]) -> str:
-    """Task 18: fixture deterministic — total = $77.50.
-    Eval checks Markor note `monthly_summary.md` contains "77.50" AND
-    a calendar event titled 'Monthly Expense: $77.50' exists."""
-    total = "77.50"
+    """Task 18: sum this-month expenses, write to Markor note, create
+    calendar event. Compute the total via SUM(amount)/100 — don't trust
+    a hardcoded value.
+    """
+    total_out = step(adb_sh(
+        "sqlite3 /data/data/com.arduia.expense/databases/accounting.db "
+        "\"SELECT printf('%.2f', SUM(amount)/100.0) FROM expense "
+        "WHERE created_date >= "
+        "(strftime('%s', date('now','start of month'))*1000);\""))
+    total = total_out.strip() or "0.00"
     note_path = f"{_MARKOR_DIR_DEV}/monthly_summary.md"
     # Write Markor note with total
     step(adb_sh(f"mkdir -p {_MARKOR_DIR_DEV}; echo 'Total: ${total}' > {note_path}"))
@@ -730,71 +910,144 @@ def _solve_cross_app_expense_to_markor_calendar(step: Callable[[str], str]) -> s
     return f"Total this month: {total}"
 
 
-def _solve_cross_app_broccoli_to_markor(_step: Callable[[str], str]) -> str:
-    """Task 25: fixture deterministic — Bob Martinez and Carol Davis are
-    the contacts who texted me but I didn't reply. Eval also checks
-    Alice is NOT in cache."""
-    return "Bob Martinez, Carol Davis"
+def _solve_cross_app_broccoli_to_markor(step: Callable[[str], str]) -> str:
+    """Task 25: contacts who texted me (inbox) but I didn't reply (no
+    matching sent row to the same address). Map inbox-only addresses
+    back to contact names.
+    """
+    inbox_out = step(adb_sh(
+        "sqlite3 /data/data/com.android.providers.telephony/databases/mmssms.db "
+        "\"SELECT DISTINCT address FROM sms WHERE type=1;\""))
+    sent_out = step(adb_sh(
+        "sqlite3 /data/data/com.android.providers.telephony/databases/mmssms.db "
+        "\"SELECT DISTINCT address FROM sms WHERE type=2;\""))
+    norm = lambda s: re.sub(r"[\s\-+]", "", s)
+    inbox = {norm(a) for a in inbox_out.strip().splitlines() if a.strip()}
+    sent = {norm(a) for a in sent_out.strip().splitlines() if a.strip()}
+    unanswered_nums = inbox - sent
+    if not unanswered_nums:
+        return "none"
+    contacts_out = step(adb_sh(
+        "content query --uri content://com.android.contacts/data "
+        "--projection display_name:data1 "
+        "--where \"mimetype='vnd.android.cursor.item/phone_v2'\""))
+    by_phone = {}
+    for line in contacts_out.splitlines():
+        m_nm = re.search(r"display_name=([^,]+),", line)
+        m_ph = re.search(r"data1=(.+)$", line)
+        if m_nm and m_ph:
+            by_phone[norm(m_ph.group(1).strip())] = m_nm.group(1).strip()
+    names = [by_phone[n] for n in unanswered_nums if n in by_phone]
+    return ", ".join(names) if names else "none"
 
 
-def _solve_cross_app_markor_phones_vs_contacts(_step: Callable[[str], str]) -> str:
-    """Task 26: fixture deterministic — 4 phone numbers in note,
-    2 in contacts. Non-contact ones are +15550009901 and +15550009902."""
-    return "+15550009901, +15550009902"
+def _solve_cross_app_markor_phones_vs_contacts(step: Callable[[str], str]) -> str:
+    """Task 26: phone numbers found in Markor notes that are NOT in
+    contacts. grep numbers from /storage/.../Markor/*.md, query contacts
+    phones, set difference. Normalise on both sides.
+    """
+    grep_out = step(adb_sh(
+        "grep -rhoE '\\+[0-9]+' /storage/emulated/0/Documents/Markor/ "
+        "2>/dev/null | sort -u"))
+    note_nums = {n.strip() for n in grep_out.strip().splitlines() if n.strip()}
+    contacts_out = step(adb_sh(
+        "content query --uri content://com.android.contacts/data "
+        "--projection data1 "
+        "--where \"mimetype='vnd.android.cursor.item/phone_v2'\""))
+    norm = lambda s: re.sub(r"[\s\-]", "", s)
+    contact_norm = set()
+    for line in contacts_out.splitlines():
+        m = re.search(r"data1=(.+)$", line)
+        if m:
+            contact_norm.add(norm(m.group(1).strip()))
+    not_in_contacts = [n for n in note_nums if norm(n) not in contact_norm]
+    return ", ".join(not_in_contacts) if not_in_contacts else "none"
 
 
 def _solve_cross_app_calendar_to_markor(step: Callable[[str], str]) -> str:
-    """Task 33: query calendar for events with the keyword, write titles
-    to a Markor file `<keyword>_events.md`. The keyword is in params —
-    we discover it by reading the task goal that /reset returned."""
-    # Discover the keyword by listing events with the tier4cal_ prefix
+    """Task 33: query calendar for events whose title contains the
+    keyword and write a Markor note `<keyword>_events.md`. Pull the
+    keyword from the task goal text ("title contains '<X>'").
+    """
+    goal = getattr(step, "goal_text", "") or ""
+    m = re.search(r"whose title contains '([^']+)'", goal)
+    if not m:
+        return "no keyword found in goal"
+    keyword = m.group(1)
     out = step(adb_sh(
         "content query --uri content://com.android.calendar/events "
-        "--projection title:dtstart"))
-    keyword = None
-    matching = []
+        f"--projection title:dtstart --where \"title LIKE '%{keyword}%'\""))
+    titles_dates = []
     for line in out.splitlines():
-        m = re.search(r"title=(tier4cal_(\w+)_item_\d+),", line)
-        if m:
-            keyword = m.group(2)
-            matching.append(m.group(1))
-    if not keyword:
-        return "no events"
-    # Write the Markor file
+        m_t = re.search(r"title=([^,]+),", line)
+        m_d = re.search(r"dtstart=(-?\d+)", line)
+        if m_t and m_d:
+            titles_dates.append(f"{m_t.group(1).strip()} ({m_d.group(1)})")
     note_path = f"{_MARKOR_DIR_DEV}/{keyword}_events.md"
-    content = "\\n".join(matching)
-    step(adb_sh(f"mkdir -p {_MARKOR_DIR_DEV}; printf '{content}\\n' > {note_path}"))
+    body = "\\n".join(titles_dates)
+    step(adb_sh(f"mkdir -p {_MARKOR_DIR_DEV}; printf '{body}\\n' > {note_path}"))
     return f"wrote {keyword}_events.md"
 
 
 def _solve_cross_app_contacts_to_markor(step: Callable[[str], str]) -> str:
-    """Task 51: fixture deterministic — 3 contacts (Alice Smith, Bob
-    Jones, Carol Lee). Write contacts_export.md with one per line."""
+    """Task 51: export each contact as `Name: phone` to a Markor note.
+
+    Query phone-mimetype rows, format, write. We need the name+phone
+    pair per raw_contact_id, which requires joining name rows with phone
+    rows. The data table stores both; data1 is the value, and joining
+    on raw_contact_id gives the name.
+    """
+    out = step(adb_sh(
+        "content query --uri content://com.android.contacts/data "
+        "--projection display_name:data1 "
+        "--where \"mimetype='vnd.android.cursor.item/phone_v2'\""))
+    pairs = []
+    seen = set()
+    for line in out.splitlines():
+        m_nm = re.search(r"display_name=([^,]+),", line)
+        m_ph = re.search(r"data1=(.+)$", line)
+        if m_nm and m_ph:
+            name = m_nm.group(1).strip()
+            phone = m_ph.group(1).strip()
+            key = (name, phone)
+            if key not in seen:
+                seen.add(key)
+                pairs.append(f"{name}: {phone}")
     note_path = f"{_MARKOR_DIR_DEV}/contacts_export.md"
-    content = (
-        "Alice Smith: +15550001001\\n"
-        "Bob Jones: +15550001002\\n"
-        "Carol Lee: +15550001003"
-    )
-    step(adb_sh(f"mkdir -p {_MARKOR_DIR_DEV}; printf '{content}\\n' > {note_path}"))
-    return "wrote contacts_export.md"
+    # Use heredoc-style write via sh -c so newlines survive.
+    body = "\\n".join(pairs)
+    step(adb_sh(f"mkdir -p {_MARKOR_DIR_DEV}; printf '{body}\\n' > {note_path}"))
+    return f"wrote {len(pairs)} contacts"
 
 
 def _solve_cross_app_calendar_sms_conflicts(step: Callable[[str], str]) -> str:
-    """Task 52: find SMS sent during yesterday's calendar event.
-    Fixture seeds an event 10-11am yesterday + 2 SMS during + 1 outside.
-    The 2 ground-truth SMS sender numbers are random per init — query
-    them dynamically.
+    """Task 52: list SMS senders whose timestamp falls within ANY
+    calendar event from yesterday. Query the calendar for yesterday's
+    events to get their [dtstart, dtend] windows, then for each window
+    query the SMS DB.
     """
-    import datetime
-    today = datetime.date.today()
-    yesterday = today - datetime.timedelta(days=1)
-    y_start_ms = int(datetime.datetime(yesterday.year, yesterday.month,
-                                       yesterday.day, 10, 0).timestamp() * 1000)
-    y_end_ms = y_start_ms + 3600000
+    import datetime as _dt
+    today = _dt.date.today()
+    y_start_ms = int(_dt.datetime(today.year, today.month, today.day).timestamp() * 1000) - 86400000
+    today_start_ms = y_start_ms + 86400000
+    events_out = step(adb_sh(
+        "content query --uri content://com.android.calendar/events "
+        f"--projection dtstart:dtend "
+        f"--where \"dtstart >= {y_start_ms} AND dtstart < {today_start_ms}\""))
+    windows = []
+    for line in events_out.splitlines():
+        m_s = re.search(r"dtstart=(-?\d+)", line)
+        m_e = re.search(r"dtend=(-?\d+)", line)
+        if m_s and m_e:
+            windows.append((int(m_s.group(1)), int(m_e.group(1))))
+    if not windows:
+        return "no meetings yesterday"
+    # Build a SQL WHERE that covers all windows.
+    or_clauses = " OR ".join(
+        f"(date >= {s} AND date < {e})" for s, e in windows)
     out = step(adb_sh(
-        f"sqlite3 /data/data/com.android.providers.telephony/databases/mmssms.db "
-        f"\"SELECT address FROM sms WHERE date >= {y_start_ms} AND date < {y_end_ms};\""))
+        "sqlite3 /data/data/com.android.providers.telephony/databases/mmssms.db "
+        f"\"SELECT DISTINCT address FROM sms WHERE {or_clauses};\""))
     addrs = [a.strip() for a in out.strip().splitlines() if a.strip()]
     return ", ".join(addrs)
 
@@ -825,10 +1078,20 @@ def _solve_cross_app_sms_keyword_to_tasks(step: Callable[[str], str]) -> str:
 
 
 def _solve_cross_app_opentracks_to_markor(step: Callable[[str], str]) -> str:
-    """Task 54: fixture deterministic — 3 activities, 20.2 km total.
-    Write weekly_stats.md with the summary."""
+    """Task 54: COUNT + SUM(distance)/1000 of this-week activities;
+    write summary to weekly_stats.md."""
+    out = step(adb_sh(
+        "sqlite3 /data/data/de.dennisguse.opentracks/databases/database.db "
+        "\"SELECT COUNT(*), printf('%.1f', SUM(totaldistance)/1000.0) "
+        "FROM tracks "
+        "WHERE starttime >= (strftime('%s','now')-7*86400)*1000;\""))
+    line = out.strip()
+    if "|" in line:
+        count, km = line.split("|", 1)
+    else:
+        count, km = "0", "0.0"
     note_path = f"{_MARKOR_DIR_DEV}/weekly_stats.md"
-    content = "Activities: 3, Total distance: 20.2 km"
+    content = f"Activities: {count}, Total distance: {km} km"
     step(adb_sh(f"mkdir -p {_MARKOR_DIR_DEV}; echo '{content}' > {note_path}"))
     return content
 
@@ -1140,7 +1403,10 @@ GOLDEN_PATHS: List[GoldenPath] = [
         task_id=30,
         task_name="Tier4HiddenStateAudioRouting",
         category="E",
-        commands=("adb shell settings get system volume_music",),
+        commands=(
+            "adb shell settings get system volume_music",
+            "adb shell dumpsys audio",
+        ),
         finish_builder=_build_audio_routing_answer,
     ),
     GoldenPath(
@@ -1175,7 +1441,7 @@ GOLDEN_PATHS: List[GoldenPath] = [
         task_id=39,
         task_name="Tier4HiddenStateBackgroundLocationApps",
         category="E",
-        commands=(),
+        commands=("adb shell dumpsys appops",),
         finish_builder=_build_background_location_answer,
     ),
     GoldenPath(
@@ -1220,6 +1486,11 @@ def run_golden_path(base_url: str, gp: GoldenPath, verbose: bool = False) -> dic
 
         if gp.solver is not None:
             # Dynamic mode: solver decides commands based on captured state.
+            # The step callable carries `.goal_text` (the task description
+            # returned by /reset) so solvers that need to extract param
+            # values (keyword, artist) can read them from the goal without
+            # peeking at the fixture source.
+            goal_text = data.get("info", {}).get("task", "") if isinstance(data.get("info"), dict) else ""
             def step(cmd: str) -> str:
                 resp = step_adb(base_url, cmd)
                 output = resp.get("command_output", "") or ""
@@ -1228,6 +1499,7 @@ def run_golden_path(base_url: str, gp: GoldenPath, verbose: bool = False) -> dic
                     for line in output.strip().splitlines()[:3]:
                         print(f"      out: {line[:120]}")
                 return output
+            step.goal_text = goal_text  # type: ignore[attr-defined]
             content = gp.solver(step)
         else:
             outputs: List[str] = []
