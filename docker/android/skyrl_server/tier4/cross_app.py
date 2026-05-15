@@ -236,9 +236,29 @@ def _epoch_to_touch(epoch_s: int) -> str:
 
 
 _SMS_INBOX_URI = "content://sms/inbox"
+_SMS_DB = "/data/data/com.android.providers.telephony/databases/mmssms.db"
 _CONTACTS_PHONES_URI = "content://contacts/phones/"
 _RAW_CONTACTS_URI = "content://com.android.contacts/raw_contacts"
 _CONTACTS_DATA_URI = "content://com.android.contacts/data"
+
+
+def _insert_sms_inbox_sqlite(address: str, body: str, date_ms: int,
+                             env: interface.AsyncEnv) -> None:
+  """Insert an inbox SMS row directly into mmssms.db.
+
+  `content insert --uri content://sms/inbox` is rejected on this AVD
+  unless the caller is the default SMS app, so cross-app fixtures
+  bypass the provider and write the row directly. The SMS content
+  provider's read path still surfaces sqlite-written rows.
+  """
+  body_sql = body.replace("'", "''")
+  sql = (
+      f"INSERT INTO sms (address, body, date, read, type) VALUES "
+      f"('{address}', '{body_sql}', {date_ms}, 1, 1);"
+  )
+  adb_utils.issue_generic_request(
+      ["shell", f'sqlite3 {_SMS_DB} "{sql}"'], env.controller
+  )
 
 
 class Tier4CrossAppContactsToMarkor(task_eval.TaskEval):
@@ -334,27 +354,14 @@ class Tier4CrossAppCalendarSmsConflicts(task_eval.TaskEval):
     for i in range(2):
       num = user_data_generation.generate_random_number()
       sms_time = yesterday_10am_ms + 30 * 60000 + i * 60000
-      adb_utils.issue_generic_request(
-          ["shell", "content", "insert", "--uri", _SMS_INBOX_URI,
-           "--bind", f"address:s:{num}",
-           "--bind", f"body:s:msg during meeting {i}",
-           "--bind", f"date:l:{sms_time}",
-           "--bind", "read:i:1", "--bind", "type:i:1"],
-          env.controller,
-      )
+      _insert_sms_inbox_sqlite(num, f"msg during meeting {i}", sms_time, env)
       self._ground_truth.append(num.replace("-", "").replace(" ", ""))
 
     # SMS outside event (yesterday 15:00 — no meeting then)
     num_outside = user_data_generation.generate_random_number()
     sms_outside_time = yesterday_10am_ms + 5 * 3600000  # 15:00
-    adb_utils.issue_generic_request(
-        ["shell", "content", "insert", "--uri", _SMS_INBOX_URI,
-         "--bind", f"address:s:{num_outside}",
-         "--bind", "body:s:msg outside meeting",
-         "--bind", f"date:l:{sms_outside_time}",
-         "--bind", "read:i:1", "--bind", "type:i:1"],
-        env.controller,
-    )
+    _insert_sms_inbox_sqlite(num_outside, "msg outside meeting",
+                             sms_outside_time, env)
 
   def tear_down(self, env: interface.AsyncEnv) -> None:
     _delete_xa_events(env)
@@ -500,26 +507,12 @@ class Tier4CrossAppSmsKeywordToTasks(task_eval.TaskEval):
     ]
     for body in self._urgent_bodies:
       num = user_data_generation.generate_random_number()
-      adb_utils.issue_generic_request(
-          ["shell", "content", "insert", "--uri", _SMS_INBOX_URI,
-           "--bind", f"address:s:{num}",
-           "--bind", f"body:s:{body}",
-           "--bind", f"date:l:{now_ms}",
-           "--bind", "read:i:1", "--bind", "type:i:1"],
-          env.controller,
-      )
+      _insert_sms_inbox_sqlite(num, body, now_ms, env)
       now_ms -= 60000
 
     # Non-urgent SMS (noise)
     num = user_data_generation.generate_random_number()
-    adb_utils.issue_generic_request(
-        ["shell", "content", "insert", "--uri", _SMS_INBOX_URI,
-         "--bind", f"address:s:{num}",
-         "--bind", "body:s:just a normal message",
-         "--bind", f"date:l:{now_ms}",
-         "--bind", "read:i:1", "--bind", "type:i:1"],
-        env.controller,
-    )
+    _insert_sms_inbox_sqlite(num, "just a normal message", now_ms, env)
 
   def tear_down(self, env: interface.AsyncEnv) -> None:
     from android_world.task_evals.common_validators import sms_validators
