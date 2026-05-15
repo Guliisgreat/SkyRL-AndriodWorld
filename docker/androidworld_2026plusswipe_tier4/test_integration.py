@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Integration tests for androidworld:2026plusswipe_tier4 container.
 
-Validates that the full server stack correctly serves all 50 tier4 tasks
+Validates that the full server stack correctly serves all 56 tier4 tasks
 and that the /reset -> /step_adb -> FINISH flow works for each one.
 
 Usage:
@@ -29,7 +29,7 @@ import time
 
 import requests
 
-EXPECTED_TASK_COUNT = 50
+EXPECTED_TASK_COUNT = 56
 
 
 # ---------------------------------------------------------------------------
