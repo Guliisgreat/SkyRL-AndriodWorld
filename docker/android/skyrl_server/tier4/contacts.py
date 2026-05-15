@@ -35,20 +35,35 @@ _SMS_INBOX_URI = "content://sms/inbox"
 # ── Contact creation helpers ───────────────────────────────────────────
 
 def _get_last_raw_contact_id(env: interface.AsyncEnv) -> str:
-  """Return the _id of the most recently inserted raw contact."""
-  res = adb_utils.issue_generic_request(
-      ["shell", "content", "query", "--uri", _RAW_CONTACTS_URI,
-       "--projection", "_id", "--sort", "_id DESC"],
-      env.controller,
+  """Return the _id of the most recently inserted raw contact.
+
+  Pass the whole content-query as one arg after `shell` so the spaced
+  --sort value ("_id DESC") survives adb's argv flattening.
+  """
+  query = (
+      f"content query --uri {_RAW_CONTACTS_URI} "
+      f"--projection _id --sort \"_id DESC\""
   )
+  res = adb_utils.issue_generic_request(["shell", query], env.controller)
   m = re.search(r"Row: 0 _id=(\d+)", res.generic.output.decode())
   return m.group(1) if m else ""
 
 
 def _insert_raw_contact(env: interface.AsyncEnv) -> str:
-  """Insert a blank raw contact and return its _id."""
+  """Insert a blank raw contact and return its _id.
+
+  API 33's content provider rejects `content insert` without any --bind
+  arguments ("Bindings not specified") and requires account_name and
+  account_type to both be set or both null. Use NULL/NULL so we don't
+  register a new account in AccountManager — a non-default account
+  would cause the Contacts app's GUI "add contact" flow (which other
+  tier4 tasks rely on via contacts_utils.add_contact) to prompt for an
+  account picker and time out waiting for the SAVE button.
+  """
   adb_utils.issue_generic_request(
-      ["shell", "content", "insert", "--uri", _RAW_CONTACTS_URI],
+      ["shell", "content", "insert", "--uri", _RAW_CONTACTS_URI,
+       "--bind", "account_name:n:",
+       "--bind", "account_type:n:"],
       env.controller,
   )
   return _get_last_raw_contact_id(env)
