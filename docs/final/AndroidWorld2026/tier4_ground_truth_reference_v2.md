@@ -42,6 +42,44 @@ Each task entry uses 1–4 of these step kinds, in order:
 - `<angle-bracket>` tokens (`<keyword>`, `<id>`, etc.) mark values that the
   agent fills in from the previous step's output or from the task goal text.
 
+### Execution caveat (read before copy-pasting)
+
+The `adb shell sh -c '<script>'` forms below show the **device-side script
+intent**, not always the wire form. When pasted into an interactive bash
+shell they work, but when fed through a pipeline that does `shlex.split`
+then `subprocess.run` with the resulting tokens (which is what the
+`/step_adb` HTTP endpoint does internally), the outer single-quote form
+gets split into multiple tokens and adb concatenates them with spaces —
+destroying the script's word-boundaries before sh -c sees it.
+
+A literal-execution verification of every command in this doc against the
+live container produced:
+
+- **2/17 reward=1.0** for state-mutation tasks (only the simplest `find -delete` cases survived the quoting flatten).
+- 35/45 D/I/P/A command sequences ran end-to-end (the cache-match tasks
+  capture data fine — they just need a final FINISH that this verifier
+  didn't derive).
+
+The authoritative wire form lives in
+`docker/androidworld_2026plusswipe_tier4/test_integration.py`, which
+applies `shlex.quote` twice per script (once to escape the inner sh script,
+once to package the whole `sh -c '...'` as a single shlex token that adb
+sees as one arg, not many). That file runs **45/45 PASS** against the
+container and is the canonical reproducer.
+
+To execute a single script from this doc end-to-end yourself, use the
+helper pattern:
+
+```bash
+# Bash helper that handles the double-wrapping correctly for adb shell.
+adb_sh() { adb shell "$(printf 'sh -c %q' "$1")"; }
+
+# Example: use it for any sh -c script from the doc below
+adb_sh 'sqlite3 /data/data/com.arduia.expense/databases/accounting.db "UPDATE expense SET category=6 WHERE category=3;"'
+```
+
+`adb shell <bare-command>` (no `sh -c`) entries can be copy-pasted as-is.
+
 ### Subset (45 of 56)
 
 11 of the 56 tier4 tasks are excluded from this reference because they're
