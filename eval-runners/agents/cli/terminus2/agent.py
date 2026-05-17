@@ -612,7 +612,11 @@ class AndroidTerminus2Agent:
             rest = raw[len(_REJECT_PREFIX):]
             _mode, _, bad = rest.partition(":")
             first = bad.split(None, 1)[0] if bad else ""
-            error_msg = f"ERROR: '{first}' is not a recognized verb. "
+            error_msg = (
+                f"ERROR: '{first}' is not a recognized verb. "
+                f"If you intended to run a command on the device, wrap it "
+                f"with `adb shell` and use proper shell escaping."
+            )
             commands_log.append({
                 "command": bad,
                 "stdout": "",
