@@ -1,8 +1,9 @@
 # CLI vs GUI agents on Tier-4 ADB-exclusive tasks
 
-How a CLI-driven Claude agent stacks up against two GUI vision agents on the
-45-task realistic subset of the Tier-4 AndroidWorld benchmark, run across
-three random seeds.
+How two CLI-driven agents (Claude Code CLI with Opus 4.7, Terminus2 with
+gpt-5.3-codex) stack up against two GUI vision agents (MAI-UI-8B,
+Qwen3-VL-32B) on the 45-task realistic subset of the Tier-4 AndroidWorld
+benchmark, run across three random seeds.
 
 ---
 
@@ -24,6 +25,7 @@ three random seeds.
 | agent | paradigm | model | API | prompt variant |
 |---|---|---|---|---|
 | **Claude Code CLI (Opus 4.7)** | ADB shell on a Linux host that talks to the emulator | `claude-opus-4-7` | Anthropic | `clean_optimized_v10` |
+| **Terminus2 + gpt-5.3-codex** | ADB shell on a Linux host (XML-action harness) | `openai/gpt-5.3-codex` (reasoning=medium) | OpenAI | `optimized-v6-bash-only` |
 | **Qwen3-VL-32B (instruct)** | GUI vision agent — screenshot in, click/swipe out | `qwen/qwen3-vl-32b-instruct` | OpenRouter | `qwen3vl_gui` |
 | **MAI-UI-8B** | GUI vision agent — screenshot in, click/swipe out | `/shared/models/MAI-UI-8B` | local vLLM (TP=1, port 8401) | `mai_ui_gui` |
 
@@ -34,27 +36,31 @@ three random seeds.
 | agent | seed=7 | seed=30 | seed=1234 | **mean ± std** | cost (3 seeds) |
 |---|---|---|---|---|---|
 | Claude Code CLI (Opus 4.7) | 31 / 45 (68.9 %) | 31 / 45 (68.9 %) | 31 / 45 (68.9 %) | **68.9 % ± 0.0 %** | $56.72 |
+| Terminus2 + gpt-5.3-codex | 29 / 45 (64.4 %) | 29 / 45 (64.4 %) | 24 / 45 (53.3 %) | **60.7 % ± 6.4 %** | $9.87 |
 | MAI-UI-8B | 14 / 45 (31.1 %) | 14 / 45 (31.1 %) | 9 / 45 (20.0 %) | **27.4 % ± 6.4 %** | $0 (local) |
 | Qwen3-VL-32B | 10 / 45 (22.2 %) | 12 / 45 (26.7 %) | 8 / 45 (17.8 %) | **22.2 % ± 4.4 %** | $0 (free OpenRouter) |
 
-The CLI agent is ~2.5× MAI-UI-8B and ~3.1× Qwen3-VL-32B in average success rate.
+Both CLI agents lead both GUI agents by ≥33 pp in mean SR. Terminus2 + codex
+trails Opus by 8 pp but at 1/6 the cost. The Opus agent is the only one with
+zero seed variance — every seed lands on exactly 31 / 45.
 
 ---
 
 ## Per-category success rate (mean ± std across 3 seeds)
 
-| category | label | Claude CLI (Opus 4.7) | MAI-UI-8B | Qwen3-VL-32B |
-|---|---|---|---|---|
-| B | Bulk / Dedup | **76.7 % ± 5.8 %** | 56.7 % ± 5.8 % | 33.3 % ± 5.8 % |
-| C | Filter / Coverage | **86.7 % ± 5.8 %** | 36.7 % ± 15.3 % | 20.0 % ± 10.0 % |
-| A | Aggregation / TopK | **83.3 % ± 5.8 %** | 10.0 % ± 10.0 % | 36.7 % ± 5.8 % |
-| D | CrossApp | **40.7 % ± 6.4 %** | 11.1 % ± 0.0 % | 0.0 % ± 0.0 % |
-| E | Hidden State | **44.4 % ± 9.6 %** | 16.7 % ± 0.0 % | 16.7 % ± 0.0 % |
-| **all** | **45-task subset** | **68.9 % ± 0.0 %** | 27.4 % ± 6.4 % | 22.2 % ± 4.4 % |
+| category | label | Claude CLI (Opus 4.7) | Terminus2 + codex | MAI-UI-8B | Qwen3-VL-32B |
+|---|---|---|---|---|---|
+| B | Bulk / Dedup | **76.7 % ± 5.8 %** | 76.7 % ± 5.8 % | 56.7 % ± 5.8 % | 33.3 % ± 5.8 % |
+| C | Filter / Coverage | **86.7 % ± 5.8 %** | 56.7 % ± 5.8 % | 36.7 % ± 15.3 % | 20.0 % ± 10.0 % |
+| A | Aggregation / TopK | **83.3 % ± 5.8 %** | 83.3 % ± 5.8 % | 10.0 % ± 10.0 % | 36.7 % ± 5.8 % |
+| D | CrossApp | **40.7 % ± 6.4 %** | 25.9 % ± 12.8 % | 11.1 % ± 0.0 % | 0.0 % ± 0.0 % |
+| E | Hidden State | 44.4 % ± 9.6 % | **55.6 % ± 9.6 %** | 16.7 % ± 0.0 % | 16.7 % ± 0.0 % |
+| **all** | **45-task subset** | **68.9 % ± 0.0 %** | 60.7 % ± 6.4 % | 27.4 % ± 6.4 % | 22.2 % ± 4.4 % |
 
 Reading the table:
-- The CLI agent leads in every category — by 20 pp on B, 50 pp on C, 47 pp on A, 30 pp on D, and 28 pp on E.
-- **CrossApp (D)** is universally hard: even Opus reaches only ~41 %, both GUI agents are near-zero.
+- Both CLI agents lead in every category. Opus tops the leaderboard on 4 of 5 categories; Terminus2 + codex ties on B / A and edges Opus by 11 pp on E (Hidden State).
+- **CrossApp (D)** is the hardest category for every agent. Opus reaches ~41 %, codex ~26 %, GUI agents near zero.
+- **Filter / Coverage (C)** is where the two CLI agents diverge most — Opus 87 % vs codex 57 %. The 30-pp gap concentrates on Coverage tasks (e.g. *confirm all events have a reminder*) where codex tends to return early without a full scan.
 - **Hidden State (E)** has zero variance for both GUI agents — they consistently solve 1 / 6 the same way every seed, suggesting a capability ceiling rather than stochastic luck.
 - MAI is **stronger than Qwen on file ops (B 56.7 % vs 33.3 %)** but **weaker on aggregation (A 10.0 % vs 36.7 %)**. MAI's UI-grounding focus pays off when the task is "open Files app, select these, delete" — but doesn't translate to multi-step reasoning over numerical fields.
 
@@ -62,31 +68,34 @@ Reading the table:
 
 ## Average steps per category
 
-| category | Claude CLI | MAI-UI-8B | Qwen3-VL-32B |
-|---|---|---|---|
-| B | 14.2 ± 2.4 | 21.9 ± 1.1 | 22.3 ± 3.2 |
-| C | 4.6 ± 1.1 | 19.1 ± 5.5 | 6.7 ± 0.7 |
-| A | 10.7 ± 1.2 | 25.1 ± 2.0 | 6.7 ± 1.7 |
-| D | 17.6 ± 3.4 | 26.8 ± 1.8 | 12.1 ± 4.1 |
-| E | 6.9 ± 2.5 | 25.1 ± 2.6 | 19.3 ± 4.6 |
-| **all** | 11.0 ± 1.4 | 23.4 ± 1.6 | 12.9 ± 1.1 |
+| category | Claude CLI | Terminus2 + codex | MAI-UI-8B | Qwen3-VL-32B |
+|---|---|---|---|---|
+| B | 14.2 ± 2.4 | 4.7 ± 0.4 | 21.9 ± 1.1 | 22.3 ± 3.2 |
+| C | 4.6 ± 1.1 | 4.3 ± 0.2 | 19.1 ± 5.5 | 6.7 ± 0.7 |
+| A | 10.7 ± 1.2 | 6.0 ± 1.0 | 25.1 ± 2.0 | 6.7 ± 1.7 |
+| D | 17.6 ± 3.4 | 9.6 ± 1.2 | 26.8 ± 1.8 | 12.1 ± 4.1 |
+| E | 6.9 ± 2.5 | 3.1 ± 0.6 | 25.1 ± 2.6 | 19.3 ± 4.6 |
+| **all** | 11.0 ± 1.4 | **5.7 ± 0.4** | 23.4 ± 1.6 | 12.9 ± 1.1 |
 
-The CLI agent finishes ~2× faster than MAI on average; Qwen and CLI are
-comparable in step count but very different in success rate.
+Terminus2 + codex is the most step-efficient agent overall — ~2× faster than
+Opus (5.7 vs 11.0 steps), ~4× faster than MAI. Opus is more thorough (e.g.
+14 steps on Bulk to verify every file deleted); codex tends to issue one big
+`find`/SQL command and exit.
 
 ### Steps split by outcome (mean ± std across 3 seeds)
 
-| category | Claude CLI PASS | Claude CLI FAIL | MAI-UI PASS | MAI-UI FAIL | Qwen-32B PASS | Qwen-32B FAIL |
-|---|---|---|---|---|---|---|
-| B | 11.0 ± 1.7 | 24.6 ± 8.8 | 17.0 ± 3.3 | 27.9 ± 3.6 | 13.2 ± 3.0 | 26.6 ± 5.0 |
-| C | 5.2 ± 0.8 | 0.7 ± 1.2 | 11.7 ± 1.1 | 23.9 ± 9.3 | 8.6 ± 1.7 | 6.3 ± 1.3 |
-| A | 6.3 ± 0.6 | 36.5 ± 17.8 | 11.5 ± 10.6 | 26.3 ± 2.9 | 5.8 ± 0.9 | 7.3 ± 2.7 |
-| D | 10.1 ± 3.1 | 22.4 ± 4.3 | 11.7 ± 1.2 | 28.7 ± 2.1 | — | 12.1 ± 4.1 |
-| E | 9.4 ± 2.5 | 5.0 ± 2.4 | 6.3 ± 0.6 | 28.8 ± 3.0 | 19.0 ± 20.8 | 19.3 ± 2.4 |
+| category | Claude CLI PASS | Claude CLI FAIL | Terminus2 PASS | Terminus2 FAIL | MAI-UI PASS | MAI-UI FAIL | Qwen-32B PASS | Qwen-32B FAIL |
+|---|---|---|---|---|---|---|---|---|
+| B | 11.0 ± 1.7 | 24.6 ± 8.8 | 3.7 ± 0.2 | 8.1 ± 1.8 | 17.0 ± 3.3 | 27.9 ± 3.6 | 13.2 ± 3.0 | 26.6 ± 5.0 |
+| C | 5.2 ± 0.8 | 0.7 ± 1.2 | 3.8 ± 0.4 | 5.0 ± 0.2 | 11.7 ± 1.1 | 23.9 ± 9.3 | 8.6 ± 1.7 | 6.3 ± 1.3 |
+| A | 6.3 ± 0.6 | 36.5 ± 17.8 | 4.7 ± 1.2 | 13.2 ± 3.8 | 11.5 ± 10.6 | 26.3 ± 2.9 | 5.8 ± 0.9 | 7.3 ± 2.7 |
+| D | 10.1 ± 3.1 | 22.4 ± 4.3 | 7.3 ± 1.2 | 10.4 ± 1.6 | 11.7 ± 1.2 | 28.7 ± 2.1 | — | 12.1 ± 4.1 |
+| E | 9.4 ± 2.5 | 5.0 ± 2.4 | 1.9 ± 0.8 | 4.3 ± 1.6 | 6.3 ± 0.6 | 28.8 ± 3.0 | 19.0 ± 20.8 | 19.3 ± 2.4 |
 
 Notable patterns:
 - **Claude CLI C-failures are abandoned at step 0.7** — when it can't form the query, it returns an empty answer immediately.
 - **Claude CLI A-failures are stuck loops** — 36.5 steps on average, the highest of any cell. Specifically the agent over-explores SQL aggregations.
+- **Terminus2 + codex bails early on every failure** — the largest fail-step average is 13.2 (Aggregation), all others under 11. This is a direct consequence of `reasoning_effort=medium` keeping the agent concise.
 - **MAI-UI fails by exhausting the 50-step cap** in 4 of 5 categories (24-29 steps avg).
 - **Qwen-32B C-failures are also near-immediate** (6 steps) — like CLI, it gives up rather than burning steps.
 
@@ -99,6 +108,7 @@ For each agent: how many tasks pass on at least one seed (Union) vs all three se
 | agent | Union (≥ 1 seed) | Intersection (3 / 3 seeds) | overall mean |
 |---|---|---|---|
 | Claude CLI (Opus 4.7) | **36 / 45 (80 %)** | **26 / 45 (58 %)** | 68.9 % |
+| Terminus2 + codex | 30 / 45 (67 %) | 24 / 45 (53 %) | 60.7 % |
 | MAI-UI-8B | 16 / 45 (36 %) | 8 / 45 (18 %) | 27.4 % |
 | Qwen3-VL-32B | 13 / 45 (29 %) | 7 / 45 (16 %) | 22.2 % |
 
@@ -109,7 +119,8 @@ are tasks the agent solves regardless of fixture randomization.
 
 ## Tasks no agent solves at any seed
 
-Six tasks fail under every agent at every seed. These represent the genuine
+Five tasks fail under every agent at every seed (down from six previously —
+Terminus2 + codex breaks **task 36** every seed). These represent the genuine
 capability frontier — both CLI and GUI paradigms are blocked.
 
 | id | category | task_name | notes |
@@ -118,11 +129,15 @@ capability frontier — both CLI and GUI paradigms are blocked.
 | 19 | B | Tier4BulkChangePriorityTasks | needs date-based predicate on org.tasks; AVD clock skew blocks the canonical predicate even for the agent |
 | 29 | E | Tier4HiddenStateLocationPermissions | needs to walk `dumpsys package permissions` for every package; long parse |
 | 33 | D | Tier4CrossAppCalendarToMarkor | query calendar + write a Markor file named from goal keyword |
-| 36 | E | Tier4HiddenStatePhoneTemperature | `dumpsys battery` field with unit conversion (1/10 °C) |
 | 51 | D | Tier4CrossAppContactsToMarkor | export contacts as formatted Markor note |
 
-4 of 6 are CrossApp / Hidden State — categories that combine multi-source
-correlation with formatted output.
+4 of 5 are CrossApp — multi-source correlation with formatted output remains
+the hardest category for every agent.
+
+**Newly solved by Terminus2 + codex** (was in the original "no agent solves"
+list): task 36 (Tier4HiddenStatePhoneTemperature, `dumpsys battery` with
+1/10 °C unit conversion). Opus consistently fails to apply the unit
+conversion; codex handles it correctly on all three seeds.
 
 ---
 
@@ -131,11 +146,13 @@ correlation with formatted output.
 | agent | always-pass count | task IDs |
 |---|---|---|
 | Claude CLI (Opus 4.7) | 26 | 0, 3, 4, 5, 7, 8, 16, 17, 20, 21, 22, 23, 24, 28, 34, 35, 38, 39, 42, 45, 46, 47, 49, 50, 52, 53 |
+| Terminus2 + codex | 24 | 3, 4, 5, 7, 8, 9, 10, 11, 16, 17, 22, 24, 26, 28, 32, 34, 36, 37, 38, 42, 43, 46, 47, 49 |
 | MAI-UI-8B | 8 | 0, 4, 9, 13, 38, 46, 49, 54 |
 | Qwen3-VL-32B | 7 | 0, 15, 17, 20, 22, 46, 49 |
 
-Three tasks pass for every agent under every seed (0, 46, 49) — the "easy floor":
-delete .tmp files, delete .apk files, delete small expenses.
+Two tasks pass for every agent under every seed (46, 49) — the "easy floor":
+delete duplicate calendar events, delete small expenses. (Task 0 is the
+previous "always-pass for all" but Terminus2 + codex fails it on one seed.)
 
 ---
 
@@ -144,11 +161,15 @@ delete .tmp files, delete .apk files, delete small expenses.
 | agent | always-fail count | task IDs |
 |---|---|---|
 | Claude CLI (Opus 4.7) | 9 | 15, 18, 19, 29, 31, 33, 36, 51, 54 |
+| Terminus2 + codex | 15 | 13, 15, 18, 19, 20, 23, 29, 33, 35, 39, 50, 51, 52, 53, 54 |
 | MAI-UI-8B | 29 | 3, 7, 8, 11, 15, 17, 18, 19, 21, 22, 25, 26, 28, 29, 31, 32, 33, 34, 35, 36, 37, 39, 42, 43, 50, 51, 52, 53, 55 |
 | Qwen3-VL-32B | 32 | 3, 4, 8, 9, 11, 13, 16, 18, 19, 21, 23, 24, 25, 26, 28, 29, 32, 33, 34, 35, 36, 37, 39, 42, 43, 45, 50, 51, 52, 53, 54, 55 |
 
-The CLI agent has the smallest always-fail set; both GUI agents fail on
-~30 of 45 tasks consistently.
+The CLI agents have the smallest always-fail sets; both GUI agents fail on
+~30 of 45 tasks consistently. Notable: Opus and codex share 7 always-fail
+tasks (15, 18, 19, 29, 33, 51, 54) — meaning each fails on a different subset
+of its hard set, and a CLI ensemble would in principle leave only the 7
+genuinely-stuck items unsolved.
 
 ---
 
@@ -159,6 +180,9 @@ The CLI agent has the smallest always-fail set; both GUI agents fail on
 | Claude CLI / 7 | `eval-runners/results/ClaudeCodeCLI_claudeopus47_260515_2212/` | 31 / 45 |
 | Claude CLI / 30 | `eval-runners/results/ClaudeCodeCLI_claudeopus47_260517_0217/` | 31 / 45 |
 | Claude CLI / 1234 | `eval-runners/results/ClaudeCodeCLI_claudeopus47_260517_0236/` | 31 / 45 |
+| Terminus2 + codex / 7 | `eval-runners/results/Terminus2_openaigpt53codex_260517_1454/` | 29 / 45 |
+| Terminus2 + codex / 30 | `eval-runners/results/Terminus2_openaigpt53codex_260517_1527/` | 29 / 45 |
+| Terminus2 + codex / 1234 | `eval-runners/results/Terminus2_openaigpt53codex_260517_1540/` | 24 / 45 |
 | MAI-UI-8B / 7 | `eval-runners/results/ClaudeCodeCLI_sharedmodelsMAIUI8B_260517_0358/` | 14 / 45 |
 | MAI-UI-8B / 30 | `eval-runners/results/ClaudeCodeCLI_sharedmodelsMAIUI8B_260517_0425/` | 14 / 45 |
 | MAI-UI-8B / 1234 | `eval-runners/results/ClaudeCodeCLI_sharedmodelsMAIUI8B_260517_0451/` | 9 / 45 |
@@ -174,8 +198,9 @@ traces).
 
 ## Takeaways
 
-1. **CLI agents have a 47-pp advantage** in mean SR on Tier-4 ADB-exclusive tasks because the tasks reduce to SQL/shell commands once the agent knows where to look. The GUI paradigm forces an unnecessary detour through the UI for data the system stores in flat files and content providers.
-2. **The advantage is largest on data-heavy categories** (C +50 pp, A +47 pp). For pure UI-ops (B), the gap narrows to 20 pp — MAI-UI-8B closes ~60 % of the gap here.
+1. **CLI agents have a 33–47-pp advantage** in mean SR on Tier-4 ADB-exclusive tasks because the tasks reduce to SQL/shell commands once the agent knows where to look. The GUI paradigm forces an unnecessary detour through the UI for data the system stores in flat files and content providers. Both Opus (68.9 %) and gpt-5.3-codex via Terminus2 (60.7 %) sit well above the best GUI agent (27.4 %).
+2. **The advantage is largest on data-heavy categories** (C +50 pp for Opus, A +47 pp). For pure UI-ops (B), the gap narrows to 20 pp — MAI-UI-8B closes ~60 % of the gap here.
 3. **GUI agents have 0 % CrossApp completion** at any seed, regardless of size (8B vs 32B). The bottleneck is keeping multi-app state in working memory across screenshots, not vision quality.
 4. **Both GUI agents show 0 % seed variance on D and E** — they fail the same way every seed. Their failure modes are structural, not stochastic.
-5. **The 6 tasks no agent solves** are 4 / 6 CrossApp+Hidden-State — write-then-read multi-app flows and `dumpsys` parsing remain unsolved for both paradigms.
+5. **Cost / step efficiency tradeoff between CLI agents** — Opus is the most reliable (zero seed variance, smallest always-fail set) but ~6× more expensive than Terminus2 + codex ($56.72 vs $9.87). Codex is the most step-efficient agent overall (5.7 steps avg vs 11.0 for Opus) and even beats Opus on Hidden-State (E) thanks to correct unit-conversion handling on `dumpsys battery`.
+6. **The 5 tasks no agent solves** are 4 / 5 CrossApp — write-then-read multi-app flows remain unsolved for both paradigms. Task 36 (HiddenStatePhoneTemperature) is now solved by codex but not Opus, indicating the original "no agent solves" list was Opus-specific not paradigm-specific.
