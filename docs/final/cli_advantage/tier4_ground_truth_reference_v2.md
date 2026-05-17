@@ -115,6 +115,49 @@ Two patterns matter when filling template lines, because the outer wrap is
    **double quotes** inside the script — `printf \"<body>\\n\"` — not
    single quotes, so the inner `sh -c '...'` wrap is not broken.
 
+### Toolchain notes (Android 13 / API 33 emulator)
+
+This AVD ships **toybox 0.8.6** as `/system/bin/{stat,date,find,sqlite3,…}`.
+toybox implements the GNU-compatible flags the agent needs:
+
+- `stat -c %Y <file>`  → mtime in seconds since epoch ✔
+- `date -d @<ts> +<fmt>` → format an epoch timestamp ✔
+- `find … -printf "%s %f\n"` → formatted output ✔ (tasks 28, etc.)
+
+So commands that look "GNU-only" at first glance (Task 03 rename via mtime,
+Task 07 most-modified, Task 28 size+name listing) all run fine on the
+device — they were verified against this AVD.
+
+### Clock skew (important for any predicate that involves "now")
+
+The emulator clock is **frozen at Oct 2023**, but the fixture seeds rows from
+the **host clock at run time (May 2026)** — so any predicate that reads `now`
+on the device drifts ~2.5 y behind the data. There are three observable
+patterns in this doc:
+
+- **Compute window on the host** (Task 52 SMS-during-meeting, host computes
+  `yesterday_start_ms` from Python `date.today()`): aligned with the seed,
+  works correctly.
+- **Predicate is clock-independent** (Task 50 weekend events: extract
+  `weekday` from `dtstart`; Task 21 OpenTracks weekly: `starttime >= now-7d`
+  in device-side SQL where every seeded `starttime` is May 2026 and the
+  cutoff is Oct 2023, so the filter passes all rows — coincidentally
+  correct, since the fixture only seeds "this-week" rows for these tasks).
+- **Workaround required** (Task 19 BulkChangePriorityTasks: the device-side
+  `dueDate < strftime('%s','now')*1000` predicate would match nothing, so
+  the doc uses the fixture's deterministic `title LIKE 'overdue_task_%'`
+  instead).
+
+If a future task uses a tighter window than "this whole month/week", the
+device-clock approach will start failing. Prefer host-computed timestamps in
+those cases.
+
+### Robustness reminders
+
+- `for f in $(find …)` word-splits on whitespace. Fixture filenames are all
+  space-free, so it works in this benchmark, but the **safer general form**
+  is `find … -exec <cmd> {} \;` or `find … -print0 | xargs -0 …`.
+
 
 Subset JSONL: `eval-runners/data/tier4/realistic_subset_seed7.jsonl`.
 
@@ -171,7 +214,10 @@ adb shell ls -la /storage/emulated/0/Download | head -10
 adb shell find /storage/emulated/0/Download -type f -size +50M
 ```
 
-**Step A — ensure Archive dir, move each large file** (act):
+**Step A — ensure Archive dir, move each large file. The `for f in $(find …)`
+form word-splits on whitespace — the fixture seeds space-free names so
+this is safe here, but `find … -exec mv {} <dst>/ \;` is the robust
+general form.** (act):
 ```
 adb shell mkdir -p /storage/emulated/0/Archive
 adb shell "sh -c 'for f in \$(find /storage/emulated/0/Download -type f -size +50M); do mv \"\$f\" /storage/emulated/0/Archive/; done'"
@@ -670,15 +716,20 @@ adb shell "sh -c 'sqlite3 /data/data/com.arduia.expense/databases/accounting.db 
 adb shell "sh -c 'sqlite3 /data/data/com.arduia.expense/databases/accounting.db \".schema expense\"'"
 ```
 
-**Step P — distinct integer category IDs in use (no `category` table
-exists on this AVD; IDs are app-internal — see Task 13 for names).** (probe):
+**Step P — distinct integer category IDs in use. There is no
+`category` lookup table on this AVD — the ID→name map is an
+app-internal constant from Pro Expense. The values the fixture
+ever seeds are: 3=Food · 4=Housing · 6=Entertainment ·
+7=Transportation · 9=Health Care.** (probe):
 ```
 adb shell "sh -c 'sqlite3 /data/data/com.arduia.expense/databases/accounting.db \"SELECT DISTINCT category FROM expense ORDER BY category;\"'"
 ```
 
-**Step A — top 3 category IDs by SUM(amount); translate ID→name via Pro Expense UI** (act):
+**Step A — top 3 category IDs by SUM(amount); translate each ID to its
+name using the constant map above (the eval expects names, not IDs).** (act):
 ```
 adb shell "sh -c 'sqlite3 /data/data/com.arduia.expense/databases/accounting.db \"SELECT category, SUM(amount) AS total FROM expense GROUP BY category ORDER BY total DESC LIMIT 3;\"'"
+# e.g. 4|30000 → "Housing"; 7|25000 → "Transportation"; 3|15000 → "Food"
 ```
 
 
@@ -756,7 +807,13 @@ adb shell "sh -c 'sqlite3 /data/data/de.dennisguse.opentracks/databases/database
 adb shell "sh -c 'sqlite3 /data/data/de.dennisguse.opentracks/databases/database.db \"SELECT name, totaldistance, starttime FROM tracks LIMIT 3;\"'"
 ```
 
-**Step A — sum distance this week (km) and pick the longest single activity** (act):
+**Step A — sum distance this week (km) and pick the longest single activity.
+Note on the clock: SQLite's `strftime('%s','now')` reads the device clock
+(frozen at Oct 2023 on this AVD), so the cutoff is 7 d before Oct 2023.
+All fixture `starttime` rows are at May 2026 host-time, so the predicate
+passes every row — coincidentally correct here because the fixture only
+seeds this-week activities. For a stricter window, compute the cutoff on
+the host and bind it as a literal.** (act):
 ```
 adb shell "sh -c 'sqlite3 /data/data/de.dennisguse.opentracks/databases/database.db \"SELECT printf(\\\"%.1f\\\", SUM(totaldistance)/1000.0) FROM tracks WHERE starttime >= (strftime(\\\"%s\\\",\\\"now\\\")-7*86400)*1000;\"'"
 adb shell "sh -c 'sqlite3 /data/data/de.dennisguse.opentracks/databases/database.db \"SELECT name FROM tracks WHERE starttime >= (strftime(\\\"%s\\\",\\\"now\\\")-7*86400)*1000 ORDER BY totaldistance DESC LIMIT 1;\"'"
