@@ -32,6 +32,36 @@ _CLEANUP_PREFIX = "tier4cal_"
 
 # ── Calendar helpers ───────────────────────────────────────────────────
 
+_CALENDAR_DB = "/data/data/com.android.providers.calendar/databases/calendar.db"
+
+
+def _ensure_calendar_exists(env: interface.AsyncEnv,
+                            calendar_id: int = 1) -> None:
+  """Ensure a Calendar row exists for `calendar_id`.
+
+  The calendar content provider hides events whose calendar_id has no
+  matching Calendars row (treated as orphaned), so `content query
+  --uri .../events` returns "No result found" even when the rows exist
+  in the underlying calendar.db. We seed a minimal local-account
+  calendar via sqlite3; the provider then exposes the events normally.
+
+  Pass the whole `sqlite3 DB "SQL"` as a SINGLE argument after `shell`
+  so adb doesn't word-split it across spaces.
+  """
+  sql = (
+      f"INSERT OR IGNORE INTO Calendars "
+      f"(_id, account_name, account_type, name, calendar_displayName, "
+      f"calendar_color, calendar_access_level, ownerAccount, visible, "
+      f"sync_events) VALUES ("
+      f"{calendar_id}, 'tier4@local', 'LOCAL', 'tier4', 'tier4', "
+      f"-16776961, 700, 'tier4@local', 1, 1);"
+  )
+  adb_utils.issue_generic_request(
+      ["shell", f'sqlite3 {_CALENDAR_DB} "{sql}"'],
+      env.controller,
+  )
+
+
 def _insert_event(
     title: str,
     dtstart_ms: int,
@@ -40,6 +70,7 @@ def _insert_event(
     calendar_id: int = 1,
 ) -> str:
   """Insert a calendar event and return its _id string."""
+  _ensure_calendar_exists(env, calendar_id)
   adb_utils.issue_generic_request(
       ["shell", "content", "insert", "--uri", _CALENDAR_EVENTS_URI,
        "--bind", f"title:s:{title}",
@@ -49,11 +80,13 @@ def _insert_event(
        "--bind", "eventTimezone:s:UTC"],
       env.controller,
   )
-  res = adb_utils.issue_generic_request(
-      ["shell", "content", "query", "--uri", _CALENDAR_EVENTS_URI,
-       "--projection", "_id", "--sort", "_id DESC"],
-      env.controller,
+  # Pass the whole content-query as one arg after `shell` so the spaced
+  # --sort value ("_id DESC") survives adb's argv flattening.
+  query_cmd = (
+      f"content query --uri {_CALENDAR_EVENTS_URI} "
+      f"--projection _id --sort \"_id DESC\""
   )
+  res = adb_utils.issue_generic_request(["shell", query_cmd], env.controller)
   m = re.search(r"Row: 0 _id=(\d+)", res.generic.output.decode())
   return m.group(1) if m else ""
 
@@ -70,12 +103,17 @@ def _insert_reminder(event_id: str, minutes: int, env: interface.AsyncEnv) -> No
 
 
 def _delete_tier4_events(env: interface.AsyncEnv) -> None:
-  """Delete all events created by tier4 calendar tasks (by title prefix)."""
-  adb_utils.issue_generic_request(
-      ["shell", "content", "delete", "--uri", _CALENDAR_EVENTS_URI,
-       "--where", f"title LIKE '{_CLEANUP_PREFIX}%'"],
-      env.controller,
+  """Delete all events created by tier4 calendar tasks (by title prefix).
+
+  Pass the whole `content delete ...` as a single arg after `shell` so
+  adb doesn't word-split the quoted WHERE value across spaces (which
+  would corrupt `title LIKE 'tier4cal_%'`).
+  """
+  cmd = (
+      f"content delete --uri {_CALENDAR_EVENTS_URI} "
+      f"--where \"title LIKE '{_CLEANUP_PREFIX}%'\""
   )
+  adb_utils.issue_generic_request(["shell", cmd], env.controller)
 
 
 def _ms(dt: datetime.datetime) -> int:
@@ -355,13 +393,18 @@ class Tier4DedupCalendarDeleteDuplicateEvents(task_eval.TaskEval):
     super().is_successful(env)
     if not self._dup_pairs:
       return 0.0
-    # Each dup pair should have exactly 1 event remaining
+    # Each dup pair should have exactly 1 event remaining. The --where
+    # value contains a space and single quotes, both of which collide with
+    # adb's argv flattening — pass the whole `content query ...` as a
+    # single arg after `shell` so the WHERE clause survives intact.
     for title, dtstart in self._dup_pairs:
+      query = (
+          f"content query --uri {_CALENDAR_EVENTS_URI} "
+          f"--where \"title='{title}' AND dtstart={dtstart}\" "
+          f"--projection _id"
+      )
       res = adb_utils.issue_generic_request(
-          ["shell", "content", "query", "--uri", _CALENDAR_EVENTS_URI,
-           "--where", f"title='{title}' AND dtstart={dtstart}",
-           "--projection", "_id"],
-          env.controller,
+          ["shell", query], env.controller
       )
       count = len(re.findall(r"_id=\d+", res.generic.output.decode()))
       if count != 1:

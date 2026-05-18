@@ -28,6 +28,25 @@ from android_world.utils import contacts_utils
 _SMS_URI = "content://sms"
 _SMS_INBOX_URI = "content://sms/inbox"
 _SMS_SENT_URI = "content://sms/sent"
+_SMS_DB = "/data/data/com.android.providers.telephony/databases/mmssms.db"
+
+
+def _insert_sms_row_sqlite(address: str, body: str, date_ms: int, type_: int,
+                            env: interface.AsyncEnv) -> None:
+  """Write an SMS row directly to mmssms.db.
+
+  `content insert --uri content://sms/inbox` is rejected on API 33
+  unless the caller is the default SMS app. The provider's read path
+  still surfaces sqlite-written rows.
+  """
+  body_sql = body.replace("'", "''")
+  sql = (
+      f"INSERT INTO sms (address, body, date, read, type) VALUES "
+      f"('{address}', '{body_sql}', {date_ms}, 1, {type_});"
+  )
+  adb_utils.issue_generic_request(
+      ["shell", f'sqlite3 {_SMS_DB} "{sql}"'], env.controller
+  )
 
 
 class Tier4CrossAppBroccoliToMarkorIndex(task_eval.TaskEval):
@@ -55,37 +74,19 @@ class Tier4CrossAppBroccoliToMarkorIndex(task_eval.TaskEval):
     contacts_utils.add_contact(name_a, num_a, env.controller)
     time.sleep(0.5)
     # Incoming from A
-    adb_utils.issue_generic_request(
-        ["shell", "content", "insert", "--uri", _SMS_INBOX_URI,
-         "--bind", f"address:s:{num_a}",
-         "--bind", "body:s:Hey are you free tomorrow?",
-         "--bind", f"date:l:{now_ms - 3600000}",
-         "--bind", "read:i:1", "--bind", "type:i:1"],
-        env.controller,
-    )
+    _insert_sms_row_sqlite(num_a, "Hey are you free tomorrow?",
+                            now_ms - 3600000, 1, env)
     # My reply to A (type=2 = sent)
-    adb_utils.issue_generic_request(
-        ["shell", "content", "insert", "--uri", _SMS_URI,
-         "--bind", f"address:s:{num_a}",
-         "--bind", "body:s:Sure, what time?",
-         "--bind", f"date:l:{now_ms - 3000000}",
-         "--bind", "read:i:1", "--bind", "type:i:2"],
-        env.controller,
-    )
+    _insert_sms_row_sqlite(num_a, "Sure, what time?",
+                            now_ms - 3000000, 2, env)
 
     # Contact B: texted me, I did NOT reply → SHOULD appear
     num_b = user_data_generation.generate_random_number()
     name_b = "Bob Martinez"
     contacts_utils.add_contact(name_b, num_b, env.controller)
     time.sleep(0.5)
-    adb_utils.issue_generic_request(
-        ["shell", "content", "insert", "--uri", _SMS_INBOX_URI,
-         "--bind", f"address:s:{num_b}",
-         "--bind", "body:s:Can you send me the report?",
-         "--bind", f"date:l:{now_ms - 7200000}",
-         "--bind", "read:i:1", "--bind", "type:i:1"],
-        env.controller,
-    )
+    _insert_sms_row_sqlite(num_b, "Can you send me the report?",
+                            now_ms - 7200000, 1, env)
     self._ground_truth.append(name_b)
 
     # Contact C: texted me, I did NOT reply → SHOULD appear
@@ -93,14 +94,8 @@ class Tier4CrossAppBroccoliToMarkorIndex(task_eval.TaskEval):
     name_c = "Carol Davis"
     contacts_utils.add_contact(name_c, num_c, env.controller)
     time.sleep(0.5)
-    adb_utils.issue_generic_request(
-        ["shell", "content", "insert", "--uri", _SMS_INBOX_URI,
-         "--bind", f"address:s:{num_c}",
-         "--bind", "body:s:Happy birthday!",
-         "--bind", f"date:l:{now_ms - 86400000}",
-         "--bind", "read:i:1", "--bind", "type:i:1"],
-        env.controller,
-    )
+    _insert_sms_row_sqlite(num_c, "Happy birthday!",
+                            now_ms - 86400000, 1, env)
     self._ground_truth.append(name_c)
 
     # Contact D: I texted them, no incoming → should NOT appear
@@ -108,14 +103,8 @@ class Tier4CrossAppBroccoliToMarkorIndex(task_eval.TaskEval):
     name_d = "David Lee"
     contacts_utils.add_contact(name_d, num_d, env.controller)
     time.sleep(0.5)
-    adb_utils.issue_generic_request(
-        ["shell", "content", "insert", "--uri", _SMS_URI,
-         "--bind", f"address:s:{num_d}",
-         "--bind", "body:s:Meeting at 3pm",
-         "--bind", f"date:l:{now_ms - 1800000}",
-         "--bind", "read:i:1", "--bind", "type:i:2"],
-        env.controller,
-    )
+    _insert_sms_row_sqlite(num_d, "Meeting at 3pm",
+                            now_ms - 1800000, 2, env)
 
   def tear_down(self, env: interface.AsyncEnv) -> None:
     sms_validators.clear_sms_and_threads(env.controller)

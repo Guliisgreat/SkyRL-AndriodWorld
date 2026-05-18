@@ -159,14 +159,22 @@ _SMS_DB = "/data/data/com.android.providers.telephony/databases/mmssms.db"
 def _insert_sms_inbox(
     address: str, body: str, date_ms: int, env: interface.AsyncEnv
 ) -> None:
-  """Insert an SMS into the inbox via content provider."""
+  """Insert an SMS row directly into the telephony provider's sqlite DB.
+
+  Going through `content insert --uri content://sms/inbox` is rejected on
+  recent Android versions unless the caller is the default SMS app, and
+  bodies with spaces collide with adb's argv flattening anyway. Writing
+  the row via sqlite3 sidesteps both issues; the SMS content provider
+  surfaces sqlite-written rows on subsequent queries.
+  """
+  # Escape single quotes in body for SQL string literal.
+  body_sql = body.replace("'", "''")
+  sql = (
+      f"INSERT INTO sms (address, body, date, read, type) VALUES "
+      f"('{address}', '{body_sql}', {date_ms}, 1, 1);"
+  )
   adb_utils.issue_generic_request(
-      ["shell", "content", "insert", "--uri", _SMS_INBOX_URI,
-       "--bind", f"address:s:{address}",
-       "--bind", f"body:s:{body}",
-       "--bind", f"date:l:{date_ms}",
-       "--bind", "read:i:1",
-       "--bind", "type:i:1"],
+      ["shell", f'sqlite3 {_SMS_DB} "{sql}"'],
       env.controller,
   )
 

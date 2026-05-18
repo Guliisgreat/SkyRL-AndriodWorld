@@ -179,68 +179,67 @@ _IR_HARD = {
 }
 
 
+# Order matches eval-runners/data/tier4/all_tasks_seed*.jsonl positional task_id
+# (server resolves /reset options.task_id via list(registry.items())[task_id]).
+# Category tag in comment: A=Aggregation/TopK B=Bulk/Dedup C=Filter/Coverage
+# D=CrossApp E=HiddenState. Total: 56 tasks (13 A + 11 B + 12 C + 10 D + 10 E).
 _TIER4_TASKS = (
-    # ── A: Compute across items (13) ────────────────────────────────
-    tier4_markor.Tier4AggregationLongestMarkorNote,
-    tier4_files.Tier4AggregationDownloadSizeTop3,
-    tier4_expense.Tier4AggregationExpenseCategoryTop3,
-    tier4_expense.Tier4AggregationExpenseSuspectedDuplicates,
-    tier4_expense.Tier4AggregationExpenseAllCategorized,
-    tier4_contacts.Tier4AggregationContactsDuplicatePhones,
-    tier4_opentracks.Tier4AggregationOpenTracksWeeklyStats,
-    tier4_markor.Tier4TopKMarkorMostModifiedNotes,
-    tier4_files.Tier4TopKLargestDownloadFiles,
-    tier4_sms.Tier4TopKSmsThreadsByCount,
-    tier4_expense.Tier4TopKExpenseHighestAmount,
-    tier4_opentracks.Tier4TopKOpenTracksFastestActivity,
-    tier4_retro_music.Tier4TopKRetroMusicLongestSongs,
-    # ── B: Bulk operations (11) ─────────────────────────────────────
-    tier4_files.Tier4BulkDeleteTmpInDownloads,
-    tier4_files.Tier4BulkDeleteApkFiles,
-    tier4_expense.Tier4BulkDeleteSmallExpenses,
-    tier4_calendar.Tier4BulkDeleteCalendarTestEvents,
-    tier4_files.Tier4BulkRenameScreenshots,
-    tier4_files.Tier4BulkMoveLargeFiles,
-    tier4_markor.Tier4BulkAppendFooterToMarkdown,
-    tier4_expense.Tier4BulkRecategorizeExpense,
-    tier4_tasks_app.Tier4BulkChangePriorityTasks,
-    tier4_contacts.Tier4DedupMergeContactsSamePhone,
-    tier4_calendar.Tier4DedupCalendarDeleteDuplicateEvents,
-    # ── C: Multi-condition filter (12) ──────────────────────────────
-    tier4_contacts.Tier4FilterContactsBirthdayNoPhone,
-    tier4_contacts.Tier4FilterContactsNoFamilyName,
-    tier4_expense.Tier4FilterExpenseHighTravelLastMonth,
-    tier4_expense.Tier4FilterExpenseAboveAverage,
-    tier4_joplin.Tier4FilterJoplinContainsNotContains,
-    tier4_retro_music.Tier4FilterRetroMusicMultiCondition,
-    tier4_sms.Tier4FilterSmsContainingUrl,
-    tier4_files.Tier4FilterLargeOldFiles,
-    tier4_files.Tier4FilterEmptyFilesInDownloads,
-    tier4_calendar.Tier4FilterCalendarWeekendEvents,
-    tier4_sms.Tier4CoverageSmsAllFromKnownContacts,
-    tier4_calendar.Tier4CoverageCalendarEventsHaveReminders,
-    # ── D: Cross-app correlation (10) ───────────────────────────────
-    tier4_sms.Tier4CrossAppSmsNumbersNotInContacts,
-    tier4_expense.Tier4CrossAppExpenseToMarkorCalendar,
-    tier4_broccoli.Tier4CrossAppBroccoliToMarkorIndex,
-    tier4_cross_app.Tier4CrossAppMarkorPhonesVsContacts,
-    tier4_calendar.Tier4CrossAppCalendarToMarkor,
-    tier4_cross_app.Tier4CrossAppContactsToMarkor,
-    tier4_cross_app.Tier4CrossAppCalendarSmsConflicts,
-    tier4_cross_app.Tier4CrossAppSmsKeywordToTasks,
-    tier4_cross_app.Tier4CrossAppOpenTracksToMarkor,
-    tier4_cross_app.Tier4CrossAppJoplinToCalendar,
-    # ── E: Hidden device state (10) ─────────────────────────────────
-    tier4_system.Tier4HiddenStateListAppVersions,
-    tier4_system.Tier4HiddenStateLocationPermissions,
-    tier4_system.Tier4HiddenStateAudioRouting,
-    tier4_system.Tier4HiddenStateAppsCameraPermission,
-    tier4_system.Tier4HiddenStatePhoneTemperature,
-    tier4_system.Tier4HiddenStateRecentInstalls,
-    tier4_system.Tier4HiddenStateUptime,
-    tier4_system.Tier4HiddenStateBackgroundLocationApps,
-    tier4_system.Tier4HiddenStateSignalStrength,
-    tier4_sms.Tier4HiddenStateSmsDbSize,
+    tier4_files.Tier4BulkDeleteTmpInDownloads,                #  0 [B]
+    tier4_system.Tier4HiddenStateListAppVersions,             #  1 [E]
+    tier4_sms.Tier4CrossAppSmsNumbersNotInContacts,           #  2 [D]
+    tier4_files.Tier4BulkRenameScreenshots,                   #  3 [B]
+    tier4_files.Tier4BulkMoveLargeFiles,                      #  4 [B]
+    tier4_markor.Tier4BulkAppendFooterToMarkdown,             #  5 [B]
+    tier4_markor.Tier4AggregationLongestMarkorNote,           #  6 [A]
+    tier4_markor.Tier4TopKMarkorMostModifiedNotes,            #  7 [A]
+    tier4_sms.Tier4TopKSmsThreadsByCount,                     #  8 [A]
+    tier4_contacts.Tier4FilterContactsBirthdayNoPhone,        #  9 [C]
+    tier4_contacts.Tier4FilterContactsNoFamilyName,           # 10 [C]
+    tier4_contacts.Tier4AggregationContactsDuplicatePhones,   # 11 [A]
+    tier4_contacts.Tier4DedupMergeContactsSamePhone,          # 12 [B]
+    tier4_expense.Tier4BulkRecategorizeExpense,               # 13 [B]
+    tier4_expense.Tier4FilterExpenseHighTravelLastMonth,      # 14 [C]
+    tier4_expense.Tier4AggregationExpenseCategoryTop3,        # 15 [A]
+    tier4_expense.Tier4AggregationExpenseSuspectedDuplicates, # 16 [A]
+    tier4_expense.Tier4TopKExpenseHighestAmount,              # 17 [A]
+    tier4_expense.Tier4CrossAppExpenseToMarkorCalendar,       # 18 [D]
+    tier4_tasks_app.Tier4BulkChangePriorityTasks,             # 19 [B]
+    tier4_joplin.Tier4FilterJoplinContainsNotContains,        # 20 [C]
+    tier4_opentracks.Tier4AggregationOpenTracksWeeklyStats,   # 21 [A]
+    tier4_opentracks.Tier4TopKOpenTracksFastestActivity,      # 22 [A]
+    tier4_retro_music.Tier4FilterRetroMusicMultiCondition,    # 23 [C]
+    tier4_retro_music.Tier4TopKRetroMusicLongestSongs,        # 24 [A]
+    tier4_broccoli.Tier4CrossAppBroccoliToMarkorIndex,        # 25 [D]
+    tier4_cross_app.Tier4CrossAppMarkorPhonesVsContacts,      # 26 [D]
+    tier4_files.Tier4AggregationDownloadSizeTop3,             # 27 [A]
+    tier4_files.Tier4TopKLargestDownloadFiles,                # 28 [A]
+    tier4_system.Tier4HiddenStateLocationPermissions,         # 29 [E]
+    tier4_system.Tier4HiddenStateAudioRouting,                # 30 [E]
+    tier4_system.Tier4HiddenStateAppsCameraPermission,        # 31 [E]
+    tier4_calendar.Tier4BulkDeleteCalendarTestEvents,         # 32 [B]
+    tier4_calendar.Tier4CrossAppCalendarToMarkor,             # 33 [D]
+    tier4_calendar.Tier4DedupCalendarDeleteDuplicateEvents,   # 34 [B]
+    tier4_calendar.Tier4CoverageCalendarEventsHaveReminders,  # 35 [C]
+    tier4_system.Tier4HiddenStatePhoneTemperature,            # 36 [E]
+    tier4_system.Tier4HiddenStateRecentInstalls,              # 37 [E]
+    tier4_system.Tier4HiddenStateUptime,                      # 38 [E]
+    tier4_system.Tier4HiddenStateBackgroundLocationApps,      # 39 [E]
+    tier4_system.Tier4HiddenStateSignalStrength,              # 40 [E]
+    tier4_sms.Tier4HiddenStateSmsDbSize,                      # 41 [E]
+    tier4_sms.Tier4FilterSmsContainingUrl,                    # 42 [C]
+    tier4_sms.Tier4CoverageSmsAllFromKnownContacts,           # 43 [C]
+    tier4_files.Tier4FilterLargeOldFiles,                     # 44 [C]
+    tier4_files.Tier4FilterEmptyFilesInDownloads,             # 45 [C]
+    tier4_files.Tier4BulkDeleteApkFiles,                      # 46 [B]
+    tier4_expense.Tier4FilterExpenseAboveAverage,             # 47 [C]
+    tier4_expense.Tier4AggregationExpenseAllCategorized,      # 48 [A]
+    tier4_expense.Tier4BulkDeleteSmallExpenses,               # 49 [B]
+    tier4_calendar.Tier4FilterCalendarWeekendEvents,          # 50 [C]
+    tier4_cross_app.Tier4CrossAppContactsToMarkor,            # 51 [D]
+    tier4_cross_app.Tier4CrossAppCalendarSmsConflicts,        # 52 [D]
+    tier4_cross_app.Tier4CrossAppSmsKeywordToTasks,           # 53 [D]
+    tier4_cross_app.Tier4CrossAppOpenTracksToMarkor,          # 54 [D]
+    tier4_cross_app.Tier4CrossAppJoplinToCalendar,            # 55 [D]
 )
 
 

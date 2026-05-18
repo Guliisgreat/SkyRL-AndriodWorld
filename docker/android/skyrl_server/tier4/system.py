@@ -461,16 +461,14 @@ class Tier4HiddenStateBackgroundLocationApps(task_eval.TaskEval):
   def initialize_task(self, env: interface.AsyncEnv) -> None:
     super().initialize_task(env)
     import time
-    # Inject background location access via appops.
-    # `appops set` allows the op, `appops note` creates a timestamped record.
-    # On emulator, adb runs as root so these commands succeed.
+    # Inject background location access by granting the op.
+    # On API 33 the op name must be fully qualified ("android:coarse_location");
+    # the unqualified short name from older Android versions is rejected.
+    # The `appops note` subcommand was removed in API 33 — `set allow` is
+    # enough for dumpsys to list the package under the op.
     for pkg in self._INJECT_PKGS:
       adb_utils.issue_generic_request(
-          ["shell", "appops", "set", pkg, "coarse_location", "allow"],
-          env.controller,
-      )
-      adb_utils.issue_generic_request(
-          ["shell", "appops", "note", pkg, "coarse_location"],
+          ["shell", "appops", "set", pkg, "android:coarse_location", "allow"],
           env.controller,
       )
     time.sleep(1)
@@ -497,7 +495,7 @@ class Tier4HiddenStateBackgroundLocationApps(task_eval.TaskEval):
   def tear_down(self, env: interface.AsyncEnv) -> None:
     for pkg in self._INJECT_PKGS:
       adb_utils.issue_generic_request(
-          ["shell", "appops", "set", pkg, "coarse_location", "default"],
+          ["shell", "appops", "set", pkg, "android:coarse_location", "default"],
           env.controller,
       )
     super().tear_down(env)
@@ -545,13 +543,18 @@ class Tier4HiddenStateSignalStrength(task_eval.TaskEval):
 
   def initialize_task(self, env: interface.AsyncEnv) -> None:
     super().initialize_task(env)
-    # Ensure emulator has a simulated signal by setting gsm signal strength
-    # This uses the emulator console command via 'cmd phone' or direct property
-    adb_utils.issue_generic_request(
-        ["shell", "cmd", "phone", "set-signal-strength",
-         "-l", str(self._MOCK_SIGNAL_LEVEL)],
-        env.controller,
-    )
+    # Try to inject a known signal level so the agent has something
+    # deterministic to read. `cmd phone set-signal-strength` exists on some
+    # API levels but not API 33; tolerate failure since the dumpsys parse
+    # below has fallback paths (and ultimately a hard-coded mock).
+    try:
+      adb_utils.issue_generic_request(
+          ["shell", "cmd", "phone", "set-signal-strength",
+           "-l", str(self._MOCK_SIGNAL_LEVEL)],
+          env.controller,
+      )
+    except Exception:
+      pass
     import time
     time.sleep(1)
 
@@ -585,11 +588,15 @@ class Tier4HiddenStateSignalStrength(task_eval.TaskEval):
       self._ground_truth_dbm = -85
 
   def tear_down(self, env: interface.AsyncEnv) -> None:
-    # Reset signal to default (level 4 = full)
-    adb_utils.issue_generic_request(
-        ["shell", "cmd", "phone", "set-signal-strength", "-l", "4"],
-        env.controller,
-    )
+    # Reset signal to default (level 4 = full). Same caveat as initialize:
+    # the subcommand may not exist on the running API level.
+    try:
+      adb_utils.issue_generic_request(
+          ["shell", "cmd", "phone", "set-signal-strength", "-l", "4"],
+          env.controller,
+      )
+    except Exception:
+      pass
     super().tear_down(env)
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
