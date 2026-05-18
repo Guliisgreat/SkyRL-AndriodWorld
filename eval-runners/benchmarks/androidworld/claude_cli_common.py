@@ -174,11 +174,19 @@ def http_post(url, payload, timeout=300):
         return json.loads(resp.read().decode())
 
 
-def reset_container(base_url, task_id, seed):
-    return http_post(f"{base_url}/reset", {
-        "seed": seed,
-        "options": {"task_id": task_id, "go_home_on_reset": True},
-    })
+def reset_container(base_url, task_id, seed, retries=3):
+    last_err = None
+    for attempt in range(retries):
+        try:
+            return http_post(f"{base_url}/reset", {
+                "seed": seed,
+                "options": {"task_id": task_id, "go_home_on_reset": True},
+            })
+        except Exception as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(5 * (attempt + 1))
+    raise last_err
 
 
 def check_health(base_url):
@@ -523,6 +531,7 @@ def run_parallel(tasks, broker_url, pool_size, output_path, task_runner):
     out_lock = threading.Lock()
 
     def worker(worker_id):
+        MAX_RESET_RETRIES = 2  # up to 3 total container attempts per task
         while True:
             try:
                 task_def = task_queue.get_nowait()
@@ -530,33 +539,49 @@ def run_parallel(tasks, broker_url, pool_size, output_path, task_runner):
                 return
 
             task_id = task_def["task_id"]
-            container_info = None
-            env_id = None
+            result = None
 
-            try:
-                container_info = broker_acquire(broker_url)
-                env_id = container_info["env_id"]
-                server_port = container_info["server_port"]
-                container_url = f"http://localhost:{server_port}"
-                print(f"  [worker {worker_id}] Acquired container env_id={env_id} "
-                      f"port={server_port} for task {task_id}")
+            for attempt in range(MAX_RESET_RETRIES + 1):
+                container_info = None
+                env_id = None
 
-                result = task_runner(task_def, container_url)
-                healthy = True
+                try:
+                    container_info = broker_acquire(broker_url)
+                    env_id = container_info["env_id"]
+                    server_port = container_info["server_port"]
+                    container_url = f"http://localhost:{server_port}"
+                    print(f"  [worker {worker_id}] Acquired container env_id={env_id} "
+                          f"port={server_port} for task {task_id}")
 
-            except Exception as e:
-                print(f"  [worker {worker_id}] ERROR on task {task_id}: {e}")
-                result = {
-                    "task_id": task_id, "seed": task_def.get("seed", 0),
-                    "task": task_def.get("task", ""), "reward": 0.0,
-                    "error": str(e),
-                }
-                healthy = False
+                    result = task_runner(task_def, container_url)
+                    healthy = True
 
-            finally:
+                except Exception as e:
+                    print(f"  [worker {worker_id}] ERROR on task {task_id}: {e}")
+                    result = {
+                        "task_id": task_id, "seed": task_def.get("seed", 0),
+                        "task": task_def.get("task", ""), "reward": 0.0,
+                        "error": str(e),
+                    }
+                    healthy = False
+
+                reset_failed = (
+                    isinstance(result, dict)
+                    and str(result.get("error") or "").startswith("reset:")
+                )
+                if reset_failed:
+                    healthy = False  # tell broker to replace this container
+
                 if env_id is not None:
                     broker_release(broker_url, env_id, healthy=healthy)
-                    print(f"  [worker {worker_id}] Returned container env_id={env_id}")
+                    print(f"  [worker {worker_id}] Returned container env_id={env_id} "
+                          f"(healthy={healthy})")
+
+                if not reset_failed or attempt == MAX_RESET_RETRIES:
+                    break
+                print(f"  [worker {worker_id}] Reset failed on env_id={env_id}; "
+                      f"re-acquiring fresh container for task {task_id} "
+                      f"(attempt {attempt + 2}/{MAX_RESET_RETRIES + 1})")
 
             with results_lock:
                 results.append(result)
@@ -762,6 +787,8 @@ def build_common_parser(description="Run Claude Code CLI on AndroidWorld tasks")
 
     parser.add_argument("--pool-size", type=int, default=8,
                         help="Number of parallel workers (broker mode only)")
+    parser.add_argument("--task-timeout", type=int, default=900,
+                        help="Per-task subprocess timeout in seconds (default: 900)")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT,
                         choices=list(PROMPT_MODULES.keys()),
                         help=f"System prompt variant (default: {DEFAULT_PROMPT})")

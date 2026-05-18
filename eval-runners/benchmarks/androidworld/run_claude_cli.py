@@ -69,6 +69,7 @@ def main():
         disable_tree=disable_tree,
         stable_endpoint=args.stable_endpoint,
         prompt_name=args.prompt,
+        task_timeout=args.task_timeout,
     )
 
     mode = "parallel" if args.broker_url else "sequential"
