@@ -1,15 +1,26 @@
-# Tier-4 vs. AndroidWorld — Semantic Novelty Analysis
+# Tier-4 vs. AndroidWorld — Novelty + Paradigm-Gap Analysis
 
-To verify that the Tier-4 45-task realistic subset introduces **genuinely new
-coverage** rather than rephrasing existing AndroidWorld tasks, we compute
-embedding-based semantic similarity between every Tier-4 task instruction
-and every AndroidWorld task instruction, then report each Tier-4 task's
-nearest neighbour in AndroidWorld.
+This doc combines two complementary pieces of evidence that Tier-4 is
+**non-redundant coverage** that AndroidWorld lacks:
 
-**Headline:** every Tier-4 task has nearest-neighbour cosine similarity
-below 0.70 to any AndroidWorld task (mean **0.46**), with 40 / 45 below
-0.60 and 15 / 45 below 0.40. Hidden-State (E) is the most novel category
-(mean nearest-neighbour similarity 0.29).
+1. **Semantic novelty** of the task instructions (no leakage from AW
+   via rephrased goals).
+2. **Paradigm gap** in agent performance (the task content requires CLI
+   skills AW's GUI-focused tasks don't exercise).
+
+**Headlines:**
+
+- Instruction novelty: every Tier-4 task has nearest-neighbour cosine
+  similarity below 0.70 to any AndroidWorld task (mean **0.46**); 42 / 45
+  below 0.65; 40 / 45 below 0.60; 15 / 45 below 0.40. Hidden-State (E) is
+  the most novel category (mean nearest-neighbour similarity 0.29).
+- Paradigm gap: across 3 CLI vs 3 GUI agents × 3 seeds, the CLI paradigm
+  leads by **+38 pp** overall — and the gap is consistent across all 5
+  categories (B +30 pp, C +40 pp, A +53 pp, D +31 pp, E +33 pp).
+
+![Tier-4 vs AndroidWorld similarity density](figures/tier4_aw_similarity_density.png)
+
+![CLI vs GUI paradigm gap by category](figures/tier4_paradigm_gap.png)
 
 ---
 
@@ -195,3 +206,47 @@ OPENAI_API_KEY=... python failure_analysis/_tools/tier4_vs_androidworld_similari
 | `failure_analysis/_tools/.cache/embeddings.json` | sha256-keyed embedding cache (gitignored) |
 
 API cost for one fresh run: ~$0.003 (296 unique strings × ~50 tokens × $0.13 / M tokens).
+
+---
+
+## 8. Paradigm gap (the *"why is this new coverage"* evidence)
+
+Goal-text novelty (Sections 2-6) shows the Tier-4 instructions are not
+rephrasings of AW. But the deeper claim is that Tier-4 covers a different
+*kind* of task — one whose solution lives in `adb shell` rather than in
+screen taps. That claim is grounded in agent eval results, not in
+instruction text.
+
+The figure below summarizes the per-category success rates of the three
+CLI agents (Claude CLI / Opus 4.7, mini-swe-agent + minimax-m2.7,
+Terminus2 + gpt-5.3-codex) and the three GUI agents (GUI-Owl-1.5-32B,
+MAI-UI-8B, Qwen3-VL-32B), averaged across seeds {7, 30, 1234}.
+
+![CLI vs GUI paradigm gap by category](figures/tier4_paradigm_gap.png)
+
+Reading:
+
+- Each bar is the mean over its paradigm's three agents.
+- Open circles are the individual agents (per-paradigm spread).
+- The `+X pp` annotations are CLI − GUI gap in percentage points.
+
+The CLI paradigm leads by **+38 pp overall**, and the gap is consistent
+across all five Tier-4 categories. The largest gap is on **A (Aggregation
+/ TopK, +53 pp)**: SQL-like queries that the CLI agent reduces to one
+`sqlite3` call vs the GUI agent scrolling through rows. The smallest gap
+is on **B (Bulk / Dedup, +30 pp)** because both paradigms can complete
+those tasks — they just take far more steps in the GUI.
+
+Source: `failure_analysis/_tools/plot_paradigm_gap.py` (rebuilds the
+figure from each agent's `results.jsonl`).
+
+### Why these two analyses are complementary
+
+| analysis | answers | uses |
+|---|---|---|
+| Instruction novelty (Sections 2-6) | *"Are Tier-4 goals just rephrased AW goals?"* | embedding cosine vs AW |
+| Paradigm gap (this section) | *"Do Tier-4 tasks require a different solution paradigm than AW?"* | 6-agent eval (3 CLI + 3 GUI) on 45 tasks × 3 seeds |
+
+Together they support the claim: Tier-4 is **textually distinct from AW
+and behaviourally distinct from AW** — distinct goals that require a
+distinct paradigm to solve, exactly what "extra coverage" means.
